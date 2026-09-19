@@ -1,0 +1,24 @@
+# Automatic TLS via Let's Encrypt. The signaling endpoint must be wss://,
+# because a browser sender on an https page cannot open an insecure socket.
+{$RHEVIA_DOMAIN} {
+	encode gzip
+
+	# WebSocket signaling.
+	handle /ws* {
+		reverse_proxy signaling:8080
+	}
+
+	handle /healthz {
+		reverse_proxy signaling:8080
+	}
+
+	# The QR code points here. Serves the browser sender, and deep-links into
+	# the mobile app when it is installed.
+	handle /pair* {
+		respond "RheviaLink pairing. Open this link on the device you want to use as a camera." 200
+	}
+
+	handle {
+		respond "RheviaLink" 200
+	}
+}

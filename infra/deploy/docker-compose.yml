@@ -1,0 +1,56 @@
+# RheviaLink relay stack.
+#
+#   caddy      TLS termination, wss:// -> signaling
+#   signaling  pairing and WebRTC negotiation broker
+#   coturn     media relay for peers that cannot connect directly
+#
+# Set RHEVIA_DOMAIN and RHEVIA_TURN_SECRET in .env before bringing this up.
+# `./setup.sh` generates a valid .env.
+
+services:
+  signaling:
+    build:
+      context: ../..
+      dockerfile: infra/deploy/Dockerfile.signaling
+    restart: unless-stopped
+    environment:
+      RHEVIA_PORT: "8080"
+      RHEVIA_HOST: "0.0.0.0"
+      RHEVIA_PAIR_URL_BASE: "https://${RHEVIA_DOMAIN}/pair"
+      RHEVIA_STUN_URLS: "stun:${RHEVIA_DOMAIN}:3478"
+      RHEVIA_TURN_URLS: "turn:${RHEVIA_DOMAIN}:3478,turns:${RHEVIA_DOMAIN}:5349"
+      RHEVIA_TURN_SECRET: "${RHEVIA_TURN_SECRET:?set RHEVIA_TURN_SECRET in .env}"
+      RHEVIA_TURN_TTL_SEC: "43200"
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      RHEVIA_DOMAIN: "${RHEVIA_DOMAIN:?set RHEVIA_DOMAIN in .env}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - signaling
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    # Host networking: a relay has to hand out its real address in ICE
+    # candidates, and NAT between coturn and the internet breaks that.
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      # Reuse the certificate Caddy already obtained, for the turns: transport.
+      - caddy_data:/caddy:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+volumes:
+  caddy_data:
+  caddy_config:

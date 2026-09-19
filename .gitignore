@@ -9,3 +9,6 @@ target/
 # Third-party reference material — vMix's manual is their copyright, keep it
 # out of a repo that may become a commercial product.
 vMixUserGuide.pdf
+
+# Rust build output
+desktop/target/

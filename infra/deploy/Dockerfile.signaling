@@ -1,0 +1,28 @@
+# Build stage: compile TypeScript with dev dependencies present.
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY proto/package.json ./proto/
+COPY services/signaling/package.json ./services/signaling/
+RUN npm ci
+COPY proto ./proto
+COPY services/signaling ./services/signaling
+RUN npm run build
+
+# Runtime stage: production dependencies only, no compiler, no sources.
+FROM node:22-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+COPY proto/package.json ./proto/
+COPY services/signaling/package.json ./services/signaling/
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=build /app/proto/dist ./proto/dist
+COPY --from=build /app/services/signaling/dist ./services/signaling/dist
+
+# Never run the relay broker as root.
+USER node
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+  CMD node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "services/signaling/dist/index.js"]

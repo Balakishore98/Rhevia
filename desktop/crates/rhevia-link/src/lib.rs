@@ -5,7 +5,9 @@
 //! WebRTC rather than NDI.
 
 pub mod protocol;
+pub mod receiver;
 pub mod signaling;
 
 pub use protocol::{ClientInfo, IceServer, PeerInfo, Role, SignalPayload};
+pub use receiver::{CameraReceiver, MediaError, MediaEvent};
 pub use signaling::{LinkError, LinkEvent, SignalingClient};

@@ -15,6 +15,9 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
+webrtc = "0.20.5"
+rtc = "0.20.5"
+async-trait = "0.1.92"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

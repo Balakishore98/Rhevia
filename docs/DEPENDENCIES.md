@@ -13,6 +13,15 @@ does not fit, it does not go in — find another, or write it.
 | `ws` | ^8.18 | MIT | ✅ | WebSocket server, signaling |
 | Node.js runtime | >=22 | MIT | ✅ | |
 | coturn | 4.x | BSD-3-Clause | ✅ | TURN relay, deployed not shipped |
+| `webrtc` (webrtc-rs) | 0.20 | MIT / Apache-2.0 | ✅ | desktop WebRTC ingest |
+| `rtc` | 0.20 | MIT / Apache-2.0 | ✅ | Sans-I/O core under webrtc-rs |
+| `tokio` | 1.x | MIT | ✅ | async runtime |
+| `tokio-tungstenite` | 0.24 | MIT / Apache-2.0 | ✅ | signaling client |
+| `serde` / `serde_json` | 1.x | MIT / Apache-2.0 | ✅ | protocol encoding |
+| `async-trait` | 0.1 | MIT / Apache-2.0 | ✅ | event handler traits |
+| `futures-util` | 0.3 | MIT / Apache-2.0 | ✅ | stream combinators |
+| `thiserror` / `anyhow` | 2.x / 1.x | MIT / Apache-2.0 | ✅ | error types |
+| `tracing` | 0.1 | MIT | ✅ | structured logging |
 
 ## Build-time only (not distributed)
 
@@ -26,7 +35,6 @@ does not fit, it does not go in — find another, or write it.
 
 | Dependency | Licence | OK | Notes |
 |---|---|---|---|
-| `webrtc-rs` | MIT / Apache-2.0 | ✅ | WebRTC in the desktop receiver |
 | `wgpu` | MIT / Apache-2.0 | ✅ | GPU compositor |
 | Tauri v2 | MIT / Apache-2.0 | ✅ | desktop shell |
 | FFmpeg (LGPL build) | LGPL-2.1+ | ⚠️ | must be **our own build**, no `--enable-gpl`, dynamically linked |

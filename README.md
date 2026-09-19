@@ -35,6 +35,7 @@ count scales with the machine instead of collapsing at a fixed number.
 | [`docs/04-beyond-vmix.md`](docs/04-beyond-vmix.md) | Feature-by-feature against vMix, and where we actually win |
 | [`docs/05-product-model.md`](docs/05-product-model.md) | Why there are no licence tiers, enforced in the code |
 | [`docs/06-command-bus.md`](docs/06-command-bus.md) | One command bus, many front-ends — how remote control comes for free |
+| [`docs/07-roadmap.md`](docs/07-roadmap.md) | What is pending for streaming, and the order to build it in |
 
 ## Status
 

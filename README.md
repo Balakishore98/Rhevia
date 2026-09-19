@@ -51,6 +51,7 @@ Not yet built: the phone app, hardware decode, and the mixer itself.
 | Signaling server (`services/signaling`) | working, hardened, 14 tests |
 | Rust link client (`desktop/crates/rhevia-link`) | working, 12 tests incl. cross-language |
 | WebRTC ingest | working — negotiates and receives H.264 |
+| FLV mux + RTMP output (`desktop/crates/rhevia-output`) | working — verified against a real RTMP server |
 | Relay deployment (`infra/deploy`) | scripted, not yet deployed |
 | Phone app | not started |
 | NVDEC decode + GPU pipeline | not started |
@@ -59,5 +60,12 @@ Not yet built: the phone app, hardware decode, and the mixer itself.
 ```bash
 npm install && npm run build   # signaling server
 npm test                       # 14 tests
-cd desktop && cargo test       # 12 tests, spawns the real server
+cd desktop && cargo test       # 33 tests, spawns real servers
+```
+
+Stream a file to any RTMP destination:
+
+```bash
+cd desktop && cargo build --release --bin rhevia-stream
+./target/release/rhevia-stream clip.h264 rtmp://a.rtmp.youtube.com/live2 <key>
 ```

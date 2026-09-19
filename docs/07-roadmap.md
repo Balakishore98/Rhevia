@@ -8,10 +8,17 @@ A live production switcher is six stages. We have built part of one.
 
 ```
   SOURCE   →   DECODE   →   COMPOSITE   →   ENCODE   →   MUX   →   DELIVER
-    ~                ✗            ✗             ✗          ✗          ✗
-    │
-    └── RheviaLink transport works. No source actually produces pixels yet.
+    ~            ✗             ✗             ✗          ✓          ✓
+    │                                                   └──────────┘
+    └── RheviaLink transport works.              proven against a real RTMP
+        No source produces pixels yet.           server: 60 frames sent,
+                                                 60 decoded by ffprobe.
 ```
+
+**Updated:** the output half is done. `rhevia-stream` publishes H.264 to any
+RTMP destination, paced to real time, and the round trip is verified by an
+independent implementation rather than by our own assertions. The middle of the
+pipeline can now be built against an output that is known to work.
 
 | Stage | State | What exists |
 |---|---|---|
@@ -19,8 +26,8 @@ A live production switcher is six stages. We have built part of one.
 | **Decode** | none | We count RTP packets. They are not depacketised into Annex-B, let alone decoded into frames. |
 | **Composite** | none | No GPU pipeline, no scene graph, no Program/Preview, no transitions, no layers. |
 | **Encode** | none | NVENC is present on the machine and unused. |
-| **Mux** | none | No container writer. |
-| **Deliver** | none | No RTMP, no SRT output. Nothing can reach YouTube or Twitch. |
+| **Mux** | **done** | FLV tag muxing for H.264 and AAC, including the decoder configuration record and keyframe flagging. |
+| **Deliver** | **done** | RTMP publishing: handshake, connect, publish, real-time pacing. Verified end to end against a real server. SRT still to do. |
 | **Audio** | none | Nothing at all: no capture, no mixing, no DSP, no A/V sync. |
 | **Recording** | none | No fragmented MP4 writer, no proxy, no shorts pipeline. |
 | **UI** | none | No Tauri app. Everything so far is a library plus tests. |
@@ -59,11 +66,14 @@ Three packetisation modes have to be handled: single NAL, STAP-A aggregation,
 and FU-A fragmentation. Skipping FU-A appears to work on a LAN and then fails
 on a phone, because fragmentation only kicks in past the MTU.
 
-### 2. RTMP output — medium
-Required for YouTube, Twitch and Facebook. `rml_rtmp` is MIT-licensed and a
-reasonable starting point; `librtmp` is not usable under our licence rules.
-Needs reconnection with backoff — platform ingests drop connections routinely
-and a live show cannot end because of one.
+### 2. ~~RTMP output~~ — done
+Built on `rml_rtmp` (MIT). Handshake, connect, publish, FLV muxing and
+real-time pacing, proven against a real RTMP server.
+
+Still missing here: **reconnection with backoff**. Platform ingests drop
+connections routinely and a live show must not end because of one. Also
+`rtmps://`, which needs TLS and is currently rejected with a clear error rather
+than silently downgraded.
 
 ### 3. Phone app — large
 Nothing is a real source until this exists. CameraX on Android, AVFoundation on

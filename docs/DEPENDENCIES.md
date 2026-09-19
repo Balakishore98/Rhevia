@@ -22,6 +22,8 @@ does not fit, it does not go in — find another, or write it.
 | `futures-util` | 0.3 | MIT / Apache-2.0 | ✅ | stream combinators |
 | `thiserror` / `anyhow` | 2.x / 1.x | MIT / Apache-2.0 | ✅ | error types |
 | `tracing` | 0.1 | MIT | ✅ | structured logging |
+| `rml_rtmp` | 0.8 | MIT | ✅ | RTMP protocol, publishing |
+| `bytes` | 1.x | MIT | ✅ | zero-copy buffers |
 
 ## Build-time only (not distributed)
 

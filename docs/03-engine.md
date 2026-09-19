@@ -70,10 +70,13 @@ input ─► gate ─► EQ ─► compressor ─► de-esser ─► limiter ─
   cutoff live, biquads can blow up.
 - **Echo** — delay line with feedback and tempo sync, plus a separate algorithmic
   reverb on a send (not an insert — one reverb serving many inputs).
-- **Host VST3.** This is the decisive advantage. vMix's audio plugin support is
-  thin; hosting VST3 gives users every professional plugin that exists on day one.
-  Run plugins in a **separate sandbox process** so a badly written third-party
-  plugin cannot crash a live show.
+- **Host VST3 — in a sandbox.** vMix already hosts all 64-bit VST3 plugins on
+  inputs and buses (User Guide p91), so hosting alone is table stakes, not an
+  advantage. The advantage is *where* we host them: vMix loads plugins
+  in-process, so a badly written third-party plugin takes the whole show down
+  with it. Rhevia runs them in a **separate sandbox process**, so a crashing
+  plugin drops one input's insert chain and nothing else. That is the difference
+  between a glitch and a dead broadcast.
 
 ### Audio thread rules
 

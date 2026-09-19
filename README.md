@@ -44,8 +44,11 @@ code through the signaling server, negotiates WebRTC, and streams H.264 that
 the desktop receiver counts as real RTP. Proven by `cargo test --test loopback`,
 which runs a synthetic camera against the actual server rather than a mock.
 
-**A camera can be paired and streamed live to YouTube today**, passed through
-without decoding. Not yet built: the phone app, hardware decode, and the mixer.
+**Rhevia Studio runs.** Multiple sources, Preview/Program, cut and dissolve,
+four layouts, four overlay slots, fade to black, recording and live RTMP
+streaming — the whole pipeline, nothing bypassed.
+
+Not yet built: the phone app, hardware (NVENC/NVDEC) codecs, and audio.
 
 | Component | State |
 |---|---|
@@ -54,6 +57,8 @@ without decoding. Not yet built: the phone app, hardware decode, and the mixer.
 | WebRTC ingest | working — negotiates, receives and reassembles H.264 |
 | RTP depacketisation | working — single-NAL, STAP-A, FU-A |
 | Passthrough relay (`desktop/crates/rhevia-pipeline`) | **working — camera to live RTMP, end to end** |
+| Decode / composite / encode (`desktop/crates/rhevia-engine`) | **working — the full mixer, nothing bypassed** |
+| Rhevia Studio (`desktop/crates/rhevia-studio`) | **working — the application** |
 | FLV mux + RTMP output (`desktop/crates/rhevia-output`) | working — verified against a real RTMP server |
 | Relay deployment (`infra/deploy`) | scripted, not yet deployed |
 | Phone app | not started |
@@ -72,6 +77,19 @@ Stream a file to any RTMP destination:
 cd desktop && cargo build --release
 ./target/release/rhevia-stream clip.h264 rtmp://a.rtmp.youtube.com/live2 <key>
 ```
+
+## Install
+
+```powershell
+cd desktop && cargo build --release
+..\install\install.ps1
+```
+
+Installs to `%LOCALAPPDATA%\Programs\Rhevia` with a Start Menu entry and the
+CLI tools on PATH. No administrator rights — a live show should never depend on
+someone being able to elevate. Remove with `install.ps1 -Uninstall`.
+
+## Command line
 
 Or pair a camera and relay it live — it prints a code, and whatever connects
 goes straight out to the destination:

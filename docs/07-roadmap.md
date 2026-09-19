@@ -8,9 +8,13 @@ A live production switcher is six stages. We have built part of one.
 
 ```
   SOURCE   →   DECODE   →   COMPOSITE   →   ENCODE   →   MUX   →   DELIVER
-    ✓         (bypassed)   (bypassed)    (bypassed)      ✓          ✓
-    └──────────────────── passthrough ──────────────────────────────┘
+    ✓            ✓             ✓             ✓          ✓          ✓
 ```
+
+**The pipeline is complete.** Nothing is bypassed: sources decode to pictures,
+the compositor mixes them onto one canvas with layouts, transitions and
+overlays, and the result is re-encoded and delivered. Rhevia Studio is the
+application that drives it.
 
 **Passthrough works end to end.** A camera pairs by six-digit code, sends H.264
 over WebRTC, and Rhevia republishes it live to RTMP without decoding. Verified
@@ -25,14 +29,15 @@ for having built it in this order.
 |---|---|---|
 | **Source** | works | RheviaLink pairs, negotiates, receives H.264 RTP and reassembles it into frames. Still no phone app to *be* a camera, and no local webcam, capture card, screen capture or media file. |
 | **Depacketise** | **done** | RFC 6184: single-NAL, STAP-A and FU-A, with broken fragments discarded rather than emitted corrupt. |
-| **Decode** | none | Frames are handed on as encoded Annex-B. Nothing turns them into pixels yet, which is what the compositor will need. |
-| **Composite** | none | No GPU pipeline, no scene graph, no Program/Preview, no transitions, no layers. |
-| **Encode** | none | NVENC is present on the machine and unused. |
+| **Decode** | **done** | OpenH264, Annex-B to RGBA. Corrupt packets cost one frame, not the input. |
+| **Composite** | **done** | Scene graph, layers, bilinear scaling, alpha blending, aspect-preserving fit. Program/Preview, cut and dissolve, four layouts, four overlay slots, FTB. On CPU — the GPU path is an optimisation, not a missing feature. |
+| **Encode** | **done** | OpenH264, with keyframes forced on cuts and at the start of a recording. NVENC will be faster and is not required for correctness. |
 | **Mux** | **done** | FLV tag muxing for H.264 and AAC, including the decoder configuration record and keyframe flagging. |
 | **Deliver** | **done** | RTMP publishing: handshake, connect, publish, real-time pacing. Verified end to end against a real server. SRT still to do. |
 | **Audio** | none | Nothing at all: no capture, no mixing, no DSP, no A/V sync. |
 | **Recording** | none | No fragmented MP4 writer, no proxy, no shorts pipeline. |
-| **UI** | none | No Tauri app. Everything so far is a library plus tests. |
+| **UI** | **done** | Rhevia Studio: Preview/Program, per-input controls, layouts, overlays, transitions, recording, streaming, keyboard shortcuts. A single self-contained .exe. |
+| **Recording** | partial | Program writes to Annex-B H.264, readable while being written. No proxy or shorts pipeline yet. |
 
 So: **the transport for one input type is done. The mixer is not started.**
 

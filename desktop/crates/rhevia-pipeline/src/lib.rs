@@ -8,6 +8,10 @@
 //! delivery side changing: decode here, composite, encode, and hand the
 //! encoder's output to the same publisher.
 
+pub mod mixer;
+
+pub use mixer::{MixError, MixStats, Mixer};
+
 use std::time::Duration;
 
 use rhevia_link::CameraReceiver;

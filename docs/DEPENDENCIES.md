@@ -24,6 +24,8 @@ does not fit, it does not go in — find another, or write it.
 | `tracing` | 0.1 | MIT | ✅ | structured logging |
 | `rml_rtmp` | 0.8 | MIT | ✅ | RTMP protocol, publishing |
 | `bytes` | 1.x | MIT | ✅ | zero-copy buffers |
+| `openh264` | 0.9 | BSD-2-Clause | ✅ | H.264 decode and encode; Cisco covers the patent licensing for their binary |
+| `eframe` / `egui` | 0.29 | MIT / Apache-2.0 | ✅ | the Studio interface, GPU-rendered via wgpu |
 
 ## Build-time only (not distributed)
 

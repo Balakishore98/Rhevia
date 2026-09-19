@@ -1,23 +1,22 @@
 [package]
-name = "rhevia-pipeline"
-description = "Wires ingest to delivery: a remote camera streamed live"
+name = "rhevia-studio"
+description = "Rhevia Studio — the live production switcher"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "rhevia-studio"
+path = "src/main.rs"
+
 [dependencies]
 rhevia-engine = { path = "../rhevia-engine" }
-rhevia-link = { path = "../rhevia-link" }
 rhevia-output = { path = "../rhevia-output" }
+rhevia-pipeline = { path = "../rhevia-pipeline" }
 anyhow.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
-rtc = "0.20"
-webrtc = "0.20"
-async-trait = "0.1"
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "wgpu"] }
+egui = "0.29"

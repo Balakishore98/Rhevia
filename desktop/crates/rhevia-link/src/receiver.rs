@@ -22,6 +22,7 @@ use webrtc::peer_connection::{
     RTCPeerConnectionState, RTCSessionDescription,
 };
 
+use crate::depacketize::{AccessUnit, H264Depacketizer};
 use crate::protocol::{IceServer, SignalPayload};
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +66,7 @@ pub enum MediaEvent {
 struct Handler {
     events: mpsc::UnboundedSender<MediaEvent>,
     candidates: mpsc::UnboundedSender<SignalPayload>,
+    frames: mpsc::UnboundedSender<AccessUnit>,
 }
 
 #[async_trait::async_trait]
@@ -111,11 +113,17 @@ impl PeerConnectionEventHandler for Handler {
             None => "unknown".into(),
         };
 
+        let is_h264 = codec.to_lowercase().contains("h264");
         let _ = self.events.send(MediaEvent::TrackStarted {
             kind: kind.clone(),
             codec,
         });
-        tokio::spawn(drain_track(track, kind, self.events.clone()));
+        tokio::spawn(drain_track(
+            track,
+            kind,
+            self.events.clone(),
+            is_h264.then(|| self.frames.clone()),
+        ));
     }
 }
 
@@ -125,6 +133,7 @@ pub struct CameraReceiver {
     // receiver between a signaling pump and the UI, and those run concurrently.
     media: tokio::sync::Mutex<mpsc::UnboundedReceiver<MediaEvent>>,
     candidates: tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalPayload>>,
+    frames: tokio::sync::Mutex<mpsc::UnboundedReceiver<AccessUnit>>,
 }
 
 impl CameraReceiver {
@@ -171,9 +180,11 @@ impl CameraReceiver {
 
         let (media_tx, media_rx) = mpsc::unbounded_channel();
         let (cand_tx, cand_rx) = mpsc::unbounded_channel();
+        let (frame_tx, frame_rx) = mpsc::unbounded_channel();
         let handler = Arc::new(Handler {
             events: media_tx,
             candidates: cand_tx,
+            frames: frame_tx,
         });
 
         let pc = PeerConnectionBuilder::new()
@@ -202,6 +213,7 @@ impl CameraReceiver {
             pc: Arc::new(pc),
             media: tokio::sync::Mutex::new(media_rx),
             candidates: tokio::sync::Mutex::new(cand_rx),
+            frames: tokio::sync::Mutex::new(frame_rx),
         })
     }
 
@@ -254,6 +266,15 @@ impl CameraReceiver {
         self.candidates.lock().await.recv().await
     }
 
+    /// Next reassembled video frame, as Annex-B.
+    ///
+    /// This is the passthrough hand-off: these can go straight to an FLV muxer
+    /// and out over RTMP without ever being decoded, or into a decoder when the
+    /// compositor needs pixels.
+    pub async fn next_video_frame(&self) -> Option<AccessUnit> {
+        self.frames.lock().await.recv().await
+    }
+
     pub async fn close(&self) -> Result<(), MediaError> {
         self.pc.close().await?;
         Ok(())
@@ -268,11 +289,13 @@ async fn drain_track(
     track: Arc<dyn TrackRemote>,
     kind: String,
     tx: mpsc::UnboundedSender<MediaEvent>,
+    frames: Option<mpsc::UnboundedSender<AccessUnit>>,
 ) {
     let mut packets = 0u64;
     let mut bytes = 0u64;
     let mut window_bytes = 0u64;
     let mut last_report = Instant::now();
+    let mut depacketizer = frames.is_some().then(H264Depacketizer::new);
 
     while let Some(event) = track.poll().await {
         if let TrackRemoteEvent::OnRtpPacket(packet) = event {
@@ -280,6 +303,18 @@ async fn drain_track(
             let len = packet.payload.len() as u64;
             bytes += len;
             window_bytes += len;
+
+            if let (Some(d), Some(sink)) = (depacketizer.as_mut(), frames.as_ref()) {
+                if let Some(unit) =
+                    d.push(&packet.payload, packet.header.timestamp, packet.header.marker)
+                {
+                    if sink.send(unit).is_err() {
+                        // Nobody wants frames any more, but the track still has
+                        // to be drained or its interceptor chain stalls.
+                        depacketizer = None;
+                    }
+                }
+            }
 
             // Reporting is driven off arriving packets rather than a timer, so
             // a silent track costs nothing and a stalled one simply stops
@@ -301,6 +336,14 @@ async fn drain_track(
                 window_bytes = 0;
                 last_report = Instant::now();
             }
+        }
+    }
+
+    // Release a frame that never received its marker bit, so the last moment
+    // of a shot is not silently dropped.
+    if let (Some(d), Some(sink)) = (depacketizer.as_mut(), frames.as_ref()) {
+        if let Some(unit) = d.flush() {
+            let _ = sink.send(unit);
         }
     }
 

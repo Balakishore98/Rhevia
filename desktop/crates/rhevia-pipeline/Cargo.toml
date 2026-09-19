@@ -1,0 +1,22 @@
+[package]
+name = "rhevia-pipeline"
+description = "Wires ingest to delivery: a remote camera streamed live"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rhevia-link = { path = "../rhevia-link" }
+rhevia-output = { path = "../rhevia-output" }
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+rtc = "0.20"
+webrtc = "0.20"
+async-trait = "0.1"

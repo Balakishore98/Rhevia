@@ -68,7 +68,9 @@ pub enum LinkEvent {
 
 pub struct SignalingClient {
     outgoing: mpsc::UnboundedSender<ClientMessage>,
-    events: mpsc::UnboundedReceiver<LinkEvent>,
+    // Interior mutability so one Arc can be shared between the task pumping
+    // ICE candidates out and the task consuming events, which run concurrently.
+    events: tokio::sync::Mutex<mpsc::UnboundedReceiver<LinkEvent>>,
     peer_id: String,
     ice_servers: Vec<IceServer>,
     resume_token: Arc<Mutex<Option<String>>>,
@@ -193,7 +195,7 @@ impl SignalingClient {
 
         Ok(Self {
             outgoing: out_tx,
-            events: evt_rx,
+            events: tokio::sync::Mutex::new(evt_rx),
             peer_id,
             ice_servers,
             resume_token,
@@ -247,8 +249,8 @@ impl SignalingClient {
     }
 
     /// Next event, or `None` once signaling has ended.
-    pub async fn next_event(&mut self) -> Option<LinkEvent> {
-        self.events.recv().await
+    pub async fn next_event(&self) -> Option<LinkEvent> {
+        self.events.lock().await.recv().await
     }
 
     fn send(&self, msg: ClientMessage) -> Result<(), LinkError> {

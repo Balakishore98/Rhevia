@@ -209,15 +209,13 @@ async fn a_camera_pairs_negotiates_and_streams_h264_to_the_receiver() {
         });
     }
 
-    let receiver_for_ice = Arc::clone(&receiver);
-    let desktop_sig = Arc::new(tokio::sync::Mutex::new(desktop_sig));
+    let desktop_sig = Arc::new(desktop_sig);
     {
         let sig = Arc::clone(&desktop_sig);
-        let rx = Arc::clone(&receiver_for_ice);
+        let rx = Arc::clone(&receiver);
         tokio::spawn(async move {
             loop {
-                let event = { sig.lock().await.next_event().await };
-                match event {
+                match sig.next_event().await {
                     Some(LinkEvent::Signal(payload)) => {
                         let _ = rx.add_remote_candidate(&payload).await;
                     }

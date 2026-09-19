@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rhevia-link", "crates/rhevia-output"]
+members = ["crates/rhevia-link", "crates/rhevia-output", "crates/rhevia-pipeline"]
 
 [workspace.package]
 version = "0.1.0"

@@ -11,7 +11,7 @@ use std::time::Duration;
 use rhevia_link::{ClientInfo, LinkEvent, SignalingClient};
 
 pub fn repo_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR is desktop/crates/rhevia-link
+    // CARGO_MANIFEST_DIR is desktop/crates/rhevia-pipeline
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(3)
@@ -37,7 +37,7 @@ impl Drop for ServerGuard {
     }
 }
 
-fn free_port() -> u16 {
+pub fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind an ephemeral port")
         .local_addr()
@@ -99,5 +99,34 @@ pub async fn next(client: &SignalingClient, what: &str) -> LinkEvent {
         Ok(Some(event)) => event,
         Ok(None) => panic!("signaling closed while waiting for {what}"),
         Err(_) => panic!("timed out waiting for {what}"),
+    }
+}
+
+use std::process::Stdio as StdioAlias;
+
+/// True if the tool is on PATH.
+pub fn have(tool: &str) -> bool {
+    Command::new(tool)
+        .arg("-version")
+        .stdout(StdioAlias::null())
+        .stderr(StdioAlias::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Scratch directory under target/, already gitignored.
+pub fn workdir() -> PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/pipeline-tests");
+    std::fs::create_dir_all(&dir).ok();
+    dir
+}
+
+/// Kills a child process on drop, including on panic.
+pub struct Killer(pub Child);
+impl Drop for Killer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }

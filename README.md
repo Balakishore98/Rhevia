@@ -44,13 +44,16 @@ code through the signaling server, negotiates WebRTC, and streams H.264 that
 the desktop receiver counts as real RTP. Proven by `cargo test --test loopback`,
 which runs a synthetic camera against the actual server rather than a mock.
 
-Not yet built: the phone app, hardware decode, and the mixer itself.
+**A camera can be paired and streamed live to YouTube today**, passed through
+without decoding. Not yet built: the phone app, hardware decode, and the mixer.
 
 | Component | State |
 |---|---|
 | Signaling server (`services/signaling`) | working, hardened, 14 tests |
 | Rust link client (`desktop/crates/rhevia-link`) | working, 12 tests incl. cross-language |
-| WebRTC ingest | working — negotiates and receives H.264 |
+| WebRTC ingest | working — negotiates, receives and reassembles H.264 |
+| RTP depacketisation | working — single-NAL, STAP-A, FU-A |
+| Passthrough relay (`desktop/crates/rhevia-pipeline`) | **working — camera to live RTMP, end to end** |
 | FLV mux + RTMP output (`desktop/crates/rhevia-output`) | working — verified against a real RTMP server |
 | Relay deployment (`infra/deploy`) | scripted, not yet deployed |
 | Phone app | not started |
@@ -60,12 +63,19 @@ Not yet built: the phone app, hardware decode, and the mixer itself.
 ```bash
 npm install && npm run build   # signaling server
 npm test                       # 14 tests
-cd desktop && cargo test       # 33 tests, spawns real servers
+cd desktop && cargo test       # 44 tests, spawns real servers
 ```
 
 Stream a file to any RTMP destination:
 
 ```bash
-cd desktop && cargo build --release --bin rhevia-stream
+cd desktop && cargo build --release
 ./target/release/rhevia-stream clip.h264 rtmp://a.rtmp.youtube.com/live2 <key>
+```
+
+Or pair a camera and relay it live — it prints a code, and whatever connects
+goes straight out to the destination:
+
+```bash
+./target/release/rhevia-relay     --signaling wss://your-relay/ws     --rtmp rtmp://a.rtmp.youtube.com/live2 --key <key>
 ```

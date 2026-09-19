@@ -8,22 +8,24 @@ A live production switcher is six stages. We have built part of one.
 
 ```
   SOURCE   →   DECODE   →   COMPOSITE   →   ENCODE   →   MUX   →   DELIVER
-    ~            ✗             ✗             ✗          ✓          ✓
-    │                                                   └──────────┘
-    └── RheviaLink transport works.              proven against a real RTMP
-        No source produces pixels yet.           server: 60 frames sent,
-                                                 60 decoded by ffprobe.
+    ✓         (bypassed)   (bypassed)    (bypassed)      ✓          ✓
+    └──────────────────── passthrough ──────────────────────────────┘
 ```
 
-**Updated:** the output half is done. `rhevia-stream` publishes H.264 to any
-RTMP destination, paced to real time, and the round trip is verified by an
-independent implementation rather than by our own assertions. The middle of the
-pipeline can now be built against an output that is known to work.
+**Passthrough works end to end.** A camera pairs by six-digit code, sends H.264
+over WebRTC, and Rhevia republishes it live to RTMP without decoding. Verified
+by `cargo test -p rhevia-pipeline`: 90 frames leave the camera, 90 arrive at a
+real RTMP server, 90 decode at the right resolution under ffprobe.
+
+Decode, composite and encode are *bypassed*, not missing-and-blocking. They slot
+into the middle of a pipeline that already delivers, which is the whole reason
+for having built it in this order.
 
 | Stage | State | What exists |
 |---|---|---|
-| **Source** | partial | RheviaLink pairs, negotiates and receives H.264 RTP. No phone app to *be* a camera. No local webcam, capture card, screen capture, or media file. |
-| **Decode** | none | We count RTP packets. They are not depacketised into Annex-B, let alone decoded into frames. |
+| **Source** | works | RheviaLink pairs, negotiates, receives H.264 RTP and reassembles it into frames. Still no phone app to *be* a camera, and no local webcam, capture card, screen capture or media file. |
+| **Depacketise** | **done** | RFC 6184: single-NAL, STAP-A and FU-A, with broken fragments discarded rather than emitted corrupt. |
+| **Decode** | none | Frames are handed on as encoded Annex-B. Nothing turns them into pixels yet, which is what the compositor will need. |
 | **Composite** | none | No GPU pipeline, no scene graph, no Program/Preview, no transitions, no layers. |
 | **Encode** | none | NVENC is present on the machine and unused. |
 | **Mux** | **done** | FLV tag muxing for H.264 and AAC, including the decoder configuration record and keyframe flagging. |
@@ -61,10 +63,13 @@ whether anything downstream works.
 
 ## Ordering, and why
 
-### 1. Depacketise RTP into Annex-B — small
-Three packetisation modes have to be handled: single NAL, STAP-A aggregation,
-and FU-A fragmentation. Skipping FU-A appears to work on a LAN and then fails
-on a phone, because fragmentation only kicks in past the MTU.
+### 1. ~~Depacketise RTP into Annex-B~~ — done
+All three modes: single-NAL, STAP-A aggregation and FU-A fragmentation. A
+fragment whose start packet was lost is discarded rather than published, because
+a half NAL can wedge a decoder where a gap only makes it resync.
+
+The end-to-end test exercises FU-A for real — keyframes at 640x360 exceed the
+MTU, so they genuinely fragment rather than being unit-tested in isolation.
 
 ### 2. ~~RTMP output~~ — done
 Built on `rml_rtmp` (MIT). Handshake, connect, publish, FLV muxing and
@@ -131,6 +136,7 @@ finished is the hardest *novel* part — moving a camera across the internet wit
 pairing, NAT traversal, resume and abuse resistance. What remains is mostly
 well-understood work, but there is a great deal of it.
 
-The next decision is only whether to prove the output half cheaply via
-passthrough, or to start on the phone app so there is a real camera to point at
-it.
+Passthrough is done, so the next work is whatever the product needs first:
+local sources so the software is useful without a phone, decode and compositing
+so it becomes a mixer rather than a relay, or reconnection hardening so a live
+show survives a dropped RTMP session.

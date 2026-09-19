@@ -1,0 +1,16 @@
+{
+  "name": "@rhevia/proto",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/signaling.js",
+  "types": "./dist/signaling.d.ts",
+  "exports": {
+    ".": { "types": "./dist/signaling.d.ts", "default": "./dist/signaling.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

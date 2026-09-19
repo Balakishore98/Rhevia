@@ -47,6 +47,9 @@ export type SignalPayload =
 
 export type ErrorCode =
   | "bad_message"
+  | "too_many_connections"
+  | "too_many_sessions"
+  | "invalid_resume_token"
   | "bad_protocol_version"
   | "unexpected_message"
   | "invalid_code"
@@ -67,6 +70,13 @@ export type ClientMessage =
   | { t: "session.create" }
   /** Sender redeems a pairing code. */
   | { t: "session.join"; code: string }
+  /**
+   * Reclaims a slot in an existing session after a dropped connection.
+   * A live show must survive a phone losing signal for a few seconds without
+   * the operator re-pairing, so a disconnected peer keeps its slot reserved
+   * for `resumeGraceMs` and comes back with the token it was issued.
+   */
+  | { t: "session.resume"; token: string }
   /** Relayed verbatim to the paired peer. */
   | { t: "signal"; payload: SignalPayload }
   /** Graceful disconnect, so the peer learns immediately rather than on timeout. */
@@ -87,12 +97,29 @@ export type ServerMessage =
       /** Encoded into the QR the desktop shows. */
       pairUrl: string;
       expiresAt: number;
+      /** Secret. Presented to reclaim this slot after a dropped connection. */
+      resumeToken: string;
     }
   /** To the sender, once its code is accepted. */
-  | { t: "session.joined"; sessionId: string; peer: PeerInfo }
+  | { t: "session.joined"; sessionId: string; peer: PeerInfo; resumeToken: string }
+  /** To a peer that successfully reclaimed its slot. */
+  | { t: "session.resumed"; sessionId: string; peer: PeerInfo }
+  /** To the peer that stayed, when its partner reconnects. */
+  | { t: "peer.rejoined"; peer: PeerInfo }
   /** To the receiver, when a sender redeems its code. */
   | { t: "peer.joined"; peer: PeerInfo }
-  | { t: "peer.left"; peerId: string; reason: "bye" | "timeout" | "transport" }
+  | {
+      t: "peer.left";
+      peerId: string;
+      reason: "bye" | "timeout" | "transport";
+      /**
+       * True while the slot is still reserved. The UI should show
+       * "reconnecting" rather than "disconnected" until the deadline passes,
+       * at which point a second peer.left arrives with resumable false.
+       */
+      resumable: boolean;
+      resumeDeadline: number | null;
+    }
   | { t: "signal"; from: string; payload: SignalPayload }
   | { t: "error"; code: ErrorCode; message: string; fatal: boolean }
   | { t: "pong"; n: number };
@@ -113,6 +140,20 @@ export const LIMITS = {
   /** Per-IP failed `session.join` attempts before a cooldown. */
   maxJoinFailures: 10,
   joinFailureWindowMs: 60_000,
+  /**
+   * How long a dropped peer keeps its slot. Long enough to cross a lift, a
+   * cell handover or a Wi-Fi roam; short enough that abandoned sessions do not
+   * accumulate.
+   */
+  resumeGraceMs: 45_000,
+  /**
+   * Resource caps. Without these one client can open unbounded sockets and
+   * hold a large share of the pairing keyspace — both were verified against
+   * the running server before these limits existed.
+   */
+  maxConnectionsPerIp: 20,
+  maxTotalConnections: 5_000,
+  maxSessionsPerIp: 5,
 } as const;
 
 /** Codes are digits only so they can be typed on a phone keypad. */

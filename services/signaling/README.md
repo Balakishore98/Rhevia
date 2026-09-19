@@ -50,6 +50,47 @@ receiver                server                 sender
    └──────── direct WebRTC, or TURN relay ───────┘
 ```
 
+## Reconnection
+
+A live show must survive a phone crossing a lift, roaming Wi-Fi, or handing over
+between cells. So a dropped peer does **not** destroy the session:
+
+```
+camera drops ──► slot reserved for 45s ──► peer.left { resumable: true, deadline }
+                        │                         desktop UI: "reconnecting"
+                        ├── camera returns with its resume token
+                        │       └─► peer.rejoined ──► renegotiate, carry on
+                        └── deadline passes
+                                └─► peer.left { resumable: false } ──► tear down
+```
+
+Each peer is issued a 32-byte resume token when it joins. Two rules keep the
+token from becoming a weakness:
+
+- A token only works on an **orphaned** slot. A stolen token cannot evict a
+  camera that is currently streaming.
+- A deliberate `bye` **forfeits** the reservation. Pressing Stop closes the
+  input immediately instead of leaving it on "reconnecting" for 45 seconds.
+
+## Abuse resistance
+
+These limits exist because the gaps were demonstrated against the running
+server, not because they seemed prudent:
+
+| Limit | Before | After |
+|---|---|---|
+| Sockets from one address | 400 opened, 0 refused | 20 opened, 380 refused |
+| Pairing codes held by one address | 250 | 5 |
+
+Rate limiting on wrong codes is deliberately **not** fatal. Behind carrier-grade
+NAT many unrelated users share one address, so closing the socket would punish
+everyone for one person's typo; rejecting the attempt is enough to stop a
+keyspace walk.
+
+> The per-IP limits assume `X-Forwarded-For` comes from our own reverse proxy.
+> Exposing this service directly makes that header attacker-controlled and
+> defeats every limit in this table.
+
 ## Design notes
 
 - **Codes are single-use.** Redeeming one removes it from the lookup table, so a

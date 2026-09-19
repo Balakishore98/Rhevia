@@ -1,8 +1,8 @@
-import { after, before, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
-import { PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from "@rhevia/proto";
+import { LIMITS, PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from "@rhevia/proto";
 import type { Config } from "./config.js";
 import { createSignalingServer, type SignalingServer } from "./server.js";
 
@@ -86,19 +86,37 @@ class TestClient {
   close(): void {
     this.#socket.close();
   }
+
+  /** Yanks the socket without a close handshake: a phone losing signal. */
+  terminate(): void {
+    this.#socket.terminate();
+  }
+
+  /** Resolves false if the server refused the upgrade. */
+  static async tryConnect(port: number): Promise<WebSocket | null> {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+    return new Promise((resolve) => {
+      socket.once("open", () => resolve(socket));
+      socket.once("error", () => resolve(null));
+      socket.once("unexpected-response", () => resolve(null));
+    });
+  }
 }
 
 describe("signaling server", () => {
   let server: SignalingServer;
   let port: number;
 
-  before(async () => {
+  // A fresh server per test. The rate limiter and the per-IP session cap are
+  // both keyed on the client address, and every test connects from 127.0.0.1,
+  // so a shared instance would let one test's throttling break the next.
+  beforeEach(async () => {
     server = createSignalingServer(TEST_CONFIG);
     await new Promise<void>((resolve) => server.http.once("listening", resolve));
     port = (server.http.address() as AddressInfo).port;
   });
 
-  after(async () => {
+  afterEach(async () => {
     await server.close();
   });
 
@@ -295,6 +313,125 @@ describe("signaling server", () => {
     assert.equal(err.fatal, true);
 
     client.close();
+  });
+
+  it("reserves the slot when a camera drops, and lets it resume", async () => {
+    // The reliability requirement: a phone that loses signal for a few seconds
+    // must come back to the same input, not force a re-pair mid-show.
+    const receiver = await TestClient.connect(port);
+    await receiver.hello("receiver", "Studio PC");
+    receiver.send({ t: "session.create" });
+    const created = (await receiver.next()) as Extract<ServerMessage, { t: "session.created" }>;
+    assert.ok(created.resumeToken, "the receiver needs a resume token too");
+
+    const sender = await TestClient.connect(port);
+    await sender.hello("sender", "Pixel 8");
+    sender.send({ t: "session.join", code: created.code });
+    const joined = (await sender.next()) as Extract<ServerMessage, { t: "session.joined" }>;
+    const token = joined.resumeToken;
+    assert.ok(token, "the camera needs a resume token");
+    await receiver.next(); // peer.joined
+
+    // Phone loses signal.
+    sender.terminate();
+    const left = (await receiver.next()) as Extract<ServerMessage, { t: "peer.left" }>;
+    assert.equal(left.t, "peer.left");
+    assert.equal(left.resumable, true, "a dropped camera should be resumable");
+    assert.ok(left.resumeDeadline && left.resumeDeadline > Date.now());
+
+    // Phone comes back on a new socket and reclaims its slot.
+    const revived = await TestClient.connect(port);
+    await revived.hello("sender", "Pixel 8");
+    revived.send({ t: "session.resume", token });
+
+    const resumed = (await revived.next()) as Extract<ServerMessage, { t: "session.resumed" }>;
+    assert.equal(resumed.t, "session.resumed");
+    assert.equal(resumed.peer.name, "Studio PC");
+
+    const rejoined = (await receiver.next()) as Extract<ServerMessage, { t: "peer.rejoined" }>;
+    assert.equal(rejoined.t, "peer.rejoined");
+    assert.equal(rejoined.peer.name, "Pixel 8");
+
+    // And signalling works again, so renegotiation can proceed.
+    revived.send({ t: "signal", payload: { kind: "offer", sdp: "v=0 RESUMED" } });
+    const relayed = (await receiver.next()) as Extract<ServerMessage, { t: "signal" }>;
+    assert.equal(relayed.t, "signal");
+
+    receiver.close();
+    revived.close();
+  });
+
+  it("refuses a bogus resume token, and refuses to displace a live camera", async () => {
+    const receiver = await TestClient.connect(port);
+    await receiver.hello("receiver", "Studio PC");
+    receiver.send({ t: "session.create" });
+    const created = (await receiver.next()) as Extract<ServerMessage, { t: "session.created" }>;
+
+    const sender = await TestClient.connect(port);
+    await sender.hello("sender", "Pixel 8");
+    sender.send({ t: "session.join", code: created.code });
+    const joined = (await sender.next()) as Extract<ServerMessage, { t: "session.joined" }>;
+    await receiver.next();
+
+    const intruder = await TestClient.connect(port);
+    await intruder.hello("sender", "Intruder");
+
+    // Garbage token.
+    intruder.send({ t: "session.resume", token: "A".repeat(43) });
+    assert.equal(
+      ((await intruder.next()) as Extract<ServerMessage, { t: "error" }>).code,
+      "invalid_resume_token",
+    );
+
+    // A stolen but *valid* token must not evict a camera that is still live —
+    // otherwise leaking a token means losing the shot mid-broadcast.
+    intruder.send({ t: "session.resume", token: joined.resumeToken });
+    assert.equal(
+      ((await intruder.next()) as Extract<ServerMessage, { t: "error" }>).code,
+      "invalid_resume_token",
+    );
+
+    intruder.close();
+    receiver.close();
+    sender.close();
+  });
+
+  it("caps concurrent connections from one address", async () => {
+    // Verified exploitable before this limit existed: 400 sockets, 0 rejected.
+    const opened: WebSocket[] = [];
+    let refused = 0;
+    for (let i = 0; i < LIMITS.maxConnectionsPerIp + 5; i++) {
+      const socket = await TestClient.tryConnect(port);
+      if (socket) opened.push(socket);
+      else refused++;
+    }
+    assert.ok(refused > 0, "the server should refuse connections beyond the per-IP cap");
+    assert.ok(
+      opened.length <= LIMITS.maxConnectionsPerIp,
+      `expected at most ${LIMITS.maxConnectionsPerIp} sockets, got ${opened.length}`,
+    );
+    for (const s of opened) s.terminate();
+  });
+
+  it("caps how many pairing codes one address can hold", async () => {
+    // Verified exploitable before this limit existed: one IP held 250 codes.
+    const clients: TestClient[] = [];
+    let denied = 0;
+
+    for (let i = 0; i < LIMITS.maxSessionsPerIp + 3; i++) {
+      const client = await TestClient.connect(port);
+      await client.hello("receiver", `Desktop ${i}`);
+      client.send({ t: "session.create" });
+      const reply = await client.next();
+      if (reply.t === "error") {
+        assert.equal((reply as Extract<ServerMessage, { t: "error" }>).code, "too_many_sessions");
+        denied++;
+      }
+      clients.push(client);
+    }
+
+    assert.equal(denied, 3, "codes beyond the cap should be denied");
+    for (const c of clients) c.close();
   });
 
   it("does not let a sender create a session or a receiver join one", async () => {

@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/rhevia-link"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Release builds carry the live show. Optimise properly and keep the symbols,
+# because a crash report from a user's broadcast is worth more than disk space.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 1

@@ -45,6 +45,16 @@ export function parseClientMessage(raw: string): Parsed<ClientMessage> {
       return { ok: true, value: { t: "session.join", code } };
     }
 
+    case "session.resume": {
+      const token = json.token;
+      // 32 random bytes as base64url. Bounded and charset-checked so a junk
+      // token is rejected before it reaches the registry lookup.
+      if (typeof token !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(token)) {
+        return { ok: false, error: "resume token is malformed" };
+      }
+      return { ok: true, value: { t: "session.resume", token } };
+    }
+
     case "signal": {
       const payload = parseSignalPayload(json.payload);
       if (!payload.ok) return payload;

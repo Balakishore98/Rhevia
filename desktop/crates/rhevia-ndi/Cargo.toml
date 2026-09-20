@@ -1,0 +1,13 @@
+[package]
+name = "rhevia-ndi"
+description = "NDI send and receive, against the runtime the user has installed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rhevia-engine = { path = "../rhevia-engine" }
+thiserror.workspace = true
+tracing.workspace = true
+libloading = "0.8"

@@ -1,0 +1,13 @@
+[package]
+name = "rhevia-test-plugin"
+description = "A minimal VST3 effect, used to test the host against a known-good plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rhevia-plugin = { path = "../rhevia-plugin" }

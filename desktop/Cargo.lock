@@ -4041,6 +4041,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rhevia-ndi"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "rhevia-engine",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "rhevia-output"
 version = "0.1.0"
 dependencies = [
@@ -4073,6 +4083,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rhevia-plugin"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "rhevia-studio"
 version = "0.1.0"
 dependencies = [
@@ -4083,11 +4102,20 @@ dependencies = [
  "rhevia-capture",
  "rhevia-engine",
  "rhevia-media",
+ "rhevia-ndi",
  "rhevia-output",
  "rhevia-pipeline",
+ "rhevia-plugin",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rhevia-test-plugin"
+version = "0.1.0"
+dependencies = [
+ "rhevia-plugin",
 ]
 
 [[package]]

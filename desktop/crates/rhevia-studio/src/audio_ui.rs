@@ -907,12 +907,143 @@ fn routing_matrix(ui: &mut Ui, snapshot: &Snapshot, engine: &EngineHandle) {
 }
 
 /// The full mixer, on its own tab.
+/// The plugin chain on one channel, and the list to add from.
+///
+/// Only plugins that survived validation can be added. A plugin that faults
+/// takes down whatever hosts it, and that must never be the process carrying
+/// the show — so the list says plainly which ones cannot be used, rather than
+/// hiding them and leaving an operator hunting for a plugin they installed.
+fn plugin_panel(
+    ui: &mut Ui,
+    index: usize,
+    channel: &ChannelState,
+    engine: &EngineHandle,
+    available: &[rhevia_plugin::PluginInfo],
+    scanning: bool,
+    rescan: &mut bool,
+) {
+    ui.horizontal(|ui| {
+        ui.add_space(20.0);
+        ui.label(RichText::new("PLUGINS").size(11.5).strong().color(theme::TEXT));
+        ui.label(
+            RichText::new("after the built-in chain, in order")
+                .font(theme::mono(9.5))
+                .color(theme::TEXT_FAINT),
+        );
+        ui.add_space(10.0);
+        if theme::button(ui, "RESCAN", theme::SURFACE_HIGHEST, Vec2::new(78.0, 20.0)).clicked() {
+            *rescan = true;
+        }
+    });
+    ui.add_space(6.0);
+
+    ui.horizontal_top(|ui| {
+        ui.add_space(20.0);
+
+        // ---- what is on this channel -----------------------------------
+        ui.vertical(|ui| {
+            ui.set_width(300.0);
+            ui.label(RichText::new("ON THIS CHANNEL").size(9.5).color(theme::TEXT_FAINT));
+            ui.add_space(4.0);
+
+            if channel.plugins.is_empty() {
+                ui.label(RichText::new("none").size(10.5).color(theme::TEXT_FAINT));
+            }
+            for (slot, name) in channel.plugins.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{}.", slot + 1))
+                            .font(theme::mono(9.5))
+                            .color(theme::TEXT_FAINT),
+                    );
+                    ui.label(RichText::new(name).size(10.5).color(theme::TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::chip(ui, "REMOVE", false, theme::PROGRAM, Vec2::new(62.0, 18.0))
+                            .clicked()
+                        {
+                            engine.send(Command::RemovePlugin { channel: index, index: slot });
+                        }
+                    });
+                });
+            }
+        });
+
+        ui.add_space(16.0);
+        theme::divider(ui, 150.0);
+        ui.add_space(16.0);
+
+        // ---- what can be added -----------------------------------------
+        ui.vertical(|ui| {
+            ui.set_width(360.0);
+            ui.label(RichText::new("INSTALLED").size(9.5).color(theme::TEXT_FAINT));
+            ui.add_space(4.0);
+
+            if scanning {
+                ui.label(
+                    RichText::new("checking each plugin in its own process…")
+                        .size(10.5)
+                        .color(theme::TEXT_DIM),
+                );
+                return;
+            }
+            if available.is_empty() {
+                ui.label(
+                    RichText::new("no VST3 effects found — press Rescan after installing some")
+                        .size(10.5)
+                        .color(theme::TEXT_FAINT),
+                );
+                return;
+            }
+
+            egui::ScrollArea::vertical().max_height(140.0).id_salt("plugin-list").show(ui, |ui| {
+                for plugin in available {
+                    match plugin.usable {
+                        Some(true) => {
+                            let label = if plugin.vendor.is_empty() {
+                                plugin.name.clone()
+                            } else {
+                                format!("{}   ·   {}", plugin.name, plugin.vendor)
+                            };
+                            if ui.button(label).on_hover_text(&plugin.path).clicked() {
+                                engine.send(Command::AddPlugin {
+                                    channel: index,
+                                    path: plugin.path.clone(),
+                                    cid: plugin.cid.clone(),
+                                    name: plugin.name.clone(),
+                                });
+                            }
+                        }
+                        _ => {
+                            // Listed but not offered, with the reason. An
+                            // operator who installed it deserves to know why
+                            // it is not there rather than to think Rhevia
+                            // missed it.
+                            ui.label(
+                                RichText::new(format!("{}  — crashes when loaded", plugin.name))
+                                    .size(10.0)
+                                    .color(theme::TEXT_FAINT),
+                            )
+                            .on_hover_text(
+                                "This plugin failed when opened in a separate process, so it \
+                                 is not offered — it would take the show down with it.",
+                            );
+                        }
+                    }
+                }
+            });
+        });
+    });
+}
+
 pub fn full_view(
     ctx: &egui::Context,
     snapshot: &Snapshot,
     engine: &EngineHandle,
     show_devices: &mut bool,
     selected: &mut usize,
+    plugins: &[rhevia_plugin::PluginInfo],
+    scanning: bool,
+    rescan: &mut bool,
 ) {
     egui::CentralPanel::default()
         .frame(theme::panel(theme::SURFACE))
@@ -999,6 +1130,11 @@ pub fn full_view(
                 });
                 ui.add_space(8.0);
                 dsp_panel(ui, *selected, channel, engine);
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(12.0);
+                plugin_panel(ui, *selected, channel, engine, plugins, scanning, rescan);
             }
 
             ui.add_space(12.0);

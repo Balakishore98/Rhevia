@@ -35,6 +35,12 @@ pub enum Command {
     SetCompressor { channel: usize, settings: rhevia_audio::CompressorSettings },
     SetGate { channel: usize, settings: rhevia_audio::GateSettings },
     SetAudioDelay { channel: usize, ms: f32 },
+    /// Adds a plugin to the end of a channel's chain.
+    ///
+    /// Only plugins that have survived validation in another process should
+    /// reach here: one that faults takes the show with it.
+    AddPlugin { channel: usize, path: String, cid: String, name: String },
+    RemovePlugin { channel: usize, index: usize },
     SetLayout(Layout),
     /// Assigns a source to one of the four overlay slots.
     SetOverlaySource { slot: usize, input: usize },
@@ -58,6 +64,11 @@ pub enum Command {
     /// Any media file — video or audio, any container, any codec ffmpeg reads.
     /// This is what a dropped file becomes.
     AddMediaSource { name: String, path: String },
+    /// A source another machine is publishing over NDI.
+    AddNdiSource { name: String, source: rhevia_ndi::NdiSource },
+    /// Publishes the programme as an NDI source other machines can take.
+    StartNdiOutput { name: String },
+    StopNdiOutput,
     /// Attaches a capture device to an existing input, so a camera carries
     /// its own sound.
     AttachAudio { input: usize, device: Option<String> },
@@ -213,6 +224,8 @@ pub struct Snapshot {
     pub overlay_on: [bool; 4],
     /// Every destination currently being fed, in the order they were added.
     pub destinations: Vec<DestinationState>,
+    /// The name the programme is being published under over NDI, if it is.
+    pub ndi_output: Option<String>,
     pub recording: bool,
     pub recorded_bytes: u64,
     pub recording_path: Option<String>,
@@ -260,6 +273,8 @@ pub struct ChannelState {
     pub gate_open: bool,
     /// Which buses this channel feeds. Index 0 is Master.
     pub buses: [bool; rhevia_audio::BUS_COUNT],
+    /// Plugins on this channel, in the order they run.
+    pub plugins: Vec<String>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -354,6 +369,8 @@ enum Source {
     /// A media file, played on a loop. Carries its own sound, so it feeds the
     /// mixer directly rather than through a capture device.
     Media(Box<rhevia_media::MediaSource>),
+    /// A source from another machine on the network, with its sound.
+    Ndi(Box<rhevia_ndi::NdiReceiver>),
 }
 
 struct SourceSlot {
@@ -468,6 +485,10 @@ fn run(
     // Fed from the master bus every tick, so the integrated figure covers the
     // whole session rather than only the part that was streamed.
     let mut loudness = rhevia_audio::LoudnessMeter::new();
+    // Publishes the programme for other machines on the network. Independent
+    // of streaming: a production often sends NDI to a recorder or a second
+    // switcher while streaming to a platform.
+    let mut ndi_output: Option<rhevia_ndi::NdiSender> = None;
     let mut sources: Vec<SourceSlot> = Vec::new();
 
     // Two sources up front so the window is never an empty grid.
@@ -526,6 +547,9 @@ fn run(
     let font = rhevia_engine::system_font().ok();
     // One DSP chain per channel, index-aligned with the audio mixer.
     let mut dsp: Vec<rhevia_audio::ChannelDsp> = Vec::new();
+    // One chain of plugins per channel, run after the built-in processing so
+    // that a plugin sees audio the way the operator has already shaped it.
+    let mut plugins: Vec<Vec<rhevia_plugin::vst3::Vst3Instance>> = Vec::new();
     let mut recorder: Option<(std::io::BufWriter<std::fs::File>, String, u64)> = None;
 
     let frame_budget = Duration::from_secs_f32(1.0 / TARGET_FPS);
@@ -586,6 +610,34 @@ fn run(
                         chain.gate.set(settings);
                     }
                 }
+                Command::AddPlugin { channel, path, cid, name } => {
+                    match rhevia_plugin::parse_cid(&cid) {
+                        Some(cid) => {
+                            match rhevia_plugin::vst3::Vst3Instance::open(
+                                std::path::Path::new(&path),
+                                cid,
+                                &name,
+                                SAMPLE_RATE as f64,
+                                PLUGIN_BLOCK,
+                            ) {
+                                Ok(instance) => {
+                                    if let Some(chain) = plugins.get_mut(channel) {
+                                        chain.push(instance);
+                                    }
+                                }
+                                Err(e) => stream_error = Some(format!("{name}: {e}")),
+                            }
+                        }
+                        None => stream_error = Some(format!("{name}: bad plugin identifier")),
+                    }
+                }
+                Command::RemovePlugin { channel, index } => {
+                    if let Some(chain) = plugins.get_mut(channel) {
+                        if index < chain.len() {
+                            chain.remove(index);
+                        }
+                    }
+                }
                 Command::SetAudioDelay { channel, ms } => {
                     if let Some(chain) = dsp.get_mut(channel) {
                         chain.delay.set_milliseconds(ms);
@@ -641,6 +693,33 @@ fn run(
                         audio.add_channel(name);
                     }
                 }
+                Command::AddNdiSource { name, source } => {
+                    match rhevia_ndi::NdiReceiver::connect(source) {
+                        Ok(receiver) => {
+                            if let Ok(input) = mixer.add_input(name.clone()) {
+                                sources.push(SourceSlot {
+                                    source: Source::Ndi(Box::new(receiver)),
+                                    mixer_input: input,
+                                    audio: None,
+                                    settings: InputSettings::default(),
+                                    needs_push: true,
+                                });
+                                audio.add_channel(name);
+                            }
+                        }
+                        Err(e) => stream_error = Some(e.to_string()),
+                    }
+                }
+                Command::StartNdiOutput { name } => {
+                    match rhevia_ndi::NdiSender::create(&name) {
+                        Ok(sender) => {
+                            ndi_output = Some(sender);
+                            stream_error = None;
+                        }
+                        Err(e) => stream_error = Some(e.to_string()),
+                    }
+                }
+                Command::StopNdiOutput => ndi_output = None,
                 Command::AddMediaSource { name, path } => {
                     match rhevia_media::MediaSource::open(
                         &path,
@@ -909,6 +988,9 @@ fn run(
                         // wrong source.
                         if i < dsp.len() {
                             dsp.remove(i);
+                            if i < plugins.len() {
+                                plugins.remove(i);
+                            }
                         }
 
                         // Everything else that holds an input index has to be
@@ -972,6 +1054,7 @@ fn run(
         // site, so a chain can never be missing for a channel that exists.
         while dsp.len() < audio.channels.len() {
             dsp.push(rhevia_audio::ChannelDsp::new());
+            plugins.push(Vec::new());
         }
         dsp.truncate(audio.channels.len());
 
@@ -983,6 +1066,11 @@ fn run(
                 Source::Media(media) if media.info.has_audio => {
                     Some(AudioBuffer::from_samples(media.take_audio(audio_frames)))
                 }
+                // An NDI source carries its own sound, in step with its
+                // picture, so it is collected here rather than from a device.
+                Source::Ndi(receiver) => {
+                    Some(AudioBuffer::from_samples(receiver.take_audio(audio_frames)))
+                }
                 _ => slot.audio.as_ref().map(|handle| handle.take(audio_frames)),
             })
             .collect();
@@ -993,6 +1081,13 @@ fn run(
         for (index, buffer) in captured.iter_mut().enumerate() {
             if let (Some(buffer), Some(chain)) = (buffer.as_mut(), dsp.get_mut(index)) {
                 chain.process(buffer);
+            }
+            // Plugins run last on the channel, in the order they were added,
+            // so each one sees what the one before it produced.
+            if let (Some(buffer), Some(chain)) = (buffer.as_mut(), plugins.get_mut(index)) {
+                for instance in chain.iter_mut() {
+                    instance.process(&mut buffer.samples);
+                }
             }
         }
         let on_air: Vec<bool> = (0..sources.len()).map(|i| i == program_input).collect();
@@ -1030,6 +1125,13 @@ fn run(
                     if slot.needs_push {
                         let _ = mixer.push_frame(slot.mixer_input, rendered.clone());
                         slot.needs_push = false;
+                    }
+                }
+                Source::Ndi(receiver) => {
+                    // None means nothing new has arrived, so the previous
+                    // picture stays up rather than flashing black.
+                    if let Some(frame) = receiver.take_frame() {
+                        let _ = mixer.push_frame(slot.mixer_input, frame);
                     }
                 }
                 Source::Media(media) => {
@@ -1226,6 +1328,17 @@ fn run(
             }
         }
 
+        // ---- publish over the network --------------------------------------
+        // Sent before encoding, from the composited picture, so an NDI
+        // receiver gets the full-quality frame rather than one that has been
+        // through H.264.
+        if let Some(sender) = &ndi_output {
+            if let Some(frame) = cached_program.as_ref() {
+                sender.send_frame(frame, TARGET_FPS);
+                sender.send_audio(&audio.output().samples);
+            }
+        }
+
         // ---- deliver -------------------------------------------------------
         // Audio goes out every tick whether or not the encoder emitted a
         // picture, so a frame the video encoder chose to skip does not take a
@@ -1315,6 +1428,7 @@ fn run(
                     Source::Media(m) => {
                         if m.info.has_video { "Media" } else { "Audio File" }
                     }
+                    Source::Ndi(_) => "NDI",
                 },
             })
             .collect();
@@ -1331,6 +1445,7 @@ fn run(
             s.transition_seconds = transition_seconds;
             s.program = cached_program.clone();
             s.streaming = !deliveries.is_empty();
+            s.ndi_output = ndi_output.as_ref().map(|s| s.name.clone());
             s.destinations = deliveries
                 .iter()
                 .map(|d| DestinationState {
@@ -1374,6 +1489,10 @@ fn run(
                         .unwrap_or(0.0),
                     gate_open: dsp.get(i).map(|d| d.gate.is_open()).unwrap_or(true),
                     buses: c.buses,
+                    plugins: plugins
+                        .get(i)
+                        .map(|chain| chain.iter().map(|p| p.name.clone()).collect())
+                        .unwrap_or_default(),
                 })
                 .collect();
             s.bus_levels = audio
@@ -1423,6 +1542,12 @@ fn run(
     }
     Ok(())
 }
+
+/// The largest block a plugin is told to expect.
+///
+/// Audio arrives one video frame at a time — 1600 samples at 30 fps — and a
+/// plugin told a smaller maximum would have the work split needlessly.
+const PLUGIN_BLOCK: usize = 2048;
 
 /// How long to wait for a destination to answer.
 ///

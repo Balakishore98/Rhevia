@@ -78,6 +78,19 @@ pub struct StudioApp {
     cached_monitors: Vec<rhevia_capture::Target>,
     cached_windows: Vec<rhevia_capture::Target>,
     cached_audio: Vec<rhevia_audio::AudioDevice>,
+    cached_ndi: Vec<rhevia_ndi::NdiSource>,
+    /// Installed plugins, each already checked in a separate process.
+    cached_plugins: Vec<rhevia_plugin::PluginInfo>,
+    /// Whether a scan has been attempted, so an empty result is not retried
+    /// on every frame.
+    plugins_scanned: bool,
+    /// The scan running in the background, if one is.
+    ///
+    /// Scanning loads every module and starts a process per plugin, which is
+    /// far too slow to do on the interface thread.
+    plugin_scan: Option<std::sync::mpsc::Receiver<Vec<rhevia_plugin::PluginInfo>>>,
+    /// The name the programme is published under over NDI.
+    ndi_output_name: String,
     /// Set when enumeration failed, so the dialog can say why rather than
     /// showing an empty list that looks like "no devices".
     device_error: Option<String>,
@@ -109,6 +122,7 @@ const PRESETS: [(&str, &str); 6] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputTab {
     Camera,
+    Ndi,
     Display,
     Window,
     Audio,
@@ -119,8 +133,9 @@ enum InputTab {
 }
 
 impl InputTab {
-    const ALL: [InputTab; 8] = [
+    const ALL: [InputTab; 9] = [
         InputTab::Camera,
+        InputTab::Ndi,
         InputTab::Display,
         InputTab::Window,
         InputTab::Audio,
@@ -133,6 +148,7 @@ impl InputTab {
     fn label(self) -> &'static str {
         match self {
             InputTab::Camera => "Camera",
+            InputTab::Ndi => "NDI",
             InputTab::Display => "Desktop Capture",
             InputTab::Window => "Window Capture",
             InputTab::Audio => "Audio Input",
@@ -147,6 +163,9 @@ impl InputTab {
     fn blurb(self) -> &'static str {
         match self {
             InputTab::Camera => "A webcam or capture card. Opened at its highest frame rate.",
+            InputTab::Ndi => {
+                "A source another machine on the network is publishing, with its sound."
+            }
             InputTab::Display => "A whole monitor, captured live.",
             InputTab::Window => "A single application window, captured live.",
             InputTab::Audio => {
@@ -186,6 +205,11 @@ impl StudioApp {
             cached_monitors: Vec::new(),
             cached_windows: Vec::new(),
             cached_audio: Vec::new(),
+            cached_ndi: Vec::new(),
+            cached_plugins: Vec::new(),
+            plugins_scanned: false,
+            plugin_scan: None,
+            ndi_output_name: "Rhevia Programme".into(),
             device_error: None,
             attach_to: None,
             assigning_overlay: None,
@@ -233,6 +257,15 @@ impl eframe::App for StudioApp {
         self.tab_bar(ctx);
         self.footer(ctx, &snapshot);
 
+        // A finished plugin scan, collected without waiting for it.
+        if let Some(receiver) = &self.plugin_scan {
+            if let Ok(found) = receiver.try_recv() {
+                self.cached_plugins = found;
+                self.plugin_scan = None;
+            }
+        }
+        let mut rescan = false;
+
         match self.tab {
             Tab::Switcher => {
                 audio_ui::strip_row(ctx, &snapshot, &self.engine, &mut self.show_devices);
@@ -245,9 +278,21 @@ impl eframe::App for StudioApp {
                 &self.engine,
                 &mut self.show_devices,
                 &mut self.selected_channel,
+                &self.cached_plugins,
+                self.plugin_scan.is_some(),
+                &mut rescan,
             ),
             Tab::Stream => self.stream_view(ctx, &snapshot),
             Tab::Settings => self.settings_view(ctx, &snapshot),
+        }
+
+        // Scanned once when the audio tab is first opened, and again whenever
+        // the operator asks. Doing it at startup would delay the window for
+        // seconds on a machine with a lot of plugins installed.
+        let first_look = self.tab == Tab::Audio && !self.plugins_scanned;
+        if (rescan || first_look) && self.plugin_scan.is_none() {
+            self.plugins_scanned = true;
+            self.start_plugin_scan();
         }
 
         self.dialogs(ctx, &snapshot);
@@ -1107,6 +1152,92 @@ impl StudioApp {
                             ui.label(RichText::new(error).size(10.5).color(theme::PROGRAM));
                         }
 
+                        // ---- NDI output --------------------------------------
+                        ui.add_space(24.0);
+                        ui.separator();
+                        ui.add_space(14.0);
+                        ui.label(
+                            RichText::new("NETWORK OUTPUT (NDI)")
+                                .size(12.0)
+                                .strong()
+                                .color(theme::TEXT),
+                        );
+                        ui.add_space(6.0);
+
+                        if let Some(reason) = rhevia_ndi::unavailable_reason() {
+                            ui.label(
+                                RichText::new(
+                                    "NDI is not available. Rhevia uses the runtime you have \
+                                     installed rather than shipping its own.",
+                                )
+                                .size(10.5)
+                                .color(theme::TEXT_FAINT),
+                            );
+                            ui.label(
+                                RichText::new(reason)
+                                    .font(theme::mono(9.0))
+                                    .color(theme::TEXT_FAINT),
+                            );
+                        } else {
+                            ui.label(
+                                RichText::new(
+                                    "Publishes the programme to the local network at full \
+                                     quality, before encoding. Independent of streaming.",
+                                )
+                                .size(10.5)
+                                .color(theme::TEXT_DIM),
+                            );
+                            ui.add_space(8.0);
+
+                            match &snapshot.ndi_output {
+                                Some(name) => {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(format!("PUBLISHING  {name}"))
+                                                .font(theme::mono(10.0))
+                                                .color(theme::PREVIEW),
+                                        );
+                                        ui.add_space(10.0);
+                                        if theme::button(
+                                            ui,
+                                            "STOP",
+                                            theme::PROGRAM,
+                                            Vec2::new(80.0, 26.0),
+                                        )
+                                        .clicked()
+                                        {
+                                            self.engine.send(Command::StopNdiOutput);
+                                        }
+                                    });
+                                }
+                                None => {
+                                    ui.label(
+                                        RichText::new("SOURCE NAME")
+                                            .size(10.0)
+                                            .color(theme::TEXT_DIM),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.ndi_output_name)
+                                            .desired_width(300.0),
+                                    );
+                                    ui.add_space(8.0);
+                                    if theme::button(
+                                        ui,
+                                        "PUBLISH",
+                                        theme::ACCENT,
+                                        Vec2::new(140.0, 30.0),
+                                    )
+                                    .clicked()
+                                        && !self.ndi_output_name.trim().is_empty()
+                                    {
+                                        self.engine.send(Command::StartNdiOutput {
+                                            name: self.ndi_output_name.trim().to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+
                         // ---- recording ---------------------------------------
                         ui.add_space(24.0);
                         ui.separator();
@@ -1191,6 +1322,24 @@ impl StudioApp {
         self.input_select(ctx, snapshot);
     }
 
+    /// Starts a plugin scan on its own thread.
+    ///
+    /// Scanning loads every module and then runs a process per plugin to
+    /// check it. That is seconds of work, and doing it on the interface
+    /// thread would freeze the window while a show is running.
+    fn start_plugin_scan(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        if std::thread::Builder::new()
+            .name("rhevia-plugin-scan".into())
+            .spawn(move || {
+                let _ = sender.send(rhevia_plugin::validated_effects());
+            })
+            .is_ok()
+        {
+            self.plugin_scan = Some(receiver);
+        }
+    }
+
     /// Refreshes the device lists the input dialog offers.
     ///
     /// Called when the dialog opens and from its own refresh button, never per
@@ -1220,6 +1369,19 @@ impl StudioApp {
             }
         }
         self.cached_audio = rhevia_audio::list_input_devices();
+
+        // NDI finds sources by announcement, so a list taken immediately is
+        // usually empty. Most of a second is the shortest wait that reliably
+        // sees a machine that is already publishing.
+        if rhevia_ndi::available() {
+            match rhevia_ndi::find_sources(std::time::Duration::from_millis(800)) {
+                Ok(sources) => self.cached_ndi = sources,
+                Err(e) => {
+                    self.cached_ndi.clear();
+                    self.device_error.get_or_insert_with(|| e.to_string());
+                }
+            }
+        }
     }
 
     /// The input dialog: types down the left, the chosen type on the right.
@@ -1338,6 +1500,59 @@ impl StudioApp {
                         self.engine.send(Command::AddCameraSource {
                             name: self.name_or(&target.name),
                             target,
+                        });
+                        return true;
+                    }
+                }
+                false
+            }
+
+            InputTab::Ndi => {
+                if let Some(reason) = rhevia_ndi::unavailable_reason() {
+                    // Said plainly rather than showing an empty list, which
+                    // would read as "there are no sources".
+                    ui.label(
+                        RichText::new("NDI is not available on this machine.")
+                            .size(11.0)
+                            .color(theme::WARN),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(
+                            "Rhevia uses the NDI runtime you have installed rather than \
+                             shipping its own. Install NDI Tools from ndi.video and restart.",
+                        )
+                        .size(10.0)
+                        .color(theme::TEXT_FAINT),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(reason).font(theme::mono(9.0)).color(theme::TEXT_FAINT));
+                    return false;
+                }
+
+                if let Some(version) = rhevia_ndi::version() {
+                    ui.label(RichText::new(version).font(theme::mono(9.0)).color(theme::TEXT_FAINT));
+                    ui.add_space(6.0);
+                }
+
+                if self.cached_ndi.is_empty() {
+                    ui.label(
+                        RichText::new(
+                            "no sources are announcing themselves — press Refresh, and \
+                             check both machines are on the same network",
+                        )
+                        .size(10.5)
+                        .color(theme::TEXT_FAINT),
+                    );
+                    return false;
+                }
+
+                for source in self.cached_ndi.clone() {
+                    let label = source.name.clone();
+                    if ui.button(label).on_hover_text(&source.address).clicked() {
+                        self.engine.send(Command::AddNdiSource {
+                            name: self.name_or(&short_ndi_name(&source.name)),
+                            source,
                         });
                         return true;
                     }
@@ -1934,6 +2149,18 @@ fn command_for(name: String, path: String) -> Command {
     }
 }
 
+/// The source part of an NDI name, for naming an input.
+///
+/// NDI names a source "MACHINE (Source name)". The machine is useful in the
+/// picker, where several machines are listed together, and noise on a tile
+/// sixty pixels wide.
+fn short_ndi_name(full: &str) -> String {
+    match (full.find('('), full.rfind(')')) {
+        (Some(open), Some(close)) if close > open + 1 => full[open + 1..close].to_string(),
+        _ => full.to_string(),
+    }
+}
+
 /// The file name without its directory or extension, for naming an input.
 ///
 /// "opener" reads better on a tile than "D:\\clips\\opener.mp4", and a tile is
@@ -2066,5 +2293,32 @@ mod tests {
             assert!(format_bytes(1023).ends_with('B'));
             assert!(format_bytes(1024).ends_with("kB"));
         }
+    }
+}
+
+#[cfg(test)]
+mod ndi_naming {
+    use super::*;
+
+    #[test]
+    fn an_input_is_named_after_the_source_not_the_machine() {
+        // NDI names a source "MACHINE (Source name)". The machine matters in
+        // the picker, where several are listed together, and is noise on a
+        // tile sixty pixels wide.
+        assert_eq!(short_ndi_name("STUDIO-PC (Camera 1)"), "Camera 1");
+        assert_eq!(short_ndi_name("BK (Rhevia Programme)"), "Rhevia Programme");
+    }
+
+    #[test]
+    fn a_name_in_an_unexpected_shape_is_kept_whole() {
+        // Better a long name than an empty one.
+        assert_eq!(short_ndi_name("Plain Name"), "Plain Name");
+        assert_eq!(short_ndi_name("MACHINE ()"), "MACHINE ()");
+        assert_eq!(short_ndi_name(""), "");
+    }
+
+    #[test]
+    fn a_source_name_containing_brackets_survives() {
+        assert_eq!(short_ndi_name("PC (Camera (left))"), "Camera (left)");
     }
 }

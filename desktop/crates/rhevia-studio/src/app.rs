@@ -18,6 +18,7 @@ use rhevia_engine::Frame;
 
 use crate::audio_ui;
 use crate::engine::{Command, EngineHandle, Layout, Snapshot};
+use rhevia_engine::Transition;
 use crate::theme;
 
 const TARGET_FPS: f32 = 30.0;
@@ -63,6 +64,8 @@ pub struct StudioApp {
     attach_to: Option<usize>,
     /// Which overlay slot the next input click fills, if any.
     assigning_overlay: Option<usize>,
+    /// The channel whose DSP is shown on the audio tab.
+    selected_channel: usize,
 }
 
 impl StudioApp {
@@ -82,6 +85,7 @@ impl StudioApp {
             show_devices: false,
             attach_to: None,
             assigning_overlay: None,
+            selected_channel: 0,
         }
     }
 
@@ -119,7 +123,13 @@ impl eframe::App for StudioApp {
                 self.input_matrix(ctx, &snapshot);
                 self.monitors(ctx, &snapshot);
             }
-            Tab::Audio => audio_ui::full_view(ctx, &snapshot, &self.engine, &mut self.show_devices),
+            Tab::Audio => audio_ui::full_view(
+                ctx,
+                &snapshot,
+                &self.engine,
+                &mut self.show_devices,
+                &mut self.selected_channel,
+            ),
             Tab::Stream => self.stream_view(ctx, &snapshot),
             Tab::Settings => self.settings_view(ctx, &snapshot),
         }
@@ -547,7 +557,7 @@ impl StudioApp {
             .frame(theme::panel(theme::SURFACE))
             .show(ctx, |ui| {
                 let available = ui.available_size();
-                let bus = 134.0;
+                let bus = 152.0;
                 let gap = 8.0;
                 let monitor = Vec2::new(
                     ((available.x - bus - gap * 4.0) / 2.0).max(180.0),
@@ -633,9 +643,27 @@ impl StudioApp {
             } else {
                 theme::SURFACE_HIGH
             };
-            if theme::button(ui, "AUTO FADE", auto_colour, Vec2::new(width, 36.0)).clicked() {
+            let auto_label = format!("AUTO {}", snapshot.transition_kind.label());
+            if theme::button(ui, &auto_label, auto_colour, Vec2::new(width, 36.0)).clicked() {
                 self.engine.send(Command::Auto);
             }
+
+            ui.add_space(2.0);
+            ui.label(RichText::new("EFFECT").size(9.0).strong().color(theme::TEXT_FAINT));
+            // Every effect on the bus, always visible. Hiding them behind a
+            // dropdown costs a click during a show, which is when they are
+            // chosen.
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                for effect in Transition::ALL {
+                    let active = snapshot.transition_kind == effect;
+                    if theme::chip(ui, effect.label(), active, theme::ACCENT, Vec2::new(71.0, 20.0))
+                        .clicked()
+                    {
+                        self.engine.send(Command::SetTransition(effect));
+                    }
+                }
+            });
 
             ui.add_space(2.0);
             ui.label(RichText::new("LAYOUT").size(9.0).strong().color(theme::TEXT_FAINT));
@@ -643,7 +671,7 @@ impl StudioApp {
                 ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
                 for option in Layout::ALL {
                     let active = snapshot.layout == option;
-                    if theme::chip(ui, option.label(), active, theme::ACCENT, Vec2::new(63.0, 21.0)).clicked() {
+                    if theme::chip(ui, option.label(), active, theme::ACCENT, Vec2::new(71.0, 20.0)).clicked() {
                         self.engine.send(Command::SetLayout(option));
                     }
                 }
@@ -675,7 +703,7 @@ impl StudioApp {
             });
 
             ui.add_space(4.0);
-            theme::vertical_t_bar(ui, snapshot.transition.unwrap_or(0.0), Vec2::new(width, 80.0));
+            theme::vertical_t_bar(ui, snapshot.transition.unwrap_or(0.0), Vec2::new(width, 56.0));
 
             ui.label(
                 RichText::new(format!("RATE {:.1}s", snapshot.transition_seconds))

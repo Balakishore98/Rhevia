@@ -61,7 +61,7 @@ decision first. Also not built: the phone app and hardware (NVENC/NVDEC) codecs.
 | Passthrough relay (`desktop/crates/rhevia-pipeline`) | **working — camera to live RTMP, end to end** |
 | Decode / composite / encode (`desktop/crates/rhevia-engine`) | **working — the full mixer, nothing bypassed** |
 | Rhevia Studio (`desktop/crates/rhevia-studio`) | **working — the application** |
-| Audio (`desktop/crates/rhevia-audio`) | capture, mixing, metering — **not yet in the stream** |
+| Audio (`desktop/crates/rhevia-audio`) | capture, mixing, metering, **gate/EQ/compressor/delay** — not yet in the stream |
 | FLV mux + RTMP output (`desktop/crates/rhevia-output`) | working — verified against a real RTMP server |
 | Relay deployment (`infra/deploy`) | scripted, not yet deployed |
 | Phone app | not started |

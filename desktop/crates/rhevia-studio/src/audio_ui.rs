@@ -171,19 +171,35 @@ fn pan_control(ui: &mut Ui, pan: f32, width: f32) -> (egui::Response, Option<f32
 
 /// One channel strip. `tall` gives the full view more fader travel and a pan
 /// control; the compact row omits pan for space.
-fn strip(ui: &mut Ui, index: usize, channel: &ChannelState, engine: &EngineHandle, tall: bool) {
-    let fader_height = if tall { 160.0 } else { 74.0 };
+fn strip(
+    ui: &mut Ui,
+    index: usize,
+    channel: &ChannelState,
+    engine: &EngineHandle,
+    tall: bool,
+    selected: Option<&mut usize>,
+) {
+    let fader_height = if tall { 150.0 } else { 74.0 };
+    let is_selected = selected.as_ref().map(|s| **s == index).unwrap_or(false);
 
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
         ui.set_width(66.0);
 
         let name: String = channel.name.chars().take(10).collect();
-        ui.label(
-            RichText::new(name)
-                .size(9.5)
-                .color(if channel.has_source { theme::TEXT } else { theme::TEXT_FAINT }),
-        );
+        if let Some(selected) = selected {
+            // On the full view the name selects which channel the DSP panel
+            // below is editing.
+            if theme::chip(ui, &name, is_selected, theme::ACCENT, Vec2::new(63.0, 18.0)).clicked() {
+                *selected = index;
+            }
+        } else {
+            ui.label(
+                RichText::new(name)
+                    .size(9.5)
+                    .color(if channel.has_source { theme::TEXT } else { theme::TEXT_FAINT }),
+            );
+        }
         ui.label(
             RichText::new(format!("{:+.1} dB", channel.gain_db))
                 .font(theme::mono(9.5))
@@ -222,6 +238,29 @@ fn strip(ui: &mut Ui, index: usize, channel: &ChannelState, engine: &EngineHandl
                 p if p > 0.05 => format!("pan {:.0}% right", p * 100.0),
                 _ => "centre".to_string(),
             });
+        }
+
+        if tall {
+            // A one-line summary of the chain, so its state is visible without
+            // selecting the channel.
+            let mut active: Vec<&str> = Vec::new();
+            if channel.gate.enabled {
+                active.push("G");
+            }
+            if channel.eq.enabled {
+                active.push("EQ");
+            }
+            if channel.compressor.enabled {
+                active.push("C");
+            }
+            if channel.delay_ms > 0.0 {
+                active.push("D");
+            }
+            ui.label(
+                RichText::new(if active.is_empty() { "—".to_string() } else { active.join(" ") })
+                    .font(theme::mono(9.0))
+                    .color(if active.is_empty() { theme::TEXT_FAINT } else { theme::ACCENT }),
+            );
         }
 
         ui.horizontal(|ui| {
@@ -340,7 +379,7 @@ pub fn strip_row(
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             for (index, channel) in snapshot.audio.iter().enumerate() {
-                                strip(ui, index, channel, engine, false);
+                                strip(ui, index, channel, engine, false, None);
                                 ui.add_space(5.0);
                             }
                         });
@@ -349,12 +388,172 @@ pub fn strip_row(
         });
 }
 
+/// A labelled slider that reports only when the value actually moves.
+fn control(ui: &mut Ui, label: &str, value: f32, range: std::ops::RangeInclusive<f32>, suffix: &str) -> Option<f32> {
+    let mut edited = value;
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!("{label:<10}"))
+                .font(theme::mono(10.0))
+                .color(theme::TEXT_DIM),
+        );
+        changed = ui
+            .add_sized(
+                Vec2::new(180.0, 16.0),
+                egui::Slider::new(&mut edited, range).suffix(suffix).fixed_decimals(1),
+            )
+            .changed();
+    });
+    changed.then_some(edited)
+}
+
+/// EQ, compressor, gate and delay for one channel.
+fn dsp_panel(ui: &mut Ui, index: usize, channel: &ChannelState, engine: &EngineHandle) {
+    ui.horizontal(|ui| {
+        ui.add_space(20.0);
+
+        // ---- EQ ----------------------------------------------------------
+        ui.vertical(|ui| {
+            ui.set_width(300.0);
+            ui.horizontal(|ui| {
+                if theme::chip(ui, "EQ", channel.eq.enabled, theme::ACCENT, Vec2::new(44.0, 20.0)).clicked() {
+                    let mut s = channel.eq;
+                    s.enabled = !s.enabled;
+                    engine.send(Command::SetEq { channel: index, settings: s });
+                }
+                ui.label(
+                    RichText::new("100 Hz · 400 Hz · 2.5 kHz · 8 kHz")
+                        .font(theme::mono(9.0))
+                        .color(theme::TEXT_FAINT),
+                );
+            });
+            ui.add_space(4.0);
+            for (label, value, apply) in [
+                ("BASS", channel.eq.bass_db, 0usize),
+                ("LO-MID", channel.eq.low_mid_db, 1),
+                ("HI-MID", channel.eq.high_mid_db, 2),
+                ("PRESENCE", channel.eq.presence_db, 3),
+            ] {
+                if let Some(db) = control(ui, label, value, -15.0..=15.0, " dB") {
+                    let mut s = channel.eq;
+                    match apply {
+                        0 => s.bass_db = db,
+                        1 => s.low_mid_db = db,
+                        2 => s.high_mid_db = db,
+                        _ => s.presence_db = db,
+                    }
+                    s.enabled = true;
+                    engine.send(Command::SetEq { channel: index, settings: s });
+                }
+            }
+        });
+
+        ui.add_space(16.0);
+        theme::divider(ui, 130.0);
+        ui.add_space(16.0);
+
+        // ---- compressor --------------------------------------------------
+        ui.vertical(|ui| {
+            ui.set_width(300.0);
+            ui.horizontal(|ui| {
+                if theme::chip(ui, "COMP", channel.compressor.enabled, theme::ACCENT, Vec2::new(52.0, 20.0)).clicked() {
+                    let mut s = channel.compressor;
+                    s.enabled = !s.enabled;
+                    engine.send(Command::SetCompressor { channel: index, settings: s });
+                }
+                // Gain reduction, so the effect of the settings is visible
+                // rather than guessed at.
+                ui.label(
+                    RichText::new(format!("GR {:.1} dB", channel.gain_reduction_db))
+                        .font(theme::mono(9.5))
+                        .color(if channel.gain_reduction_db < -0.5 { theme::WARN } else { theme::TEXT_FAINT }),
+                );
+            });
+            ui.add_space(4.0);
+            if let Some(v) = control(ui, "THRESH", channel.compressor.threshold_db, -60.0..=0.0, " dB") {
+                let mut s = channel.compressor;
+                s.threshold_db = v;
+                s.enabled = true;
+                engine.send(Command::SetCompressor { channel: index, settings: s });
+            }
+            if let Some(v) = control(ui, "RATIO", channel.compressor.ratio, 1.0..=20.0, ":1") {
+                let mut s = channel.compressor;
+                s.ratio = v;
+                s.enabled = true;
+                engine.send(Command::SetCompressor { channel: index, settings: s });
+            }
+            if let Some(v) = control(ui, "ATTACK", channel.compressor.attack_ms, 0.1..=100.0, " ms") {
+                let mut s = channel.compressor;
+                s.attack_ms = v;
+                engine.send(Command::SetCompressor { channel: index, settings: s });
+            }
+            if let Some(v) = control(ui, "RELEASE", channel.compressor.release_ms, 10.0..=1000.0, " ms") {
+                let mut s = channel.compressor;
+                s.release_ms = v;
+                engine.send(Command::SetCompressor { channel: index, settings: s });
+            }
+            if let Some(v) = control(ui, "MAKEUP", channel.compressor.makeup_db, 0.0..=24.0, " dB") {
+                let mut s = channel.compressor;
+                s.makeup_db = v;
+                engine.send(Command::SetCompressor { channel: index, settings: s });
+            }
+        });
+
+        ui.add_space(16.0);
+        theme::divider(ui, 130.0);
+        ui.add_space(16.0);
+
+        // ---- gate and delay ----------------------------------------------
+        ui.vertical(|ui| {
+            ui.set_width(300.0);
+            ui.horizontal(|ui| {
+                if theme::chip(ui, "GATE", channel.gate.enabled, theme::ACCENT, Vec2::new(52.0, 20.0)).clicked() {
+                    let mut s = channel.gate;
+                    s.enabled = !s.enabled;
+                    engine.send(Command::SetGate { channel: index, settings: s });
+                }
+                ui.label(
+                    RichText::new(if channel.gate_open { "OPEN" } else { "CLOSED" })
+                        .font(theme::mono(9.5))
+                        .color(if channel.gate_open { theme::PREVIEW } else { theme::TEXT_FAINT }),
+                );
+            });
+            ui.add_space(4.0);
+            if let Some(v) = control(ui, "THRESH", channel.gate.threshold_db, -80.0..=0.0, " dB") {
+                let mut s = channel.gate;
+                s.threshold_db = v;
+                s.enabled = true;
+                engine.send(Command::SetGate { channel: index, settings: s });
+            }
+            if let Some(v) = control(ui, "HOLD", channel.gate.hold_ms, 0.0..=1000.0, " ms") {
+                let mut s = channel.gate;
+                s.hold_ms = v;
+                engine.send(Command::SetGate { channel: index, settings: s });
+            }
+            if let Some(v) = control(ui, "RELEASE", channel.gate.release_ms, 10.0..=2000.0, " ms") {
+                let mut s = channel.gate;
+                s.release_ms = v;
+                engine.send(Command::SetGate { channel: index, settings: s });
+            }
+
+            ui.add_space(10.0);
+            ui.label(RichText::new("DELAY").size(10.0).strong().color(theme::TEXT_DIM));
+            // Lip-sync trim, for when a source arrives ahead of its picture.
+            if let Some(v) = control(ui, "OFFSET", channel.delay_ms, 0.0..=500.0, " ms") {
+                engine.send(Command::SetAudioDelay { channel: index, ms: v });
+            }
+        });
+    });
+}
+
 /// The full mixer, on its own tab.
 pub fn full_view(
     ctx: &egui::Context,
     snapshot: &Snapshot,
     engine: &EngineHandle,
     show_devices: &mut bool,
+    selected: &mut usize,
 ) {
     egui::CentralPanel::default()
         .frame(theme::panel(theme::SURFACE))
@@ -398,14 +597,40 @@ pub fn full_view(
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             for (index, channel) in snapshot.audio.iter().enumerate() {
-                                strip(ui, index, channel, engine, true);
+                                strip(ui, index, channel, engine, true, Some(selected));
                                 ui.add_space(6.0);
                             }
                         });
                     });
             });
 
-            ui.add_space(20.0);
+            ui.add_space(14.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            if *selected >= snapshot.audio.len() {
+                *selected = 0;
+            }
+            if let Some(channel) = snapshot.audio.get(*selected) {
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(
+                        RichText::new(format!("CHANNEL DSP — {}", channel.name))
+                            .size(11.5)
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                    ui.label(
+                        RichText::new("gate → EQ → compressor → gain → delay")
+                            .font(theme::mono(9.5))
+                            .color(theme::TEXT_FAINT),
+                    );
+                });
+                ui.add_space(8.0);
+                dsp_panel(ui, *selected, channel, engine);
+            }
+
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
                 ui.label(

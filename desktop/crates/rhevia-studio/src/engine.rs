@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rhevia_audio::{AudioBuffer, AudioMixer, CaptureHandle, SAMPLE_RATE};
-use rhevia_engine::{EncoderSettings, Frame, Layer, Rect, Scene};
+use rhevia_engine::{EncoderSettings, Frame, Layer, Rect, Scene, Transition};
 use rhevia_output::h264::{self, ParameterSets};
 use rhevia_output::{flv, RtmpPublisher, RtmpUrl};
 use rhevia_pipeline::Mixer;
@@ -25,6 +25,12 @@ pub enum Command {
     /// Dissolve Preview into Program over the configured duration.
     Auto,
     SetTransitionSeconds(f32),
+    /// Chooses the effect the AUTO button and the T-bar use.
+    SetTransition(Transition),
+    SetEq { channel: usize, settings: rhevia_audio::EqSettings },
+    SetCompressor { channel: usize, settings: rhevia_audio::CompressorSettings },
+    SetGate { channel: usize, settings: rhevia_audio::GateSettings },
+    SetAudioDelay { channel: usize, ms: f32 },
     SetLayout(Layout),
     /// Assigns a source to one of the four overlay slots.
     SetOverlaySource { slot: usize, input: usize },
@@ -123,6 +129,7 @@ pub struct Snapshot {
     pub recorded_bytes: u64,
     pub recording_path: Option<String>,
     pub ftb: bool,
+    pub transition_kind: Transition,
     pub audio: Vec<ChannelState>,
     pub master: MasterState,
 }
@@ -141,6 +148,14 @@ pub struct ChannelState {
     pub clipped: bool,
     /// False when the input has no audio device attached.
     pub has_source: bool,
+    pub eq: rhevia_audio::EqSettings,
+    pub compressor: rhevia_audio::CompressorSettings,
+    pub gate: rhevia_audio::GateSettings,
+    pub delay_ms: f32,
+    /// Current compressor gain reduction, for the meter.
+    pub gain_reduction_db: f32,
+    /// Whether the gate is currently passing audio.
+    pub gate_open: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -319,6 +334,9 @@ fn run(
     let mut overlay_source: [Option<usize>; 4] = [None; 4];
     let mut overlay_on = [false; 4];
     let mut ftb = false;
+    let mut transition_kind = Transition::Fade;
+    // One DSP chain per channel, index-aligned with the audio mixer.
+    let mut dsp: Vec<rhevia_audio::ChannelDsp> = Vec::new();
     let mut recorder: Option<(std::io::BufWriter<std::fs::File>, String, u64)> = None;
 
     let frame_budget = Duration::from_secs_f32(1.0 / TARGET_FPS);
@@ -349,10 +367,36 @@ fn run(
                 }
                 Command::Auto => {
                     if transition.is_none() && program_input != preview_input {
-                        transition = Some(0.0);
+                        if transition_kind.is_instant() {
+                            std::mem::swap(&mut program_input, &mut preview_input);
+                            mixer.request_keyframe();
+                        } else {
+                            transition = Some(0.0);
+                        }
                     }
                 }
                 Command::SetTransitionSeconds(s) => transition_seconds = s.clamp(0.1, 10.0),
+                Command::SetTransition(kind) => transition_kind = kind,
+                Command::SetEq { channel, settings } => {
+                    if let Some(chain) = dsp.get_mut(channel) {
+                        chain.eq.set(settings);
+                    }
+                }
+                Command::SetCompressor { channel, settings } => {
+                    if let Some(chain) = dsp.get_mut(channel) {
+                        chain.compressor.set(settings);
+                    }
+                }
+                Command::SetGate { channel, settings } => {
+                    if let Some(chain) = dsp.get_mut(channel) {
+                        chain.gate.set(settings);
+                    }
+                }
+                Command::SetAudioDelay { channel, ms } => {
+                    if let Some(chain) = dsp.get_mut(channel) {
+                        chain.delay.set_milliseconds(ms);
+                    }
+                }
                 Command::SetLayout(l) => layout = l,
                 Command::SetOverlaySource { slot, input } => {
                     if slot < 4 && input < sources.len() {
@@ -535,10 +579,26 @@ fn run(
         // clock keeps them locked together by construction; a separate audio
         // clock would drift apart over a long show.
         let audio_frames = (SAMPLE_RATE as f32 / TARGET_FPS) as usize;
-        let captured: Vec<Option<AudioBuffer>> = sources
+        // One DSP chain per channel. Grown here rather than at every add
+        // site, so a chain can never be missing for a channel that exists.
+        while dsp.len() < audio.channels.len() {
+            dsp.push(rhevia_audio::ChannelDsp::new());
+        }
+        dsp.truncate(audio.channels.len());
+
+        let mut captured: Vec<Option<AudioBuffer>> = sources
             .iter()
             .map(|slot| slot.audio.as_ref().map(|handle| handle.take(audio_frames)))
             .collect();
+
+        // Processed before the mixer, so the fader and meters see the audio
+        // after EQ and dynamics -- which is what an operator expects when they
+        // set a compressor and the meter stops slamming.
+        for (index, buffer) in captured.iter_mut().enumerate() {
+            if let (Some(buffer), Some(chain)) = (buffer.as_mut(), dsp.get_mut(index)) {
+                chain.process(buffer);
+            }
+        }
         let on_air: Vec<bool> = (0..sources.len()).map(|i| i == program_input).collect();
         {
             let refs: Vec<Option<&AudioBuffer>> = captured.iter().map(|c| c.as_ref()).collect();
@@ -582,31 +642,26 @@ fn run(
         let program_slot = sources.get(program_input).map(|s| s.mixer_input).unwrap_or(0);
         let preview_slot = sources.get(preview_input).map(|s| s.mixer_input).unwrap_or(0);
 
-        let mut scene = Scene::new();
-        if ftb {
-            // Fade to black bypasses everything. When an operator hits this,
-            // whatever is wrong must not still be reaching air.
-            scene.background = [0, 0, 0];
-        } else {
+        // A scene is built for a given "program" input, so the same code can
+        // produce both sides of a transition.
+        let build_scene = |program: usize, preview: usize| -> Scene {
+            let mut scene = Scene::new();
             let w = OUTPUT_WIDTH as f32;
             let h = OUTPUT_HEIGHT as f32;
             match layout {
                 Layout::Full => {
-                    scene.push(Layer::new(program_slot, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
+                    scene.push(Layer::new(program, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
                 }
                 Layout::Pip => {
-                    scene.push(Layer::new(program_slot, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
+                    scene.push(Layer::new(program, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
                     scene.push(Layer::new(
-                        preview_slot,
+                        preview,
                         Rect::new(w * 0.66, h * 0.62, w * 0.30, h * 0.30),
                     ));
                 }
                 Layout::SideBySide => {
-                    scene.push(Layer::new(program_slot, Rect::new(0.0, h * 0.25, w * 0.5, h * 0.5)));
-                    scene.push(Layer::new(
-                        preview_slot,
-                        Rect::new(w * 0.5, h * 0.25, w * 0.5, h * 0.5),
-                    ));
+                    scene.push(Layer::new(program, Rect::new(0.0, h * 0.25, w * 0.5, h * 0.5)));
+                    scene.push(Layer::new(preview, Rect::new(w * 0.5, h * 0.25, w * 0.5, h * 0.5)));
                 }
                 Layout::Quad => {
                     for (i, slot) in sources.iter().take(4).enumerate() {
@@ -620,16 +675,9 @@ fn run(
                 }
             }
 
-            // The dissolve rides above the layout so it works in every mode.
-            if let Some(progress) = transition {
-                scene.push(
-                    Layer::new(preview_slot, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT))
-                        .with_opacity(progress),
-                );
-            }
-
             // Overlays sit above the transition, so a lower third stays put
-            // while the shot underneath it changes.
+            // while the shot underneath it changes. Present in both sides of a
+            // transition, which makes them hold still through the blend.
             for (slot, on) in overlay_on.iter().enumerate() {
                 if !on {
                     continue;
@@ -640,15 +688,49 @@ fn run(
                     }
                 }
             }
-        }
+            scene
+        };
+
+        // FTB bypasses layout, overlays and transitions alike. When an
+        // operator reaches for it, nothing else may still reach air.
+        let program_scene = if ftb {
+            let mut black = Scene::new();
+            black.background = [0, 0, 0];
+            black
+        } else {
+            build_scene(program_slot, preview_slot)
+        };
 
         let render_start = Instant::now();
         let needs_encoding = delivery.is_some() || recorder.is_some();
-        let encoded = if needs_encoding {
-            mixer.render_and_encode(&scene).unwrap_or_default()
-        } else {
-            mixer.render(&scene);
-            Vec::new()
+        let encoded = match transition {
+            // Mid-transition: composite both arrangements in full and blend
+            // them with the chosen effect, so a transition works between any
+            // two layouts rather than only between two sources.
+            Some(progress) if !ftb => {
+                let incoming = build_scene(preview_slot, program_slot);
+                if needs_encoding {
+                    mixer
+                        .render_transition_and_encode(
+                            &program_scene,
+                            &incoming,
+                            transition_kind,
+                            progress,
+                        )
+                        .unwrap_or_default()
+                } else {
+                    mixer.render_transition(&program_scene, &incoming, transition_kind, progress);
+                    Vec::new()
+                }
+            }
+            _ => {
+                if needs_encoding {
+                    mixer.render_and_encode(&program_scene).unwrap_or_default()
+                } else {
+                    mixer.render(&program_scene);
+                    Vec::new()
+                }
+            }
         };
         let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
@@ -726,6 +808,7 @@ fn run(
             s.overlay_source = overlay_source;
             s.overlay_on = overlay_on;
             s.ftb = ftb;
+            s.transition_kind = transition_kind;
             s.recording = recorder.is_some();
             s.recorded_bytes = recorder.as_ref().map(|(_, _, b)| *b).unwrap_or(0);
             s.recording_path = recorder.as_ref().map(|(_, p, _)| p.clone());
@@ -744,6 +827,15 @@ fn run(
                     rms_db: c.meter.rms_db(),
                     clipped: c.meter.clipped(),
                     has_source: sources.get(i).map(|s| s.audio.is_some()).unwrap_or(false),
+                    eq: dsp.get(i).map(|d| d.eq.settings()).unwrap_or_default(),
+                    compressor: dsp.get(i).map(|d| d.compressor.settings()).unwrap_or_default(),
+                    gate: dsp.get(i).map(|d| d.gate.settings()).unwrap_or_default(),
+                    delay_ms: dsp.get(i).map(|d| d.delay.milliseconds()).unwrap_or(0.0),
+                    gain_reduction_db: dsp
+                        .get(i)
+                        .map(|d| d.compressor.gain_reduction_db())
+                        .unwrap_or(0.0),
+                    gate_open: dsp.get(i).map(|d| d.gate.is_open()).unwrap_or(true),
                 })
                 .collect();
             s.master = MasterState {

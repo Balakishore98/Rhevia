@@ -6,7 +6,9 @@
 pub mod codec;
 pub mod composite;
 pub mod frame;
+pub mod transition;
 
 pub use codec::{CodecError, EncoderSettings, H264Decoder, H264Encoder};
 pub use composite::{Compositor, Layer, Rect, Scene};
 pub use frame::Frame;
+pub use transition::Transition;

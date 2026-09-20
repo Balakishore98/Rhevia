@@ -30,11 +30,11 @@ for having built it in this order.
 | **Source** | works | RheviaLink pairs, negotiates, receives H.264 RTP and reassembles it into frames. Still no phone app to *be* a camera, and no local webcam, capture card, screen capture or media file. |
 | **Depacketise** | **done** | RFC 6184: single-NAL, STAP-A and FU-A, with broken fragments discarded rather than emitted corrupt. |
 | **Decode** | **done** | OpenH264, Annex-B to RGBA. Corrupt packets cost one frame, not the input. |
-| **Composite** | **done** | Scene graph, layers, bilinear scaling, alpha blending, aspect-preserving fit. Program/Preview, cut and dissolve, four layouts, four overlay slots, FTB. On CPU — the GPU path is an optimisation, not a missing feature. |
+| **Composite** | **done** | Scene graph, layers, bilinear scaling, alpha blending, aspect-preserving fit. Program/Preview, four layouts, four overlay slots, FTB, and ten transition effects (cut, fade, zoom, wipe H/V, slide H/V, fly, cross-zoom, cube) that blend two fully composited arrangements rather than two sources. On CPU — the GPU path is an optimisation, not a missing feature. |
 | **Encode** | **done** | OpenH264, with keyframes forced on cuts and at the start of a recording. NVENC will be faster and is not required for correctness. |
 | **Mux** | **done** | FLV tag muxing for H.264 and AAC, including the decoder configuration record and keyframe flagging. |
 | **Deliver** | **done** | RTMP publishing: handshake, connect, publish, real-time pacing. Verified end to end against a real server. SRT still to do. |
-| **Audio** | partial | Capture (WASAPI via cpal), channel strips with fader, mute, solo, constant-power pan and follow-Program, summed to a master bus, with peak/RMS meters and latching clip. **Not yet: encoding audio into the stream, DSP (EQ, compressor, gate), VST3 hosting, or A/V sync.** The stream is still video-only. |
+| **Audio** | partial | Capture (WASAPI via cpal), channel strips with fader, mute, solo, constant-power pan and follow-Program, a full DSP chain per channel (noise gate, four-band EQ, compressor with gain-reduction metering, delay), summed to a master bus with peak/RMS meters and latching clip. **Not yet: encoding audio into the stream, VST3 hosting, channel matrix routing, or A/V sync.** The stream is still video-only. |
 | **Recording** | none | No fragmented MP4 writer, no proxy, no shorts pipeline. |
 | **UI** | **done** | Rhevia Studio: Preview/Program, per-input controls, layouts, overlays, transitions, recording, streaming, keyboard shortcuts. A single self-contained .exe. |
 | **Recording** | partial | Program writes to Annex-B H.264, readable while being written. No proxy or shorts pipeline yet. |

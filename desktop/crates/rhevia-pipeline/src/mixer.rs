@@ -4,7 +4,10 @@
 //! camera to one destination; this takes many sources, puts them on one canvas,
 //! and produces a single new stream — which is what a switcher is.
 
-use rhevia_engine::{CodecError, Compositor, EncoderSettings, Frame, H264Decoder, H264Encoder, Scene};
+use rhevia_engine::{
+    transition, CodecError, Compositor, EncoderSettings, Frame, H264Decoder, H264Encoder, Scene,
+    Transition,
+};
 
 /// How many inputs a mixer holds. Not a licence limit — a preallocation, and
 /// `add_input` grows it on demand.
@@ -45,6 +48,15 @@ pub struct Mixer {
     compositor: Compositor,
     encoder: H264Encoder,
     stats: MixStats,
+    /// Scratch for the outgoing and incoming pictures during a transition, and
+    /// the blended result. Kept here so a transition allocates nothing per
+    /// frame -- it runs at the worst possible moment to start churning memory.
+    outgoing: Frame,
+    incoming: Frame,
+    blended: Frame,
+    /// True while `blended` holds the newest picture rather than the
+    /// compositor canvas.
+    blended_is_current: bool,
 }
 
 impl Mixer {
@@ -63,6 +75,10 @@ impl Mixer {
             compositor: Compositor::new(settings.width, settings.height),
             encoder: H264Encoder::new(settings)?,
             stats: MixStats::default(),
+            outgoing: Frame::new(settings.width, settings.height),
+            incoming: Frame::new(settings.width, settings.height),
+            blended: Frame::new(settings.width, settings.height),
+            blended_is_current: false,
         })
     }
 
@@ -127,6 +143,7 @@ impl Mixer {
         let frames: Vec<Option<&Frame>> = self.inputs.iter().map(|i| i.current.as_ref()).collect();
         self.stats.frames_rendered += 1;
         self.stats.live_inputs = frames.iter().filter(|f| f.is_some()).count();
+        self.blended_is_current = false;
         self.compositor.render(scene, &frames)
     }
 
@@ -145,9 +162,68 @@ impl Mixer {
         Ok(bitstream)
     }
 
+    /// Composites two scenes and blends them with `kind` at `progress`.
+    ///
+    /// Both sides are composited in full before blending, so a transition
+    /// works between any two arrangements -- a quad layout dissolving into a
+    /// picture-in-picture, not merely one source fading into another.
+    pub fn render_transition(
+        &mut self,
+        from: &Scene,
+        to: &Scene,
+        kind: Transition,
+        progress: f32,
+    ) -> &Frame {
+        self.stats.frames_rendered += 1;
+
+        {
+            let frames: Vec<Option<&Frame>> =
+                self.inputs.iter().map(|i| i.current.as_ref()).collect();
+            self.stats.live_inputs = frames.iter().filter(|f| f.is_some()).count();
+            let rendered = self.compositor.render(from, &frames);
+            self.outgoing.resize(rendered.width, rendered.height);
+            self.outgoing.data.copy_from_slice(&rendered.data);
+        }
+        {
+            let frames: Vec<Option<&Frame>> =
+                self.inputs.iter().map(|i| i.current.as_ref()).collect();
+            let rendered = self.compositor.render(to, &frames);
+            self.incoming.resize(rendered.width, rendered.height);
+            self.incoming.data.copy_from_slice(&rendered.data);
+        }
+
+        transition::render(kind, &self.outgoing, &self.incoming, progress, &mut self.blended);
+        self.blended_is_current = true;
+        &self.blended
+    }
+
+    /// Composites a transition and encodes the result.
+    pub fn render_transition_and_encode(
+        &mut self,
+        from: &Scene,
+        to: &Scene,
+        kind: Transition,
+        progress: f32,
+    ) -> Result<Vec<u8>, MixError> {
+        let program = self.render_transition(from, to, kind, progress).clone();
+        let bitstream = self.encoder.encode(&program)?;
+        if !bitstream.is_empty() {
+            self.stats.frames_encoded += 1;
+            self.stats.bytes_encoded += bitstream.len() as u64;
+        }
+        Ok(bitstream)
+    }
+
     /// The last composited picture, for the Program monitor.
+    ///
+    /// During a transition this is the blended result rather than either side
+    /// of it, so the monitor shows exactly what is going to air.
     pub fn program(&self) -> &Frame {
-        self.compositor.output()
+        if self.blended_is_current {
+            &self.blended
+        } else {
+            self.compositor.output()
+        }
     }
 
     /// Forces the next encoded frame to be a keyframe.

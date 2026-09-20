@@ -20,9 +20,9 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1760.0, 1000.0])
+            .with_inner_size([1780.0, 1040.0])
             // Below this the two monitors stop being usable side by side.
-            .with_min_inner_size([1340.0, 760.0])
+            .with_min_inner_size([1280.0, 860.0])
             .with_title("Rhevia Studio"),
         ..Default::default()
     };

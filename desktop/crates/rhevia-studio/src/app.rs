@@ -1,13 +1,15 @@
 //! Rhevia Studio's interface.
 //!
-//! Laid out the way a switcher is actually operated. Preview and Program at the
-//! top with the transition controls between them, because that is the axis your
-//! eyes and hands work along. Every input carries its own controls rather than
-//! requiring a selection first — a director calls "cut to two" and the button
-//! for two must already be under your finger.
+//! Laid out the way a switcher is operated, following
+//! `stitch_live_stream_studio_alternative/`. Telemetry across the top because
+//! it is glanced at constantly; Preview and Program with the transition bus
+//! between them because that is the axis your hands work along; the input
+//! matrix beneath, every tile carrying its own controls so "cut to three"
+//! needs no selection step; audio along the bottom where a mixer belongs.
 //!
-//! The UI holds no production state. It renders a snapshot and sends commands,
-//! so everything here is equally reachable from a script or a remote control.
+//! Everything shown here is measured. No reading is a placeholder — an
+//! interface that invents numbers is worse than one that omits them, because
+//! an operator will believe it during a show.
 
 use std::collections::HashMap;
 
@@ -18,20 +20,48 @@ use crate::audio_ui;
 use crate::engine::{Command, EngineHandle, Layout, Snapshot};
 use crate::theme;
 
+const TARGET_FPS: f32 = 30.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Switcher,
+    Audio,
+    Stream,
+    Settings,
+}
+
+impl Tab {
+    const ALL: [(Tab, &'static str); 4] = [
+        (Tab::Switcher, "Switcher & Feeds"),
+        (Tab::Audio, "Audio Mixer & DSP"),
+        (Tab::Stream, "Stream & Output"),
+        (Tab::Settings, "Settings"),
+    ];
+}
+
+/// Filters for the input matrix.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Filter {
+    All,
+    WithAudio,
+    VideoOnly,
+}
+
 pub struct StudioApp {
     engine: EngineHandle,
     textures: HashMap<String, egui::TextureHandle>,
+    tab: Tab,
+    filter: Filter,
     rtmp_url: String,
     stream_key: String,
     record_path: String,
     new_source_name: String,
     file_path: String,
     show_add_source: bool,
-    show_stream_settings: bool,
     show_devices: bool,
     /// Which input a chosen device attaches to; None adds an audio-only input.
     attach_to: Option<usize>,
-    /// Which overlay slot the next input click assigns to, if any.
+    /// Which overlay slot the next input click fills, if any.
     assigning_overlay: Option<usize>,
 }
 
@@ -41,13 +71,14 @@ impl StudioApp {
         Self {
             engine,
             textures: HashMap::new(),
+            tab: Tab::Switcher,
+            filter: Filter::All,
             rtmp_url: "rtmp://a.rtmp.youtube.com/live2".into(),
             stream_key: String::new(),
             record_path: default_record_path(),
             new_source_name: String::new(),
             file_path: String::new(),
             show_add_source: false,
-            show_stream_settings: false,
             show_devices: false,
             attach_to: None,
             assigning_overlay: None,
@@ -77,21 +108,33 @@ impl eframe::App for StudioApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
         self.keyboard(ctx, &snapshot);
-        self.top_bar(ctx, &snapshot);
-        self.status_bar(ctx, &snapshot);
-        self.toolbar(ctx, &snapshot);
-        self.inputs(ctx, &snapshot);
-        audio_ui::panel(ctx, &snapshot, &self.engine, &mut self.show_devices);
-        self.monitors(ctx, &snapshot);
+        self.menu_bar(ctx);
+        self.status_strip(ctx, &snapshot);
+        self.tab_bar(ctx);
+        self.footer(ctx, &snapshot);
+
+        match self.tab {
+            Tab::Switcher => {
+                audio_ui::strip_row(ctx, &snapshot, &self.engine, &mut self.show_devices);
+                self.input_matrix(ctx, &snapshot);
+                self.monitors(ctx, &snapshot);
+            }
+            Tab::Audio => audio_ui::full_view(ctx, &snapshot, &self.engine, &mut self.show_devices),
+            Tab::Stream => self.stream_view(ctx, &snapshot),
+            Tab::Settings => self.settings_view(ctx, &snapshot),
+        }
+
         self.dialogs(ctx, &snapshot);
     }
 }
 
 impl StudioApp {
-    /// Shortcuts an operator's hands already know. Numbers preview, Ctrl+number
-    /// cuts straight to air, space is CUT, Enter is AUTO — the same muscle
-    /// memory every switcher trains.
     fn keyboard(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        // Only while the switcher is in front: number keys belong to text
+        // fields on the other tabs.
+        if self.tab != Tab::Switcher {
+            return;
+        }
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Space) {
                 self.engine.send(Command::Cut);
@@ -103,14 +146,8 @@ impl StudioApp {
                 self.engine.send(Command::ToggleFtb);
             }
             for (index, key) in [
-                egui::Key::Num1,
-                egui::Key::Num2,
-                egui::Key::Num3,
-                egui::Key::Num4,
-                egui::Key::Num5,
-                egui::Key::Num6,
-                egui::Key::Num7,
-                egui::Key::Num8,
+                egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4,
+                egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8,
             ]
             .into_iter()
             .enumerate()
@@ -126,121 +163,236 @@ impl StudioApp {
         });
     }
 
-    fn top_bar(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
-        egui::TopBottomPanel::top("top")
-            .exact_height(54.0)
-            .frame(theme::panel(theme::BG_CHROME))
+    fn menu_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("menu")
+            .exact_height(26.0)
+            .frame(theme::panel(theme::SURFACE_LOWEST))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(RichText::new("RHEVIA").size(19.0).strong().color(theme::ACCENT));
-                    ui.label(RichText::new("STUDIO").size(19.0).color(theme::TEXT_DIM));
-                    ui.add_space(20.0);
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("RHEVIA").size(12.0).strong().color(theme::ACCENT));
+                    ui.add_space(12.0);
 
-                    if snapshot.ftb {
-                        ui.label(RichText::new("■ FADED TO BLACK").size(15.0).strong().color(theme::ACCENT));
-                    } else if snapshot.streaming {
-                        let pulse = (ui.input(|i| i.time) * 2.0).sin() as f32 * 0.25 + 0.75;
-                        ui.label(
-                            RichText::new("● ON AIR")
-                                .size(15.0)
-                                .strong()
-                                .color(theme::PROGRAM.gamma_multiply(pulse)),
-                        );
-                    } else {
-                        ui.label(RichText::new("○ OFF AIR").size(15.0).color(theme::TEXT_DIM));
-                    }
-
-                    if snapshot.recording {
-                        ui.add_space(14.0);
-                        ui.label(
-                            RichText::new(format!(
-                                "⏺ REC  {:.1} MB",
-                                snapshot.recorded_bytes as f64 / 1_048_576.0
-                            ))
-                            .size(14.0)
-                            .strong()
-                            .color(theme::PROGRAM),
-                        );
-                    }
+                    ui.menu_button(RichText::new("File").size(11.5), |ui| {
+                        if ui.button("Add input…").clicked() {
+                            self.show_add_source = true;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui.button("Quit").clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                    ui.menu_button(RichText::new("Audio").size(11.5), |ui| {
+                        if ui.button("Add capture device…").clicked() {
+                            self.attach_to = None;
+                            self.show_devices = true;
+                            ui.close_menu();
+                        }
+                        if ui.button("Open mixer").clicked() {
+                            self.tab = Tab::Audio;
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button(RichText::new("Output").size(11.5), |ui| {
+                        if ui.button("Stream settings…").clicked() {
+                            self.tab = Tab::Stream;
+                            ui.close_menu();
+                        }
+                    });
+                    ui.menu_button(RichText::new("Help").size(11.5), |ui| {
+                        if ui.button("Shortcuts").clicked() {
+                            self.tab = Tab::Settings;
+                            ui.close_menu();
+                        }
+                    });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(16.0);
-                        let (label, colour) = if snapshot.streaming {
-                            ("STOP STREAM", theme::PROGRAM)
-                        } else {
-                            ("START STREAM", theme::GO)
-                        };
-                        if theme::button(ui, label, colour, Vec2::new(142.0, 32.0)).clicked() {
-                            if snapshot.streaming {
-                                self.engine.send(Command::StopStream);
-                            } else {
-                                self.show_stream_settings = true;
-                            }
-                        }
-                        ui.add_space(18.0);
-
-                        let s = snapshot.stats;
-                        if snapshot.streaming {
-                            let kbps = (s.bytes_sent * 8 / s.uptime_seconds.max(1)) / 1000;
-                            theme::metric(ui, "UPTIME", &format_duration(s.uptime_seconds));
-                            theme::metric(ui, "BITRATE", &format!("{kbps} kb/s"));
-                        }
-                        theme::metric(ui, "FPS", &format!("{:.0}", s.fps));
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                .font(theme::mono(10.0))
+                                .color(theme::TEXT_FAINT),
+                        );
                     });
                 });
             });
     }
 
-    fn status_bar(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
-        egui::TopBottomPanel::bottom("status")
-            .exact_height(26.0)
-            .frame(theme::panel(theme::BG_CHROME))
+    /// The telemetry strip. Every figure here is measured.
+    fn status_strip(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        egui::TopBottomPanel::top("status")
+            .exact_height(50.0)
+            .frame(theme::panel(theme::SURFACE_LOW))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(14.0);
-                    // Engine health first: if this thread has died, every
-                    // number to the right of it is stale and the show is off
-                    // air whatever else the screen says.
-                    if self.engine.is_running() {
-                        ui.label(RichText::new("●").size(11.5).color(theme::GO));
-                    } else {
-                        ui.label(
-                            RichText::new("● ENGINE STOPPED")
-                                .size(11.5)
-                                .strong()
-                                .color(theme::PROGRAM),
-                        );
-                    }
-                    ui.add_space(8.0);
-
+                    ui.add_space(10.0);
                     let s = snapshot.stats;
-                    // The numbers vMix puts here, because they are the ones
-                    // that tell you whether the machine is coping.
+
+                    let (label, fill) = if snapshot.ftb {
+                        ("FADED TO BLACK", theme::WARN)
+                    } else if snapshot.streaming {
+                        ("● LIVE ON-AIR", theme::PROGRAM)
+                    } else {
+                        ("○ OFF AIR", theme::SURFACE_HIGH)
+                    };
+                    if theme::pill(ui, label, fill, Vec2::new(126.0, 30.0))
+                        .on_hover_text("click to toggle fade to black")
+                        .clicked()
+                    {
+                        self.engine.send(Command::ToggleFtb);
+                    }
+                    ui.add_space(14.0);
+                    theme::divider(ui, 30.0);
+                    ui.add_space(14.0);
+
+                    if snapshot.streaming {
+                        theme::readout(ui, "UPTIME", &format_duration(s.uptime_seconds), theme::TEXT);
+                        let kbps = (s.bytes_sent * 8 / s.uptime_seconds.max(1)) / 1000;
+                        theme::readout(ui, "BITRATE", &format!("{kbps} kb/s"), theme::PREVIEW);
+                    } else {
+                        theme::readout(ui, "UPTIME", "--:--", theme::TEXT_FAINT);
+                        theme::readout(ui, "BITRATE", "--", theme::TEXT_FAINT);
+                    }
+                    theme::readout(ui, "ENCODER", "H.264 1280x720p30", theme::TEXT);
+
+                    // Engine load: how much of the frame budget compositing
+                    // took. Above 100% the mixer cannot keep up, which is the
+                    // figure that actually predicts dropped frames.
+                    let budget_ms = 1000.0 / TARGET_FPS;
+                    let load = (s.render_ms / budget_ms * 100.0).clamp(0.0, 999.0);
+                    let load_colour = if load > 90.0 {
+                        theme::PROGRAM
+                    } else if load > 60.0 {
+                        theme::WARN
+                    } else {
+                        theme::PREVIEW
+                    };
+                    theme::readout(ui, "ENGINE LOAD", &format!("{load:.0}%"), load_colour);
+
+                    let fps_colour = if s.fps < TARGET_FPS * 0.9 && s.fps > 0.0 {
+                        theme::WARN
+                    } else {
+                        theme::PREVIEW
+                    };
+                    theme::readout(ui, "FPS", &format!("{:.1}", s.fps), fps_colour);
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
+                            ui.add_space(7.0);
+                            ui.label(RichText::new("TIMECODE").size(8.5).color(theme::TEXT_FAINT));
+                            ui.label(
+                                RichText::new(timecode(s.frames_rendered))
+                                    .font(theme::mono(16.0))
+                                    .color(theme::ACCENT),
+                            );
+                        });
+                        ui.add_space(18.0);
+
+                        let (stream_label, stream_fill) = if snapshot.streaming {
+                            ("STOP STREAM", theme::PROGRAM)
+                        } else {
+                            ("GO LIVE", theme::PREVIEW)
+                        };
+                        if theme::button(ui, stream_label, stream_fill, Vec2::new(116.0, 30.0)).clicked() {
+                            if snapshot.streaming {
+                                self.engine.send(Command::StopStream);
+                            } else {
+                                self.tab = Tab::Stream;
+                            }
+                        }
+                        ui.add_space(8.0);
+
+                        let (rec_label, rec_fill) = if snapshot.recording {
+                            ("■ STOP REC", theme::PROGRAM)
+                        } else {
+                            ("⏺ RECORD", theme::SURFACE_HIGH)
+                        };
+                        if theme::button(ui, rec_label, rec_fill, Vec2::new(106.0, 30.0)).clicked() {
+                            if snapshot.recording {
+                                self.engine.send(Command::StopRecording);
+                            } else {
+                                self.engine.send(Command::StartRecording {
+                                    path: self.record_path.clone(),
+                                });
+                            }
+                        }
+                        ui.add_space(16.0);
+                        if snapshot.recording {
+                            theme::readout(
+                                ui,
+                                "RECORDED",
+                                &format!("{:.1} MB", snapshot.recorded_bytes as f64 / 1_048_576.0),
+                                theme::PROGRAM,
+                            );
+                        }
+                    });
+                });
+            });
+    }
+
+    fn tab_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("tabs")
+            .exact_height(34.0)
+            .frame(theme::panel(theme::SURFACE))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(10.0);
+                    for (tab, label) in Tab::ALL {
+                        let active = self.tab == tab;
+                        let width = 7.6 * label.len() as f32 + 24.0;
+                        if theme::chip(ui, label, active, theme::ACCENT, Vec2::new(width, 24.0)).clicked() {
+                            self.tab = tab;
+                        }
+                        ui.add_space(4.0);
+                    }
+                });
+            });
+    }
+
+    fn footer(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        egui::TopBottomPanel::bottom("footer")
+            .exact_height(24.0)
+            .frame(theme::panel(theme::SURFACE_LOWEST))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(10.0);
+                    let (dot, text) = if self.engine.is_running() {
+                        (theme::PREVIEW, "engine running")
+                    } else {
+                        (theme::PROGRAM, "ENGINE STOPPED")
+                    };
+                    ui.label(RichText::new("●").size(10.0).color(dot));
+                    ui.label(RichText::new(text).size(10.5).color(theme::TEXT_FAINT));
+                    ui.add_space(14.0);
                     ui.label(
                         RichText::new(format!(
-                            "FPS {:.0}   ·   Render {:.1} ms   ·   Inputs {}   ·   Rendered {}   ·   Encoded {}",
-                            s.fps, s.render_ms, snapshot.inputs.len(), s.frames_rendered, s.frames_encoded
+                            "rendered {}   ·   encoded {}   ·   render {:.1} ms",
+                            snapshot.stats.frames_rendered,
+                            snapshot.stats.frames_encoded,
+                            snapshot.stats.render_ms
                         ))
-                        .size(11.5)
-                        .color(theme::TEXT_DIM),
+                        .font(theme::mono(10.0))
+                        .color(theme::TEXT_FAINT),
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(14.0);
+                        ui.add_space(10.0);
                         if let Some(error) = &snapshot.stream_error {
-                            ui.label(RichText::new(format!("⚠ {error}")).size(11.5).color(theme::PROGRAM));
-                        } else if let Some(assigning) = self.assigning_overlay {
+                            ui.label(RichText::new(format!("⚠ {error}")).size(10.5).color(theme::PROGRAM));
+                        } else if let Some(slot) = self.assigning_overlay {
                             ui.label(
-                                RichText::new(format!("click an input to assign overlay {}", assigning + 1))
-                                    .size(11.5)
+                                RichText::new(format!("click an input to fill overlay {}", slot + 1))
+                                    .size(10.5)
                                     .color(theme::ACCENT),
                             );
                         } else {
                             ui.label(
-                                RichText::new("1-8 preview  ·  ctrl+1-8 cut  ·  space CUT  ·  enter AUTO  ·  esc FTB")
-                                    .size(11.5)
-                                    .color(theme::TEXT_DIM),
+                                RichText::new("1-8 preview · ctrl+1-8 cut · space CUT · enter AUTO · esc FTB")
+                                    .size(10.5)
+                                    .color(theme::TEXT_FAINT),
                             );
                         }
                     });
@@ -248,115 +400,71 @@ impl StudioApp {
             });
     }
 
-    /// The bottom toolbar: the actions that are not about a single input.
-    fn toolbar(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
-        egui::TopBottomPanel::bottom("toolbar")
-            .exact_height(56.0)
-            .frame(theme::panel(theme::BG_CHROME))
-            .show(ctx, |ui| {
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(14.0);
-
-                    if theme::button(ui, "+ ADD INPUT", theme::BG_RAISED, Vec2::new(116.0, 34.0)).clicked() {
-                        self.show_add_source = true;
-                    }
-                    ui.add_space(8.0);
-
-                    let (rec_label, rec_colour) = if snapshot.recording {
-                        ("■ STOP REC", theme::PROGRAM)
-                    } else {
-                        ("⏺ RECORD", theme::BG_RAISED)
-                    };
-                    if theme::button(ui, rec_label, rec_colour, Vec2::new(104.0, 34.0)).clicked() {
-                        if snapshot.recording {
-                            self.engine.send(Command::StopRecording);
-                        } else {
-                            self.engine.send(Command::StartRecording {
-                                path: self.record_path.clone(),
-                            });
-                        }
-                    }
-
-                    ui.add_space(18.0);
-                    theme::divider(ui, 34.0);
-                    ui.add_space(18.0);
-
-                    ui.label(RichText::new("LAYOUT").size(10.0).strong().color(theme::TEXT_DIM));
-                    ui.add_space(6.0);
-                    for option in Layout::ALL {
-                        let active = snapshot.layout == option;
-                        let colour = if active { theme::ACCENT } else { theme::BG_RAISED };
-                        if theme::button(ui, option.label(), colour, Vec2::new(64.0, 34.0)).clicked() {
-                            self.engine.send(Command::SetLayout(option));
-                        }
-                        ui.add_space(4.0);
-                    }
-
-                    ui.add_space(14.0);
-                    theme::divider(ui, 34.0);
-                    ui.add_space(14.0);
-
-                    ui.label(RichText::new("OVERLAY").size(10.0).strong().color(theme::TEXT_DIM));
-                    ui.add_space(6.0);
-                    for slot in 0..4 {
-                        let assigned = snapshot.overlay_source[slot].is_some();
-                        let on = snapshot.overlay_on[slot];
-                        let colour = if on {
-                            theme::PROGRAM
-                        } else if assigned {
-                            theme::BG_RAISED
-                        } else {
-                            theme::BG_PANEL
-                        };
-                        let response =
-                            theme::button(ui, &format!("{}", slot + 1), colour, Vec2::new(40.0, 34.0));
-                        if response.clicked() {
-                            if assigned {
-                                self.engine.send(Command::ToggleOverlay(slot));
-                            } else {
-                                // Nothing assigned yet, so arm assignment
-                                // rather than doing nothing and looking broken.
-                                self.assigning_overlay = Some(slot);
-                            }
-                        }
-                        if response.secondary_clicked() {
-                            self.assigning_overlay = Some(slot);
-                        }
-                        response.on_hover_text(if assigned {
-                            "click to toggle on air · right-click to reassign"
-                        } else {
-                            "click to assign a source"
-                        });
-                        ui.add_space(4.0);
-                    }
-                });
-            });
-    }
-
-    /// The input row: every source with its own controls.
-    fn inputs(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
-        egui::TopBottomPanel::bottom("inputs")
-            .exact_height(216.0)
-            .frame(theme::panel(theme::BG_PANEL))
+    fn input_matrix(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        egui::TopBottomPanel::bottom("matrix")
+            .exact_height(190.0)
+            .frame(theme::panel(theme::SURFACE_LOW))
             .show(ctx, |ui| {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(14.0);
-                    ui.label(RichText::new("INPUTS").size(10.0).strong().color(theme::TEXT_DIM));
-                });
-                ui.add_space(4.0);
+                    ui.add_space(12.0);
+                    ui.label(
+                        RichText::new("LIVE PRODUCTION INPUT MATRIX")
+                            .size(11.0)
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!("{} ACTIVE", snapshot.inputs.len()))
+                            .font(theme::mono(9.5))
+                            .color(theme::TEXT_FAINT),
+                    );
 
-                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(12.0);
+                        if theme::button(ui, "+ ADD INPUT", theme::ACCENT, Vec2::new(104.0, 22.0)).clicked() {
+                            self.show_add_source = true;
+                        }
+                        ui.add_space(10.0);
+                        for (filter, label) in [
+                            (Filter::All, "ALL"),
+                            (Filter::WithAudio, "WITH AUDIO"),
+                            (Filter::VideoOnly, "VIDEO ONLY"),
+                        ] {
+                            let active = self.filter == filter;
+                            let width = 7.0 * label.len() as f32 + 16.0;
+                            if theme::chip(ui, label, active, theme::ACCENT, Vec2::new(width, 20.0)).clicked() {
+                                self.filter = filter;
+                            }
+                            ui.add_space(3.0);
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+
+                egui::ScrollArea::horizontal().id_salt("matrix").show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.add_space(14.0);
+                        ui.add_space(12.0);
                         for index in 0..snapshot.inputs.len() {
+                            if !self.passes_filter(snapshot, index) {
+                                continue;
+                            }
                             self.input_tile(ctx, ui, snapshot, index);
-                            ui.add_space(10.0);
+                            ui.add_space(8.0);
                         }
                     });
                 });
             });
+    }
+
+    fn passes_filter(&self, snapshot: &Snapshot, index: usize) -> bool {
+        let has_audio = snapshot.audio.get(index).map(|c| c.has_source).unwrap_or(false);
+        match self.filter {
+            Filter::All => true,
+            Filter::WithAudio => has_audio,
+            Filter::VideoOnly => !has_audio,
+        }
     }
 
     fn input_tile(
@@ -374,15 +482,23 @@ impl StudioApp {
             .clone()
             .and_then(|f| self.texture(ctx, &format!("input{index}"), &f));
 
+        let detail = match snapshot.audio.get(index) {
+            Some(c) if c.has_source => format!("1280x720p30 · AUD {:+.0}dB", c.gain_db),
+            _ => "1280x720p30 · no audio".to_string(),
+        };
+
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
 
             let picture = theme::input_picture(
                 ui,
-                &format!("{}  {}", index + 1, info.name),
+                index + 1,
+                &info.name,
+                &detail,
                 texture,
                 on_program,
                 on_preview,
+                Vec2::new(186.0, 110.0),
             );
             if picture.clicked() {
                 if let Some(slot) = self.assigning_overlay.take() {
@@ -392,41 +508,35 @@ impl StudioApp {
                 }
             }
 
-            // Per-input actions, as on a real switcher: the button for input
-            // three is always in the same place under input three.
             ui.horizontal(|ui| {
-                if theme::button(ui, "CUT", theme::PROGRAM, Vec2::new(56.0, 22.0)).clicked() {
+                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                if theme::chip(ui, "CUT", false, theme::PROGRAM, Vec2::new(42.0, 20.0))
+                    .on_hover_text("cut this input straight to air")
+                    .clicked()
+                {
                     self.engine.send(Command::CutTo(index));
                 }
-                if theme::button(ui, "PVW", theme::PREVIEW, Vec2::new(56.0, 22.0)).clicked() {
+                if theme::chip(ui, "PVW", on_preview, theme::PREVIEW, Vec2::new(42.0, 20.0)).clicked() {
                     self.engine.send(Command::SetPreview(index));
                 }
-                let removable = snapshot.inputs.len() > 1;
-                let colour = if removable { theme::BG_RAISED } else { theme::BG_PANEL };
-                if theme::button(ui, "✕", colour, Vec2::new(28.0, 22.0)).clicked() && removable {
-                    self.engine.send(Command::RemoveSource(index));
-                }
-            });
-
-            ui.horizontal(|ui| {
                 for slot in 0..4 {
                     let assigned = snapshot.overlay_source[slot] == Some(index);
                     let live = assigned && snapshot.overlay_on[slot];
-                    let colour = if live {
-                        theme::PROGRAM
-                    } else if assigned {
-                        theme::ACCENT
-                    } else {
-                        theme::BG_RAISED
-                    };
-                    if theme::button(ui, &format!("{}", slot + 1), colour, Vec2::new(34.0, 20.0))
+                    let colour = if live { theme::PROGRAM } else { theme::ACCENT };
+                    if theme::chip(ui, &format!("{}", slot + 1), assigned, colour, Vec2::new(20.0, 20.0))
                         .on_hover_text(format!("overlay {} with this input", slot + 1))
                         .clicked()
                     {
                         self.engine.send(Command::SetOverlaySource { slot, input: index });
                         self.engine.send(Command::ToggleOverlay(slot));
                     }
-                    ui.add_space(2.0);
+                }
+                if theme::chip(ui, "✕", false, theme::WARN, Vec2::new(20.0, 20.0))
+                    .on_hover_text("remove this input")
+                    .clicked()
+                    && snapshot.inputs.len() > 1
+                {
+                    self.engine.send(Command::RemoveSource(index));
                 }
             });
         });
@@ -434,14 +544,14 @@ impl StudioApp {
 
     fn monitors(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
         egui::CentralPanel::default()
-            .frame(theme::panel(theme::BG_DARK))
+            .frame(theme::panel(theme::SURFACE))
             .show(ctx, |ui| {
                 let available = ui.available_size();
-                let column = 104.0;
-                let gap = 10.0;
+                let bus = 134.0;
+                let gap = 8.0;
                 let monitor = Vec2::new(
-                    ((available.x - column - gap * 4.0) / 2.0).max(160.0),
-                    (available.y - gap * 2.0).max(120.0),
+                    ((available.x - bus - gap * 4.0) / 2.0).max(180.0),
+                    (available.y - gap * 2.0).max(150.0),
                 );
 
                 ui.add_space(gap);
@@ -460,58 +570,19 @@ impl StudioApp {
                         .get(snapshot.preview_input)
                         .map(|i| i.name.as_str())
                         .unwrap_or("—");
-                    theme::monitor(ui, "PREVIEW", preview_name, preview_texture, theme::PREVIEW, monitor);
+                    theme::monitor(
+                        ui,
+                        "PREVIEW",
+                        preview_name,
+                        &format!("IN {}   ·   1280x720p30   ·   NEXT", snapshot.preview_input + 1),
+                        Some("PVW"),
+                        preview_texture,
+                        theme::PREVIEW,
+                        monitor,
+                    );
 
                     ui.add_space(gap);
-
-                    // The transition column, between the two monitors where a
-                    // hardware panel puts it.
-                    ui.vertical(|ui| {
-                        ui.set_width(column);
-                        ui.add_space(18.0);
-
-                        if theme::button(ui, "CUT", theme::PROGRAM, Vec2::new(column, 46.0)).clicked() {
-                            self.engine.send(Command::Cut);
-                        }
-                        ui.add_space(6.0);
-                        let auto_colour = if snapshot.transition.is_some() {
-                            theme::ACCENT
-                        } else {
-                            theme::BG_RAISED
-                        };
-                        if theme::button(ui, "AUTO", auto_colour, Vec2::new(column, 46.0)).clicked() {
-                            self.engine.send(Command::Auto);
-                        }
-                        ui.add_space(10.0);
-
-                        theme::vertical_t_bar(
-                            ui,
-                            snapshot.transition.unwrap_or(0.0),
-                            Vec2::new(column, 150.0),
-                        );
-
-                        ui.add_space(10.0);
-                        ui.label(RichText::new("DURATION").size(9.0).color(theme::TEXT_DIM));
-                        let mut seconds = snapshot.transition_seconds;
-                        if ui
-                            .add_sized(
-                                Vec2::new(column, 18.0),
-                                egui::Slider::new(&mut seconds, 0.2..=5.0)
-                                    .show_value(true)
-                                    .fixed_decimals(1),
-                            )
-                            .changed()
-                        {
-                            self.engine.send(Command::SetTransitionSeconds(seconds));
-                        }
-
-                        ui.add_space(12.0);
-                        let ftb_colour = if snapshot.ftb { theme::ACCENT } else { theme::BG_RAISED };
-                        if theme::button(ui, "FTB", ftb_colour, Vec2::new(column, 38.0)).clicked() {
-                            self.engine.send(Command::ToggleFtb);
-                        }
-                    });
-
+                    self.transition_bus(ui, snapshot, bus);
                     ui.add_space(gap);
 
                     let program_texture = snapshot
@@ -523,71 +594,239 @@ impl StudioApp {
                         .get(snapshot.program_input)
                         .map(|i| i.name.as_str())
                         .unwrap_or("—");
-                    theme::monitor(ui, "PROGRAM", program_name, program_texture, theme::PROGRAM, monitor);
+                    let overlays: Vec<String> = (0..4)
+                        .filter(|&s| snapshot.overlay_on[s])
+                        .map(|s| format!("OVL{}", s + 1))
+                        .collect();
+                    let footer = if overlays.is_empty() {
+                        format!("LAYOUT {}   ·   1280x720p30", snapshot.layout.label())
+                    } else {
+                        format!("LAYOUT {}   ·   {}", snapshot.layout.label(), overlays.join(" "))
+                    };
+                    theme::monitor(
+                        ui,
+                        "PROGRAM",
+                        program_name,
+                        &footer,
+                        Some(if snapshot.streaming { "ON AIR" } else { "PGM" }),
+                        program_texture,
+                        theme::PROGRAM,
+                        monitor,
+                    );
+                });
+            });
+    }
+
+    fn transition_bus(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot, width: f32) {
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+            ui.add_space(4.0);
+
+            ui.label(RichText::new("TRANSITION BUS").size(9.0).strong().color(theme::TEXT_FAINT));
+
+            if theme::button(ui, "CUT", theme::PROGRAM, Vec2::new(width, 36.0)).clicked() {
+                self.engine.send(Command::Cut);
+            }
+            let auto_colour = if snapshot.transition.is_some() {
+                theme::ACCENT
+            } else {
+                theme::SURFACE_HIGH
+            };
+            if theme::button(ui, "AUTO FADE", auto_colour, Vec2::new(width, 36.0)).clicked() {
+                self.engine.send(Command::Auto);
+            }
+
+            ui.add_space(2.0);
+            ui.label(RichText::new("LAYOUT").size(9.0).strong().color(theme::TEXT_FAINT));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                for option in Layout::ALL {
+                    let active = snapshot.layout == option;
+                    if theme::chip(ui, option.label(), active, theme::ACCENT, Vec2::new(63.0, 21.0)).clicked() {
+                        self.engine.send(Command::SetLayout(option));
+                    }
+                }
+            });
+
+            ui.add_space(2.0);
+            ui.label(RichText::new("OVERLAY").size(9.0).strong().color(theme::TEXT_FAINT));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                for slot in 0..4 {
+                    let assigned = snapshot.overlay_source[slot].is_some();
+                    let on = snapshot.overlay_on[slot];
+                    let colour = if on { theme::PROGRAM } else { theme::ACCENT };
+                    let response =
+                        theme::chip(ui, &format!("{}", slot + 1), on, colour, Vec2::new(29.0, 24.0));
+                    if response.clicked() {
+                        if assigned {
+                            self.engine.send(Command::ToggleOverlay(slot));
+                        } else {
+                            self.assigning_overlay = Some(slot);
+                        }
+                    }
+                    response.on_hover_text(if assigned {
+                        "toggle on air"
+                    } else {
+                        "click, then pick an input"
+                    });
+                }
+            });
+
+            ui.add_space(4.0);
+            theme::vertical_t_bar(ui, snapshot.transition.unwrap_or(0.0), Vec2::new(width, 80.0));
+
+            ui.label(
+                RichText::new(format!("RATE {:.1}s", snapshot.transition_seconds))
+                    .font(theme::mono(9.5))
+                    .color(theme::TEXT_FAINT),
+            );
+            let mut seconds = snapshot.transition_seconds;
+            if ui
+                .add_sized(
+                    Vec2::new(width, 16.0),
+                    egui::Slider::new(&mut seconds, 0.2..=5.0).show_value(false),
+                )
+                .changed()
+            {
+                self.engine.send(Command::SetTransitionSeconds(seconds));
+            }
+
+            ui.add_space(4.0);
+            let ftb_colour = if snapshot.ftb { theme::WARN } else { theme::SURFACE_HIGH };
+            if theme::button(ui, "FADE TO BLACK", ftb_colour, Vec2::new(width, 28.0)).clicked() {
+                self.engine.send(Command::ToggleFtb);
+            }
+        });
+    }
+
+    fn stream_view(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        egui::CentralPanel::default()
+            .frame(theme::panel(theme::SURFACE))
+            .show(ctx, |ui| {
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(24.0);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(540.0);
+                        ui.label(RichText::new("STREAM DESTINATION").size(12.0).strong().color(theme::TEXT));
+                        ui.add_space(12.0);
+
+                        ui.label(RichText::new("RTMP URL").size(10.5).color(theme::TEXT_DIM));
+                        ui.add(egui::TextEdit::singleline(&mut self.rtmp_url).desired_width(f32::INFINITY));
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("STREAM KEY").size(10.5).color(theme::TEXT_DIM));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.stream_key)
+                                .password(true)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(
+                                "The key may also sit inside the URL. Both forms work, because \
+                                 platforms present them differently.",
+                            )
+                            .size(10.5)
+                            .color(theme::TEXT_FAINT),
+                        );
+
+                        ui.add_space(18.0);
+                        if snapshot.streaming {
+                            if theme::button(ui, "STOP STREAM", theme::PROGRAM, Vec2::new(140.0, 34.0)).clicked() {
+                                self.engine.send(Command::StopStream);
+                            }
+                        } else if theme::button(ui, "GO LIVE", theme::PREVIEW, Vec2::new(140.0, 34.0)).clicked() {
+                            self.engine.send(Command::StartStream {
+                                url: self.rtmp_url.clone(),
+                                key: self.stream_key.clone(),
+                            });
+                            self.tab = Tab::Switcher;
+                        }
+
+                        ui.add_space(24.0);
+                        ui.separator();
+                        ui.add_space(14.0);
+                        ui.label(RichText::new("RECORDING").size(12.0).strong().color(theme::TEXT));
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("FILE").size(10.5).color(theme::TEXT_DIM));
+                        ui.add(egui::TextEdit::singleline(&mut self.record_path).desired_width(f32::INFINITY));
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("Annex-B H.264.   ffmpeg -i rec.h264 -c copy rec.mp4")
+                                .font(theme::mono(10.0))
+                                .color(theme::TEXT_FAINT),
+                        );
+
+                        ui.add_space(24.0);
+                        ui.label(
+                            RichText::new(
+                                "⚠ Audio is captured and mixed, but is not yet encoded into the \
+                                 outgoing stream. The stream carries video only.",
+                            )
+                            .size(10.5)
+                            .color(theme::WARN),
+                        );
+                    });
+                });
+            });
+    }
+
+    fn settings_view(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        egui::CentralPanel::default()
+            .frame(theme::panel(theme::SURFACE))
+            .show(ctx, |ui| {
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(24.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("KEYBOARD").size(12.0).strong().color(theme::TEXT));
+                        ui.add_space(10.0);
+                        for (keys, what) in [
+                            ("1 – 8", "arm that input in Preview"),
+                            ("Ctrl + 1 – 8", "cut that input straight to air"),
+                            ("Space", "CUT"),
+                            ("Enter", "AUTO fade"),
+                            ("Esc", "fade to black"),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{keys:<16}"))
+                                        .font(theme::mono(11.0))
+                                        .color(theme::ACCENT),
+                                );
+                                ui.label(RichText::new(what).size(11.0).color(theme::TEXT_DIM));
+                            });
+                        }
+
+                        ui.add_space(22.0);
+                        ui.label(RichText::new("ENGINE").size(12.0).strong().color(theme::TEXT));
+                        ui.add_space(10.0);
+                        let s = snapshot.stats;
+                        for (label, value) in [
+                            ("Canvas", "1280 x 720 @ 30 fps".to_string()),
+                            ("Video codec", "H.264 · OpenH264 (BSD-2-Clause)".to_string()),
+                            ("Audio", format!("48 kHz stereo · {} channels", snapshot.audio.len())),
+                            ("Frames rendered", s.frames_rendered.to_string()),
+                            ("Frames encoded", s.frames_encoded.to_string()),
+                            ("Render time", format!("{:.2} ms", s.render_ms)),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{label:<18}"))
+                                        .font(theme::mono(11.0))
+                                        .color(theme::TEXT_FAINT),
+                                );
+                                ui.label(RichText::new(value).font(theme::mono(11.0)).color(theme::TEXT));
+                            });
+                        }
+                    });
                 });
             });
     }
 
     fn dialogs(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
-        if self.show_stream_settings {
-            let mut open = true;
-            egui::Window::new("Stream destination")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(460.0);
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("RTMP URL").size(11.0).color(theme::TEXT_DIM));
-                    ui.add(egui::TextEdit::singleline(&mut self.rtmp_url).desired_width(f32::INFINITY));
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("STREAM KEY").size(11.0).color(theme::TEXT_DIM));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.stream_key)
-                            .password(true)
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        RichText::new(
-                            "The key may also be part of the URL. Both forms work, because \
-                             platforms present them differently.",
-                        )
-                        .size(11.0)
-                        .color(theme::TEXT_DIM),
-                    );
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if theme::button(ui, "GO LIVE", theme::GO, Vec2::new(120.0, 32.0)).clicked() {
-                            self.engine.send(Command::StartStream {
-                                url: self.rtmp_url.clone(),
-                                key: self.stream_key.clone(),
-                            });
-                            self.show_stream_settings = false;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.show_stream_settings = false;
-                        }
-                    });
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("RECORD TO").size(11.0).color(theme::TEXT_DIM));
-                    ui.add(egui::TextEdit::singleline(&mut self.record_path).desired_width(f32::INFINITY));
-                    ui.label(
-                        RichText::new("Annex-B H.264. Remux with: ffmpeg -i rec.h264 -c copy rec.mp4")
-                            .size(10.0)
-                            .monospace()
-                            .color(theme::TEXT_DIM),
-                    );
-                    ui.add_space(4.0);
-                });
-            if !open {
-                self.show_stream_settings = false;
-            }
-        }
-
         self.device_picker(ctx, snapshot);
 
         if self.show_add_source {
@@ -600,7 +839,7 @@ impl StudioApp {
                 .show(ctx, |ui| {
                     ui.set_min_width(460.0);
                     ui.add_space(4.0);
-                    ui.label(RichText::new("NAME").size(11.0).color(theme::TEXT_DIM));
+                    ui.label(RichText::new("NAME").size(10.5).color(theme::TEXT_DIM));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.new_source_name)
                             .hint_text("Camera 2")
@@ -619,12 +858,17 @@ impl StudioApp {
                             });
                             self.show_add_source = false;
                         }
+                        if ui.button("Audio device…").clicked() {
+                            self.show_add_source = false;
+                            self.attach_to = None;
+                            self.show_devices = true;
+                        }
                     });
 
                     ui.add_space(14.0);
                     ui.separator();
                     ui.add_space(8.0);
-                    ui.label(RichText::new("H.264 FILE (Annex-B, loops)").size(11.0).color(theme::TEXT_DIM));
+                    ui.label(RichText::new("H.264 FILE (Annex-B, loops)").size(10.5).color(theme::TEXT_DIM));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.file_path)
                             .hint_text(r"C:\clips\opener.h264")
@@ -633,9 +877,8 @@ impl StudioApp {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("ffmpeg -i in.mp4 -c:v libx264 -bsf:v h264_mp4toannexb -f h264 out.h264")
-                            .size(10.0)
-                            .monospace()
-                            .color(theme::TEXT_DIM),
+                            .font(theme::mono(9.5))
+                            .color(theme::TEXT_FAINT),
                     );
                     ui.add_space(10.0);
                     if ui.button("Add file").clicked() && !self.file_path.trim().is_empty() {
@@ -653,7 +896,6 @@ impl StudioApp {
         }
     }
 
-    /// Lists capture devices and attaches the chosen one.
     fn device_picker(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
         if !self.show_devices {
             return;
@@ -665,21 +907,22 @@ impl StudioApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.set_min_width(440.0);
+                ui.set_min_width(460.0);
                 ui.add_space(4.0);
 
-                ui.label(RichText::new("ATTACH TO").size(11.0).color(theme::TEXT_DIM));
+                ui.label(RichText::new("ATTACH TO").size(10.5).color(theme::TEXT_DIM));
                 ui.horizontal_wrapped(|ui| {
                     let standalone = self.attach_to.is_none();
-                    let colour = if standalone { theme::ACCENT } else { theme::BG_RAISED };
-                    if theme::button(ui, "New audio input", colour, Vec2::new(130.0, 24.0)).clicked() {
+                    if theme::chip(ui, "New audio input", standalone, theme::ACCENT, Vec2::new(134.0, 24.0))
+                        .clicked()
+                    {
                         self.attach_to = None;
                     }
                     for (index, input) in snapshot.inputs.iter().enumerate() {
                         let selected = self.attach_to == Some(index);
-                        let colour = if selected { theme::ACCENT } else { theme::BG_RAISED };
                         let label = format!("{} {}", index + 1, input.name);
-                        if theme::button(ui, &label, colour, Vec2::new(118.0, 24.0)).clicked() {
+                        let width = 7.0 * label.len() as f32 + 18.0;
+                        if theme::chip(ui, &label, selected, theme::ACCENT, Vec2::new(width, 24.0)).clicked() {
                             self.attach_to = Some(index);
                         }
                     }
@@ -688,23 +931,19 @@ impl StudioApp {
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
-                ui.label(RichText::new("DEVICE").size(11.0).color(theme::TEXT_DIM));
+                ui.label(RichText::new("DEVICE").size(10.5).color(theme::TEXT_DIM));
                 ui.add_space(4.0);
 
                 // Enumerated every time the dialog opens rather than cached:
                 // devices appear and disappear as things are plugged in.
                 let devices = rhevia_audio::list_input_devices();
                 if devices.is_empty() {
-                    ui.label(
-                        RichText::new("no capture devices found")
-                            .size(11.0)
-                            .color(theme::TEXT_DIM),
-                    );
+                    ui.label(RichText::new("no capture devices found").size(10.5).color(theme::TEXT_FAINT));
                 }
-                egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                     for device in &devices {
                         let label = if device.is_default {
-                            format!("{}  (default)", device.name)
+                            format!("{}   (default)", device.name)
                         } else {
                             device.name.clone()
                         };
@@ -740,7 +979,7 @@ impl StudioApp {
     }
 }
 
-/// Device names are long and repetitive; the strip is 62 px wide.
+/// Device names are long and repetitive; a channel strip is 62 px wide.
 fn shorten(name: &str) -> String {
     let trimmed = name.split('(').next().unwrap_or(name).trim();
     if trimmed.is_empty() {
@@ -748,6 +987,20 @@ fn shorten(name: &str) -> String {
     } else {
         trimmed.chars().take(18).collect()
     }
+}
+
+/// Timecode from the engine frame count, so it counts production time rather
+/// than wall clock and stops when the engine does.
+fn timecode(frames: u64) -> String {
+    let fps = TARGET_FPS as u64;
+    let seconds = frames / fps;
+    format!(
+        "{:02}:{:02}:{:02}:{:02}",
+        seconds / 3600,
+        (seconds % 3600) / 60,
+        seconds % 60,
+        frames % fps
+    )
 }
 
 fn default_record_path() -> String {

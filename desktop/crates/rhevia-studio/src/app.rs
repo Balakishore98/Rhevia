@@ -149,7 +149,9 @@ impl InputTab {
             InputTab::Camera => "A webcam or capture card. Opened at its highest frame rate.",
             InputTab::Display => "A whole monitor, captured live.",
             InputTab::Window => "A single application window, captured live.",
-            InputTab::Audio => "A microphone or line input, on its own or attached to a camera.",
+            InputTab::Audio => {
+                "A microphone, a USB interface, or whatever the machine is playing."
+            }
             InputTab::Media => "An H.264 file, played on a loop.",
             InputTab::Image => "A still: holding slide, sponsor board, stinger graphic.",
             InputTab::Title => "A lower third, rendered here rather than in another application.",
@@ -212,6 +214,17 @@ impl eframe::App for StudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let snapshot = self.engine.snapshot();
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
+
+        // The mixer's device buttons ask for the same thing the input
+        // dialog already does, so they open it rather than a second dialog
+        // that lists the same devices and can drift away from it.
+        if self.show_devices {
+            self.show_devices = false;
+            self.attach_to = None;
+            self.input_tab = InputTab::Audio;
+            self.show_add_source = true;
+            self.refresh_devices();
+        }
 
         self.keyboard(ctx, &snapshot);
         self.dropped_files(ctx);
@@ -1172,7 +1185,6 @@ impl StudioApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
-        self.device_picker(ctx, snapshot);
         self.title_editor(ctx);
         self.input_settings(ctx, snapshot);
 
@@ -1229,12 +1241,12 @@ impl StudioApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.set_min_size(Vec2::new(760.0, 420.0));
+                ui.set_min_size(Vec2::new(780.0, 560.0));
 
                 ui.horizontal_top(|ui| {
                     // ---- left nav ------------------------------------------
                     ui.vertical(|ui| {
-                        ui.set_width(168.0);
+                        ui.set_width(176.0);
                         ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
                         ui.add_space(2.0);
                         for tab in InputTab::ALL {
@@ -1265,12 +1277,12 @@ impl StudioApp {
                     });
 
                     ui.add_space(14.0);
-                    theme::divider(ui, 396.0);
+                    theme::divider(ui, 528.0);
                     ui.add_space(14.0);
 
                     // ---- the chosen type -----------------------------------
                     ui.vertical(|ui| {
-                        ui.set_width(540.0);
+                        ui.set_width(552.0);
                         ui.add_space(2.0);
                         ui.label(RichText::new(self.input_tab.label()).size(15.0).strong());
                         ui.label(
@@ -1289,7 +1301,7 @@ impl StudioApp {
                         ui.add_space(12.0);
 
                         egui::ScrollArea::vertical()
-                            .max_height(280.0)
+                            .max_height(420.0)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 close = self.input_body(ui, snapshot);
@@ -1416,25 +1428,70 @@ impl StudioApp {
                     );
                     return false;
                 }
-                for device in self.cached_audio.clone() {
-                    let label = if device.is_default {
-                        format!("{}   (default)", device.name)
-                    } else {
-                        device.name.clone()
-                    };
-                    if ui.button(label).clicked() {
-                        match self.attach_to {
-                            Some(input) => self.engine.send(Command::AttachAudio {
-                                input,
-                                device: Some(device.name.clone()),
-                            }),
-                            None => self.engine.send(Command::AddAudioSource {
-                                name: shorten(&device.name),
-                                device: Some(device.name.clone()),
-                            }),
-                        }
-                        return true;
+
+                // Hardware and system audio are listed apart, because they
+                // answer different questions: what is the microphone, and
+                // what is the computer playing.
+                let devices = self.cached_audio.clone();
+                let mut chosen: Option<rhevia_audio::AudioDevice> = None;
+
+                for (heading, kind) in [
+                    ("HARDWARE", rhevia_audio::DeviceKind::Input),
+                    ("SYSTEM AUDIO", rhevia_audio::DeviceKind::SystemAudio),
+                ] {
+                    let group: Vec<&rhevia_audio::AudioDevice> =
+                        devices.iter().filter(|d| d.kind == kind).collect();
+                    if group.is_empty() {
+                        continue;
                     }
+
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(heading).size(9.5).color(theme::TEXT_FAINT));
+                    ui.add_space(3.0);
+
+                    if kind == rhevia_audio::DeviceKind::SystemAudio {
+                        ui.label(
+                            RichText::new(
+                                "Captures what is already playing. Start the music first: \
+                                 an idle output produces nothing to capture.",
+                            )
+                            .size(9.5)
+                            .color(theme::TEXT_FAINT),
+                        );
+                        ui.add_space(3.0);
+                    }
+
+                    for device in group {
+                        // The prefix has done its job in the list; showing it
+                        // on every row under its own heading is noise.
+                        let shown = rhevia_audio::system_audio_endpoint(&device.name)
+                            .unwrap_or(&device.name);
+                        let label = if device.is_default {
+                            format!("{shown}   (default)")
+                        } else {
+                            shown.to_string()
+                        };
+                        if ui.button(label).clicked() {
+                            chosen = Some(device.clone());
+                        }
+                    }
+                }
+
+                if let Some(device) = chosen {
+                    match self.attach_to {
+                        Some(input) => self.engine.send(Command::AttachAudio {
+                            input,
+                            device: Some(device.name.clone()),
+                        }),
+                        None => self.engine.send(Command::AddAudioSource {
+                            name: shorten(
+                                rhevia_audio::system_audio_endpoint(&device.name)
+                                    .unwrap_or(&device.name),
+                            ),
+                            device: Some(device.name.clone()),
+                        }),
+                    }
+                    return true;
                 }
                 false
             }
@@ -1731,78 +1788,6 @@ impl StudioApp {
             self.editing_title = Some((index, text, subtitle));
         } else {
             self.editing_title = None;
-        }
-    }
-
-    fn device_picker(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
-        if !self.show_devices {
-            return;
-        }
-        let mut open = true;
-        egui::Window::new("Audio device")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_min_width(460.0);
-                ui.add_space(4.0);
-
-                ui.label(RichText::new("ATTACH TO").size(10.5).color(theme::TEXT_DIM));
-                ui.horizontal_wrapped(|ui| {
-                    let standalone = self.attach_to.is_none();
-                    if theme::chip(ui, "New audio input", standalone, theme::ACCENT, Vec2::new(134.0, 24.0))
-                        .clicked()
-                    {
-                        self.attach_to = None;
-                    }
-                    for (index, input) in snapshot.inputs.iter().enumerate() {
-                        let selected = self.attach_to == Some(index);
-                        let label = format!("{} {}", index + 1, input.name);
-                        if theme::chip(ui, &label, selected, theme::ACCENT, theme::chip_size(ui, &label, 24.0)).clicked() {
-                            self.attach_to = Some(index);
-                        }
-                    }
-                });
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-                ui.label(RichText::new("DEVICE").size(10.5).color(theme::TEXT_DIM));
-                ui.add_space(4.0);
-
-                // Enumerated every time the dialog opens rather than cached:
-                // devices appear and disappear as things are plugged in.
-                let devices = rhevia_audio::list_input_devices();
-                if devices.is_empty() {
-                    ui.label(RichText::new("no capture devices found").size(10.5).color(theme::TEXT_FAINT));
-                }
-                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                    for device in &devices {
-                        let label = if device.is_default {
-                            format!("{}   (default)", device.name)
-                        } else {
-                            device.name.clone()
-                        };
-                        if ui.button(label).clicked() {
-                            match self.attach_to {
-                                Some(input) => self.engine.send(Command::AttachAudio {
-                                    input,
-                                    device: Some(device.name.clone()),
-                                }),
-                                None => self.engine.send(Command::AddAudioSource {
-                                    name: shorten(&device.name),
-                                    device: Some(device.name.clone()),
-                                }),
-                            }
-                            self.show_devices = false;
-                        }
-                    }
-                });
-                ui.add_space(6.0);
-            });
-        if !open {
-            self.show_devices = false;
         }
     }
 

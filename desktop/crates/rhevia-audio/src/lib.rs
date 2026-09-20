@@ -5,14 +5,19 @@
 
 pub mod capture;
 pub mod dsp;
+pub mod loopback;
 pub mod loudness;
 pub mod mixer;
 
-pub use capture::{AudioDevice, CaptureHandle, list_input_devices};
+pub use capture::{
+    list_input_devices, system_audio_endpoint, system_audio_name, AudioDevice, CaptureHandle,
+    DeviceKind,
+};
 pub use dsp::{
     ChannelDsp, Compressor, CompressorSettings, Delay, EqSettings, Equaliser, GateSettings,
     NoiseGate,
 };
+pub use loopback::{list_output_devices, LoopbackCapture, OutputDevice};
 pub use loudness::LoudnessMeter;
 pub use mixer::{
     amplitude_to_db, db_to_amplitude, AudioBuffer, AudioMixer, ChannelStrip, Meter, BUS_COUNT,

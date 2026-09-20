@@ -10,6 +10,13 @@ pub const SAMPLE_RATE: u32 = 48_000;
 /// Stereo throughout. Mono sources are duplicated on capture.
 pub const CHANNELS: usize = 2;
 
+/// Master plus seven auxiliaries, the layout every switcher of this class
+/// uses. Bus 0 is Master and is what the stream and the recording carry.
+pub const BUS_COUNT: usize = 8;
+
+/// Bus names, for the routing matrix.
+pub const BUS_NAMES: [&str; BUS_COUNT] = ["MASTER", "A", "B", "C", "D", "E", "F", "G"];
+
 /// Interleaved stereo f32, nominal range -1.0..1.0.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AudioBuffer {
@@ -171,6 +178,12 @@ pub struct ChannelStrip {
     /// air. Off means the channel is always live, which is what a presenter
     /// microphone wants.
     pub follow_program: bool,
+    /// Which buses this channel feeds. Index 0 is Master.
+    ///
+    /// A channel can feed several at once, which is the whole point: a
+    /// presenter goes to Master and to the interpreter feed, while the music
+    /// bed goes to Master only.
+    pub buses: [bool; BUS_COUNT],
     pub meter: Meter,
 }
 
@@ -183,7 +196,21 @@ impl ChannelStrip {
             solo: false,
             pan: 0.0,
             follow_program: false,
+            // Master only by default: a new source should be audible on the
+            // programme without any routing, and silent everywhere else.
+            buses: {
+                let mut buses = [false; BUS_COUNT];
+                buses[0] = true;
+                buses
+            },
             meter: Meter::new(),
+        }
+    }
+
+    /// Routes this channel to a bus, or stops routing it there.
+    pub fn set_bus(&mut self, bus: usize, on: bool) {
+        if bus < BUS_COUNT {
+            self.buses[bus] = on;
         }
     }
 
@@ -209,6 +236,10 @@ pub struct AudioMixer {
     pub master_gain_db: f32,
     pub master_muted: bool,
     pub master_meter: Meter,
+    /// One mixed buffer per bus. Index 0 is Master.
+    buses: Vec<AudioBuffer>,
+    /// Level on each bus, for the matrix display.
+    pub bus_meters: Vec<Meter>,
     /// Reused between blocks so mixing never allocates.
     scratch: AudioBuffer,
 }
@@ -220,8 +251,15 @@ impl AudioMixer {
             master_gain_db: 0.0,
             master_muted: false,
             master_meter: Meter::new(),
+            buses: vec![AudioBuffer::default(); BUS_COUNT],
+            bus_meters: vec![Meter::new(); BUS_COUNT],
             scratch: AudioBuffer::default(),
         }
+    }
+
+    /// The mixed audio on one bus.
+    pub fn bus(&self, index: usize) -> Option<&AudioBuffer> {
+        self.buses.get(index)
     }
 
     pub fn add_channel(&mut self, name: impl Into<String>) -> usize {
@@ -255,6 +293,10 @@ impl AudioMixer {
     pub fn mix(&mut self, inputs: &[Option<&AudioBuffer>], on_air: &[bool], frames: usize) -> &AudioBuffer {
         self.scratch.resize(frames);
         self.scratch.clear();
+        for bus in &mut self.buses {
+            bus.resize(frames);
+            bus.clear();
+        }
 
         let soloing = self.any_solo();
 
@@ -284,11 +326,17 @@ impl AudioMixer {
             channel.meter.measure(input);
 
             let count = frames.min(input.frames());
-            for frame in 0..count {
-                let left = input.samples[frame * CHANNELS];
-                let right = input.samples[frame * CHANNELS + 1];
-                self.scratch.samples[frame * CHANNELS] += left * left_gain;
-                self.scratch.samples[frame * CHANNELS + 1] += right * right_gain;
+            for (bus_index, routed) in channel.buses.iter().enumerate() {
+                if !routed {
+                    continue;
+                }
+                let bus = &mut self.buses[bus_index];
+                for frame in 0..count {
+                    let left = input.samples[frame * CHANNELS];
+                    let right = input.samples[frame * CHANNELS + 1];
+                    bus.samples[frame * CHANNELS] += left * left_gain;
+                    bus.samples[frame * CHANNELS + 1] += right * right_gain;
+                }
             }
         }
 
@@ -297,10 +345,19 @@ impl AudioMixer {
         } else {
             db_to_amplitude(self.master_gain_db)
         };
-        for sample in &mut self.scratch.samples {
+
+        // The master fader applies to bus 0 only; the auxiliaries are
+        // independent feeds and must not follow the programme fader.
+        for sample in &mut self.buses[0].samples {
             *sample *= master;
         }
+        for (index, bus) in self.buses.iter().enumerate() {
+            self.bus_meters[index].measure(bus);
+        }
 
+        // Master is what the stream and the recording carry, so it is what
+        // `mix` returns and what the master meter reads.
+        self.scratch.samples.copy_from_slice(&self.buses[0].samples);
         self.master_meter.measure(&self.scratch);
         &self.scratch
     }
@@ -514,6 +571,88 @@ mod tests {
             after < before * 0.1,
             "a source that stopped should fall to silence, {before} -> {after}"
         );
+    }
+
+    #[test]
+    fn a_new_channel_goes_to_master_and_nowhere_else() {
+        // A source must be audible on the programme the moment it is added,
+        // without anyone visiting a routing page.
+        let strip = ChannelStrip::new("Mic");
+        assert!(strip.buses[0], "master should be on by default");
+        assert!(strip.buses[1..].iter().all(|&b| !b), "auxiliaries should be off");
+    }
+
+    #[test]
+    fn a_channel_can_feed_several_buses_at_once() {
+        let mut mixer = AudioMixer::new();
+        mixer.add_channel("Presenter");
+        mixer.channel_mut(0).unwrap().set_bus(2, true);
+
+        let input = tone(16, 0.5);
+        mixer.mix(&[Some(&input)], &[true], 16);
+
+        assert!(mixer.bus(0).unwrap().samples[0] > 0.2, "master should carry it");
+        assert!(mixer.bus(2).unwrap().samples[0] > 0.2, "bus B should carry it too");
+        assert_eq!(mixer.bus(1).unwrap().samples[0], 0.0, "bus A should be silent");
+    }
+
+    #[test]
+    fn a_channel_taken_off_master_is_silent_there_but_still_feeds_its_aux() {
+        // A translation feed that must not reach the programme.
+        let mut mixer = AudioMixer::new();
+        mixer.add_channel("Interpreter");
+        let strip = mixer.channel_mut(0).unwrap();
+        strip.set_bus(0, false);
+        strip.set_bus(1, true);
+
+        let input = tone(16, 0.6);
+        mixer.mix(&[Some(&input)], &[true], 16);
+
+        assert_eq!(mixer.bus(0).unwrap().samples[0], 0.0, "must not reach master");
+        assert!(mixer.bus(1).unwrap().samples[0] > 0.2, "must reach its aux");
+    }
+
+    #[test]
+    fn the_master_fader_does_not_move_the_auxiliaries() {
+        // Pulling the programme down must not drag the interpreter feed with
+        // it; that is the whole reason auxiliaries exist.
+        let mut mixer = AudioMixer::new();
+        mixer.add_channel("Source");
+        mixer.channel_mut(0).unwrap().set_bus(1, true);
+        mixer.master_gain_db = -40.0;
+
+        let input = tone(16, 0.8);
+        mixer.mix(&[Some(&input)], &[true], 16);
+
+        assert!(mixer.bus(0).unwrap().samples[0] < 0.05, "master should be pulled down");
+        assert!(mixer.bus(1).unwrap().samples[0] > 0.3, "the aux should be untouched");
+    }
+
+    #[test]
+    fn master_mute_silences_the_programme_only() {
+        let mut mixer = AudioMixer::new();
+        mixer.add_channel("Source");
+        mixer.channel_mut(0).unwrap().set_bus(1, true);
+        mixer.master_muted = true;
+
+        let input = tone(16, 0.7);
+        let out = mixer.mix(&[Some(&input)], &[true], 16);
+
+        assert!(out.samples.iter().all(|&s| s == 0.0), "the programme is muted");
+        assert!(mixer.bus(1).unwrap().samples[0] > 0.3, "the aux keeps running");
+    }
+
+    #[test]
+    fn every_bus_is_metered() {
+        let mut mixer = AudioMixer::new();
+        mixer.add_channel("Source");
+        mixer.channel_mut(0).unwrap().set_bus(3, true);
+        let input = tone(32, 0.5);
+        mixer.mix(&[Some(&input)], &[true], 32);
+
+        assert!(mixer.bus_meters[0].peak() > 0.2);
+        assert!(mixer.bus_meters[3].peak() > 0.2);
+        assert_eq!(mixer.bus_meters[5].peak(), 0.0, "an unused bus should read silence");
     }
 
     #[test]

@@ -13,6 +13,6 @@ pub use dsp::{
     NoiseGate,
 };
 pub use mixer::{
-    amplitude_to_db, db_to_amplitude, AudioBuffer, AudioMixer, ChannelStrip, Meter, CHANNELS,
-    SAMPLE_RATE, SILENCE_DB,
+    amplitude_to_db, db_to_amplitude, AudioBuffer, AudioMixer, ChannelStrip, Meter, BUS_COUNT,
+    BUS_NAMES, CHANNELS, SAMPLE_RATE, SILENCE_DB,
 };

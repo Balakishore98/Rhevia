@@ -106,6 +106,19 @@ impl Mixer {
         Ok(self.inputs.len() - 1)
     }
 
+    /// Removes an input, freeing its decoder and its held frame.
+    ///
+    /// Every index above it shifts down by one, so callers holding input
+    /// indices must remap. Leaving removed inputs in place instead would keep
+    /// a decoder and a full frame alive for every source ever opened.
+    pub fn remove_input(&mut self, index: usize) -> bool {
+        if index >= self.inputs.len() {
+            return false;
+        }
+        self.inputs.remove(index);
+        true
+    }
+
     /// Feeds one encoded access unit to an input.
     ///
     /// Decode failures are reported but do not poison the input: a corrupt
@@ -369,6 +382,37 @@ mod tests {
         assert_eq!(index, before);
         assert_eq!(mixer.input_name(index), Some("Phone"));
         assert!(mixer.push_frame(index, Frame::filled(64, 64, [1, 2, 3])).is_ok());
+    }
+
+    #[test]
+    fn removing_an_input_frees_it_and_shifts_the_rest_down() {
+        let mut mixer = Mixer::new(settings()).expect("mixer");
+        mixer.set_input_name(0, "A");
+        mixer.set_input_name(1, "B");
+        mixer.set_input_name(2, "C");
+        let before = mixer.input_count();
+
+        assert!(mixer.remove_input(1));
+        assert_eq!(mixer.input_count(), before - 1);
+        assert_eq!(mixer.input_name(1), Some("C"), "C should have moved down");
+    }
+
+    #[test]
+    fn removing_an_input_that_does_not_exist_is_refused_not_a_panic() {
+        let mut mixer = Mixer::new(settings()).expect("mixer");
+        assert!(!mixer.remove_input(999));
+    }
+
+    #[test]
+    fn a_removed_input_no_longer_holds_its_picture() {
+        // The whole point: the frame and decoder have to go with it.
+        let mut mixer = Mixer::new(settings()).expect("mixer");
+        mixer.push_frame(1, Frame::filled(64, 64, [1, 2, 3])).unwrap();
+        assert!(mixer.input_frame(1).is_some());
+
+        mixer.remove_input(1);
+        // Index 1 is now the old index 2, which never had a picture.
+        assert!(mixer.input_frame(1).is_none());
     }
 
     #[test]

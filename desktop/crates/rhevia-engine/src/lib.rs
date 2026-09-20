@@ -10,7 +10,7 @@ pub mod source;
 pub mod transition;
 
 pub use codec::{CodecError, EncoderSettings, H264Decoder, H264Encoder};
-pub use composite::{Compositor, Layer, Rect, Scene};
+pub use composite::{ColourAdjust, Compositor, Layer, Rect, Scene};
 pub use frame::Frame;
 pub use source::{load_image, render_title, system_font, SourceError, TitleStyle};
 pub use transition::Transition;

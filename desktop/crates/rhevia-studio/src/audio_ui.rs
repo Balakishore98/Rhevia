@@ -341,7 +341,7 @@ pub fn strip_row(
     show_devices: &mut bool,
 ) {
     egui::TopBottomPanel::bottom("audio-row")
-        .exact_height(154.0)
+        .exact_height(188.0)
         .frame(theme::panel(theme::SURFACE_CONTAINER))
         .show(ctx, |ui| {
             ui.add_space(7.0);
@@ -371,7 +371,7 @@ pub fn strip_row(
                 ui.add_space(12.0);
                 master_strip(ui, &snapshot.master, engine, false);
                 ui.add_space(6.0);
-                theme::divider(ui, 118.0);
+                theme::divider(ui, 140.0);
                 ui.add_space(6.0);
 
                 egui::ScrollArea::horizontal()
@@ -547,6 +547,119 @@ fn dsp_panel(ui: &mut Ui, index: usize, channel: &ChannelState, engine: &EngineH
     });
 }
 
+/// The crosspoint routing matrix: every channel against every bus.
+///
+/// A grid rather than a per-channel list, because the question an operator
+/// actually asks is "what is feeding the interpreter bus", and only a grid
+/// answers that by being looked at.
+fn routing_matrix(ui: &mut Ui, snapshot: &Snapshot, engine: &EngineHandle) {
+    const NAME_WIDTH: f32 = 150.0;
+    const CELL: f32 = 62.0;
+
+    ui.horizontal(|ui| {
+        ui.add_space(20.0);
+        ui.label(
+            RichText::new("VISUAL CROSSPOINT ROUTING MATRIX")
+                .size(11.5)
+                .strong()
+                .color(theme::TEXT),
+        );
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(format!(
+                "{} IN x {} BUS OUT",
+                snapshot.audio.len(),
+                rhevia_audio::BUS_COUNT
+            ))
+            .font(theme::mono(9.5))
+            .color(theme::TEXT_FAINT),
+        );
+    });
+    ui.add_space(8.0);
+
+    egui::ScrollArea::vertical()
+        .id_salt("routing-matrix")
+        .max_height(230.0)
+        .show(ui, |ui| {
+            // Bus header, with each bus carrying its own level so a silent
+            // feed is visible here rather than only on its own meter.
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                ui.allocate_exact_size(Vec2::new(NAME_WIDTH, 26.0), Sense::hover());
+                for (bus, name) in rhevia_audio::BUS_NAMES.iter().enumerate() {
+                    let (peak, clipped) = snapshot
+                        .bus_levels
+                        .get(bus)
+                        .copied()
+                        .unwrap_or((METER_MIN_DB, false));
+                    let colour = if clipped {
+                        theme::PROGRAM
+                    } else if peak > METER_MIN_DB + 1.0 {
+                        theme::PREVIEW
+                    } else {
+                        theme::TEXT_FAINT
+                    };
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
+                        ui.set_width(CELL);
+                        ui.label(RichText::new(*name).size(10.0).strong().color(colour));
+                        ui.label(
+                            RichText::new(if peak > METER_MIN_DB + 1.0 {
+                                format!("{peak:.0}")
+                            } else {
+                                "--".into()
+                            })
+                            .font(theme::mono(8.5))
+                            .color(theme::TEXT_FAINT),
+                        );
+                    });
+                }
+            });
+            ui.add_space(4.0);
+
+            for (index, channel) in snapshot.audio.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(0.0, 0.0);
+                        ui.set_width(NAME_WIDTH);
+                        ui.label(
+                            RichText::new(channel.name.chars().take(20).collect::<String>())
+                                .size(10.5)
+                                .color(if channel.has_source { theme::TEXT } else { theme::TEXT_DIM }),
+                        );
+                        ui.label(
+                            RichText::new(if channel.has_source { "device" } else { "no device" })
+                                .font(theme::mono(8.5))
+                                .color(theme::TEXT_FAINT),
+                        );
+                    });
+
+                    for bus in 0..rhevia_audio::BUS_COUNT {
+                        let on = channel.buses.get(bus).copied().unwrap_or(false);
+                        // Master is red because it is what goes to air; the
+                        // auxiliaries are cyan because they are routing, not
+                        // programme.
+                        let colour = if bus == 0 { theme::PROGRAM } else { theme::ACCENT };
+                        ui.allocate_ui(Vec2::new(CELL, 30.0), |ui| {
+                            if theme::chip(ui, if on { "ON" } else { "" }, on, colour, Vec2::new(CELL - 6.0, 26.0))
+                                .on_hover_text(format!(
+                                    "{} to {}",
+                                    channel.name,
+                                    rhevia_audio::BUS_NAMES[bus]
+                                ))
+                                .clicked()
+                            {
+                                engine.send(Command::SetChannelBus { channel: index, bus, on: !on });
+                            }
+                        });
+                    }
+                });
+                ui.add_space(2.0);
+            }
+        });
+}
+
 /// The full mixer, on its own tab.
 pub fn full_view(
     ctx: &egui::Context,
@@ -558,6 +671,7 @@ pub fn full_view(
     egui::CentralPanel::default()
         .frame(theme::panel(theme::SURFACE))
         .show(ctx, |ui| {
+            egui::ScrollArea::vertical().id_salt("audio-page").show(ui, |ui| {
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
@@ -607,6 +721,11 @@ pub fn full_view(
             ui.add_space(14.0);
             ui.separator();
             ui.add_space(10.0);
+            routing_matrix(ui, snapshot, engine);
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(10.0);
 
             if *selected >= snapshot.audio.len() {
                 *selected = 0;
@@ -651,6 +770,8 @@ pub fn full_view(
                     .size(10.5)
                     .color(theme::WARN),
                 );
+            });
+            ui.add_space(16.0);
             });
         });
 }

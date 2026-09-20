@@ -52,6 +52,68 @@ impl Rect {
     }
 }
 
+/// Per-input picture adjustment, as every switcher offers on its inputs.
+///
+/// Applied at composite time rather than to the stored frame, so turning a
+/// control does not cost a re-decode and the original is never destroyed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColourAdjust {
+    /// -1.0 to 1.0, 0.0 neutral.
+    pub brightness: f32,
+    /// 0.0 to 2.0, 1.0 neutral.
+    pub contrast: f32,
+    /// 0.0 greyscale, 1.0 neutral, 2.0 doubled.
+    pub saturation: f32,
+}
+
+impl Default for ColourAdjust {
+    fn default() -> Self {
+        Self { brightness: 0.0, contrast: 1.0, saturation: 1.0 }
+    }
+}
+
+impl ColourAdjust {
+    /// True when the settings would leave every pixel untouched, so the
+    /// per-pixel work can be skipped entirely.
+    pub fn is_neutral(&self) -> bool {
+        self.brightness.abs() < 0.001
+            && (self.contrast - 1.0).abs() < 0.001
+            && (self.saturation - 1.0).abs() < 0.001
+    }
+
+    /// Applies the adjustment to one pixel.
+    pub fn apply(&self, rgba: [u8; 4]) -> [u8; 4] {
+        if self.is_neutral() {
+            return rgba;
+        }
+        let mut channels = [0.0f32; 3];
+        for c in 0..3 {
+            channels[c] = rgba[c] as f32 / 255.0;
+        }
+
+        // Contrast pivots around mid grey, so raising it darkens shadows and
+        // lifts highlights rather than simply brightening everything.
+        for value in &mut channels {
+            *value = (*value - 0.5) * self.contrast + 0.5 + self.brightness;
+        }
+
+        if (self.saturation - 1.0).abs() >= 0.001 {
+            // Rec. 709 luma, matching the colour space the encoder works in.
+            let luma = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+            for value in &mut channels {
+                *value = luma + (*value - luma) * self.saturation;
+            }
+        }
+
+        [
+            (channels[0].clamp(0.0, 1.0) * 255.0) as u8,
+            (channels[1].clamp(0.0, 1.0) * 255.0) as u8,
+            (channels[2].clamp(0.0, 1.0) * 255.0) as u8,
+            rgba[3],
+        ]
+    }
+}
+
 /// One element of a scene.
 #[derive(Debug, Clone)]
 pub struct Layer {
@@ -63,6 +125,7 @@ pub struct Layer {
     pub visible: bool,
     /// Preserve the source aspect ratio inside `rect`.
     pub preserve_aspect: bool,
+    pub colour: ColourAdjust,
 }
 
 impl Layer {
@@ -73,7 +136,13 @@ impl Layer {
             opacity: 1.0,
             visible: true,
             preserve_aspect: true,
+            colour: ColourAdjust::default(),
         }
+    }
+
+    pub fn with_colour(mut self, colour: ColourAdjust) -> Self {
+        self.colour = colour;
+        self
     }
 
     pub fn with_opacity(mut self, opacity: f32) -> Self {
@@ -152,7 +221,7 @@ impl Compositor {
             } else {
                 layer.rect
             };
-            draw(&mut self.canvas, source, rect, layer.opacity);
+            draw(&mut self.canvas, source, rect, layer.opacity, layer.colour);
         }
 
         &self.canvas
@@ -169,7 +238,7 @@ impl Compositor {
 }
 
 /// Draws `source` into `dest` at `rect`, scaled, with `opacity` applied.
-fn draw(dest: &mut Frame, source: &Frame, rect: Rect, opacity: f32) {
+fn draw(dest: &mut Frame, source: &Frame, rect: Rect, opacity: f32, colour: ColourAdjust) {
     // Clip to the canvas up front rather than testing every pixel.
     let x0 = rect.x.floor().max(0.0) as usize;
     let y0 = rect.y.floor().max(0.0) as usize;
@@ -189,7 +258,7 @@ fn draw(dest: &mut Frame, source: &Frame, rect: Rect, opacity: f32) {
                 continue;
             }
 
-            let src = source.sample(u, v);
+            let src = colour.apply(source.sample(u, v));
             let alpha = (src[3] as f32 / 255.0) * opacity;
             if alpha <= 0.0 {
                 continue;
@@ -297,6 +366,66 @@ mod tests {
         scene.push(Layer::new(99, Rect::full(4, 4)));
         let out = c.render(&scene, &[Some(&red)]);
         assert_eq!(out.pixel(1, 1), Some([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn a_neutral_adjustment_changes_nothing() {
+        let neutral = ColourAdjust::default();
+        assert!(neutral.is_neutral());
+        for px in [[0u8, 0, 0, 255], [128, 64, 200, 255], [255, 255, 255, 0]] {
+            assert_eq!(neutral.apply(px), px);
+        }
+    }
+
+    #[test]
+    fn brightness_lifts_and_clamps_rather_than_wrapping() {
+        // Wrapping would turn a highlight black, which is the worst possible
+        // failure on a picture that is already too bright.
+        let bright = ColourAdjust { brightness: 0.5, ..Default::default() };
+        assert_eq!(bright.apply([200, 200, 200, 255])[0], 255);
+        let dark = ColourAdjust { brightness: -0.5, ..Default::default() };
+        assert_eq!(dark.apply([40, 40, 40, 255])[0], 0);
+    }
+
+    #[test]
+    fn contrast_pivots_around_mid_grey() {
+        let punchy = ColourAdjust { contrast: 1.5, ..Default::default() };
+        // Mid grey is the pivot, so it should barely move.
+        let mid = punchy.apply([128, 128, 128, 255])[0];
+        assert!((120..=136).contains(&mid), "mid grey moved to {mid}");
+        // Either side of it should push away from the middle.
+        assert!(punchy.apply([180, 180, 180, 255])[0] > 180);
+        assert!(punchy.apply([70, 70, 70, 255])[0] < 70);
+    }
+
+    #[test]
+    fn zero_saturation_produces_grey_at_the_right_luma() {
+        let grey = ColourAdjust { saturation: 0.0, ..Default::default() };
+        let out = grey.apply([255, 0, 0, 255]);
+        assert_eq!(out[0], out[1], "channels should match once desaturated");
+        assert_eq!(out[1], out[2]);
+        // Rec. 709 puts pure red at about 21% luma.
+        assert!((45..=65).contains(&out[0]), "expected Rec.709 luma, got {}", out[0]);
+    }
+
+    #[test]
+    fn alpha_survives_every_adjustment() {
+        let adjust = ColourAdjust { brightness: 0.3, contrast: 1.4, saturation: 0.2 };
+        assert_eq!(adjust.apply([10, 20, 30, 77])[3], 77);
+    }
+
+    #[test]
+    fn a_layer_adjustment_reaches_the_composited_picture() {
+        let source = Frame::filled(8, 8, [200, 40, 40]);
+        let mut c = Compositor::new(8, 8);
+        let mut scene = Scene::new();
+        scene.push(
+            Layer::new(0, Rect::full(8, 8))
+                .with_colour(ColourAdjust { saturation: 0.0, ..Default::default() }),
+        );
+        let out = c.render(&scene, &[Some(&source)]);
+        let px = out.pixel(4, 4).unwrap();
+        assert_eq!(px[0], px[1], "the adjustment should have desaturated it");
     }
 
     #[test]

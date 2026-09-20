@@ -63,6 +63,10 @@ pub struct StudioApp {
     title_subtitle: String,
     /// The title input being edited, with its working copy of the text.
     editing_title: Option<(usize, String, String)>,
+    /// The input whose settings dialog is open.
+    settings_for: Option<usize>,
+    /// Working copy of that input's name, so typing does not fight the engine.
+    settings_name: String,
     show_add_source: bool,
     show_devices: bool,
     /// Which input a chosen device attaches to; None adds an audio-only input.
@@ -90,6 +94,8 @@ impl StudioApp {
             title_text: String::new(),
             title_subtitle: String::new(),
             editing_title: None,
+            settings_for: None,
+            settings_name: String::new(),
             show_add_source: false,
             show_devices: false,
             attach_to: None,
@@ -244,6 +250,10 @@ impl StudioApp {
             .exact_height(50.0)
             .frame(theme::panel(theme::SURFACE_LOW))
             .show(ctx, |ui| {
+                // Width the right-hand block needs: timecode, GO LIVE, RECORD
+                // and, while recording, the byte count.
+                let right_width = if snapshot.recording { 490.0 } else { 390.0 };
+
                 ui.horizontal_centered(|ui| {
                     ui.add_space(10.0);
                     let s = snapshot.stats;
@@ -273,7 +283,6 @@ impl StudioApp {
                         theme::readout(ui, "UPTIME", "--:--", theme::TEXT_FAINT);
                         theme::readout(ui, "BITRATE", "--", theme::TEXT_FAINT);
                     }
-                    theme::readout(ui, "ENCODER", "H.264 1280x720p30", theme::TEXT);
 
                     // Engine load: how much of the frame budget compositing
                     // took. Above 100% the mixer cannot keep up, which is the
@@ -295,6 +304,10 @@ impl StudioApp {
                         theme::PREVIEW
                     };
                     theme::readout(ui, "FPS", &format!("{:.1}", s.fps), fps_colour);
+
+                    // Eat the gap so the block that follows sits hard right,
+                    // rather than trusting a nested layout to find the edge.
+                    ui.add_space((ui.available_width() - right_width).max(0.0));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
@@ -421,7 +434,7 @@ impl StudioApp {
 
     fn input_matrix(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
         egui::TopBottomPanel::bottom("matrix")
-            .exact_height(190.0)
+            .exact_height(214.0)
             .frame(theme::panel(theme::SURFACE_LOW))
             .show(ctx, |ui| {
                 ui.add_space(8.0);
@@ -444,6 +457,13 @@ impl StudioApp {
                         ui.add_space(12.0);
                         if theme::button(ui, "+ ADD INPUT", theme::ACCENT, Vec2::new(104.0, 22.0)).clicked() {
                             self.show_add_source = true;
+                        }
+                        ui.add_space(6.0);
+                        if theme::button(ui, "AUDIO SETTINGS", theme::SURFACE_HIGH, Vec2::new(122.0, 22.0))
+                            .on_hover_text("EQ, compressor, gate and delay")
+                            .clicked()
+                        {
+                            self.tab = Tab::Audio;
                         }
                         ui.add_space(10.0);
                         for (filter, label) in [
@@ -529,33 +549,69 @@ impl StudioApp {
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
-                if theme::chip(ui, "CUT", false, theme::PROGRAM, Vec2::new(42.0, 20.0))
+                if theme::chip(ui, "CUT", false, theme::PROGRAM, Vec2::new(50.0, 20.0))
                     .on_hover_text("cut this input straight to air")
                     .clicked()
                 {
                     self.engine.send(Command::CutTo(index));
                 }
-                if theme::chip(ui, "PVW", on_preview, theme::PREVIEW, Vec2::new(42.0, 20.0)).clicked() {
+                if theme::chip(ui, "PVW", on_preview, theme::PREVIEW, Vec2::new(50.0, 20.0))
+                    .on_hover_text("arm this input in Preview")
+                    .clicked()
+                {
                     self.engine.send(Command::SetPreview(index));
                 }
-                for slot in 0..4 {
-                    let assigned = snapshot.overlay_source[slot] == Some(index);
-                    let live = assigned && snapshot.overlay_on[slot];
-                    let colour = if live { theme::PROGRAM } else { theme::ACCENT };
-                    if theme::chip(ui, &format!("{}", slot + 1), assigned, colour, Vec2::new(20.0, 20.0))
-                        .on_hover_text(format!("overlay {} with this input", slot + 1))
-                        .clicked()
-                    {
-                        self.engine.send(Command::SetOverlaySource { slot, input: index });
-                        self.engine.send(Command::ToggleOverlay(slot));
-                    }
+                let adjusted = !info.settings.is_default();
+                if theme::chip(
+                    ui,
+                    if adjusted { "SET *" } else { "SET" },
+                    adjusted,
+                    theme::ACCENT,
+                    Vec2::new(58.0, 20.0),
+                )
+                .on_hover_text(if adjusted {
+                    "name, position, zoom and colour — this input has been adjusted"
+                } else {
+                    "name, position, zoom and colour"
+                })
+                .clicked()
+                {
+                    self.settings_for = Some(index);
+                    self.settings_name = info.name.clone();
                 }
-                if theme::chip(ui, "✕", false, theme::WARN, Vec2::new(20.0, 20.0))
+                if theme::chip(ui, "CLOSE", false, theme::WARN, Vec2::new(46.0, 20.0))
                     .on_hover_text("remove this input")
                     .clicked()
                     && snapshot.inputs.len() > 1
                 {
                     self.engine.send(Command::RemoveSource(index));
+                }
+            });
+
+            // The overlay row is labelled: four bare numbers next to CUT and
+            // PVW read as something else entirely.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                ui.label(
+                    RichText::new("OVL")
+                        .font(theme::mono(9.5))
+                        .color(theme::TEXT_FAINT),
+                );
+                for slot in 0..4 {
+                    let assigned = snapshot.overlay_source[slot] == Some(index);
+                    let live = assigned && snapshot.overlay_on[slot];
+                    let colour = if live { theme::PROGRAM } else { theme::ACCENT };
+                    if theme::chip(ui, &format!("{}", slot + 1), assigned, colour, Vec2::new(32.0, 20.0))
+                        .on_hover_text(if live {
+                            format!("overlay {} is on air — click to take it off", slot + 1)
+                        } else {
+                            format!("put this input on air as overlay {}", slot + 1)
+                        })
+                        .clicked()
+                    {
+                        self.engine.send(Command::SetOverlaySource { slot, input: index });
+                        self.engine.send(Command::ToggleOverlay(slot));
+                    }
                 }
             });
 
@@ -676,7 +732,7 @@ impl StudioApp {
             // monitors, so the bus carries the current one and opens the rest,
             // which is how every switcher presents them.
             ui.menu_button(
-                RichText::new(format!("{}  ▾", snapshot.transition_kind.label())).size(11.0),
+                RichText::new(format!("{}   [change]", snapshot.transition_kind.label())).size(11.0),
                 |ui| {
                     ui.set_min_width(190.0);
                     for effect in Transition::ALL {
@@ -916,6 +972,7 @@ impl StudioApp {
     fn dialogs(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
         self.device_picker(ctx, snapshot);
         self.title_editor(ctx);
+        self.input_settings(ctx, snapshot);
 
         if self.show_add_source {
             let mut open = true;
@@ -1030,6 +1087,127 @@ impl StudioApp {
             if !open {
                 self.show_add_source = false;
             }
+        }
+    }
+
+    /// Per-input settings: name, position, zoom and colour.
+    fn input_settings(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        let Some(index) = self.settings_for else { return };
+        let Some(info) = snapshot.inputs.get(index) else {
+            self.settings_for = None;
+            return;
+        };
+
+        let mut open = true;
+        let settings = info.settings;
+        egui::Window::new(format!("Input {} settings", index + 1))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_width(440.0);
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("TYPE").size(10.5).color(theme::TEXT_DIM));
+                    ui.label(RichText::new(info.kind).font(theme::mono(11.0)).color(theme::ACCENT));
+                });
+                ui.add_space(8.0);
+
+                ui.label(RichText::new("NAME").size(10.5).color(theme::TEXT_DIM));
+                if ui
+                    .add(egui::TextEdit::singleline(&mut self.settings_name).desired_width(f32::INFINITY))
+                    .changed()
+                {
+                    self.engine.send(Command::RenameInput {
+                        input: index,
+                        name: self.settings_name.clone(),
+                    });
+                }
+
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(RichText::new("POSITION").size(11.0).strong().color(theme::TEXT));
+                ui.add_space(6.0);
+
+                let mut zoom = settings.zoom;
+                let mut offset_x = settings.offset_x;
+                let mut offset_y = settings.offset_y;
+                let mut moved = false;
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{:<8}", "ZOOM")).font(theme::mono(10.5)).color(theme::TEXT_DIM));
+                    moved |= ui
+                        .add_sized(Vec2::new(260.0, 18.0), egui::Slider::new(&mut zoom, 0.25..=4.0).fixed_decimals(2))
+                        .changed();
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{:<8}", "PAN X")).font(theme::mono(10.5)).color(theme::TEXT_DIM));
+                    moved |= ui
+                        .add_sized(Vec2::new(260.0, 18.0), egui::Slider::new(&mut offset_x, -1.0..=1.0).fixed_decimals(2))
+                        .changed();
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{:<8}", "PAN Y")).font(theme::mono(10.5)).color(theme::TEXT_DIM));
+                    moved |= ui
+                        .add_sized(Vec2::new(260.0, 18.0), egui::Slider::new(&mut offset_y, -1.0..=1.0).fixed_decimals(2))
+                        .changed();
+                });
+                if moved {
+                    self.engine.send(Command::SetInputTransform { input: index, zoom, offset_x, offset_y });
+                }
+
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(RichText::new("COLOUR ADJUST").size(11.0).strong().color(theme::TEXT));
+                ui.add_space(6.0);
+
+                let mut colour = settings.colour;
+                let mut graded = false;
+                for (label, value, range) in [
+                    ("BRIGHT", &mut colour.brightness, -1.0..=1.0),
+                    ("CONTRAST", &mut colour.contrast, 0.0..=2.0),
+                    ("SAT", &mut colour.saturation, 0.0..=2.0),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{label:<9}")).font(theme::mono(10.5)).color(theme::TEXT_DIM));
+                        graded |= ui
+                            .add_sized(Vec2::new(260.0, 18.0), egui::Slider::new(value, range).fixed_decimals(2))
+                            .changed();
+                    });
+                }
+                if graded {
+                    self.engine.send(Command::SetInputColour { input: index, colour });
+                }
+
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if theme::button(ui, "RESET", theme::SURFACE_HIGH, Vec2::new(90.0, 28.0)).clicked() {
+                        self.engine.send(Command::ResetInputSettings(index));
+                    }
+                    if theme::button(ui, "AUDIO", theme::ACCENT, Vec2::new(90.0, 28.0))
+                        .on_hover_text("open this input's channel in the mixer")
+                        .clicked()
+                    {
+                        self.tab = Tab::Audio;
+                        self.selected_channel = index;
+                        self.settings_for = None;
+                    }
+                    if theme::button(ui, "CLOSE INPUT", theme::WARN, Vec2::new(110.0, 28.0)).clicked()
+                        && snapshot.inputs.len() > 1
+                    {
+                        self.engine.send(Command::RemoveSource(index));
+                        self.settings_for = None;
+                    }
+                });
+                ui.add_space(4.0);
+            });
+
+        if !open {
+            self.settings_for = None;
         }
     }
 

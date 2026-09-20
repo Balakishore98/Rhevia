@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rhevia_audio::{AudioBuffer, AudioMixer, CaptureHandle, SAMPLE_RATE};
-use rhevia_engine::{EncoderSettings, Frame, Layer, Rect, Scene, TitleStyle, Transition};
+use rhevia_engine::{
+    ColourAdjust, EncoderSettings, Frame, Layer, Rect, Scene, TitleStyle, Transition,
+};
 use rhevia_output::h264::{self, ParameterSets};
 use rhevia_output::{flv, RtmpPublisher, RtmpUrl};
 use rhevia_pipeline::Mixer;
@@ -57,6 +59,8 @@ pub enum Command {
     ToggleSolo(usize),
     SetPan { channel: usize, pan: f32 },
     ToggleFollowProgram(usize),
+    /// Routes a channel to a bus, or stops routing it there.
+    SetChannelBus { channel: usize, bus: usize, on: bool },
     SetMasterGain(f32),
     ToggleMasterMute,
     ClearClip(usize),
@@ -68,6 +72,11 @@ pub enum Command {
     AddTitleSource { name: String, text: String, subtitle: String },
     /// Re-renders an existing title without rebuilding the input.
     SetTitleText { input: usize, text: String, subtitle: String },
+    RenameInput { input: usize, name: String },
+    /// Zoom and pan within the frame, as vMix offers under Position.
+    SetInputTransform { input: usize, zoom: f32, offset_x: f32, offset_y: f32 },
+    SetInputColour { input: usize, colour: ColourAdjust },
+    ResetInputSettings(usize),
     RemoveSource(usize),
     StartStream { url: String, key: String },
     StopStream,
@@ -102,6 +111,19 @@ impl Layout {
     pub const ALL: [Layout; 4] = [Layout::Full, Layout::Pip, Layout::SideBySide, Layout::Quad];
 }
 
+/// Adjusts an index that referred to a list from which `removed` was taken.
+///
+/// Returns None when the index referred to the removed item itself. Every
+/// stored input index has to go through here: clamping instead means an
+/// overlay or the programme quietly starts pointing at a different source.
+pub fn remap_after_removal(removed: usize, index: usize) -> Option<usize> {
+    match index.cmp(&removed) {
+        std::cmp::Ordering::Less => Some(index),
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(index - 1),
+    }
+}
+
 /// Where each overlay slot draws. Slot 4 is full-frame, as on most switchers,
 /// so it can carry a full-screen graphic rather than only a corner box.
 fn overlay_rect(slot: usize) -> Rect {
@@ -112,6 +134,52 @@ fn overlay_rect(slot: usize) -> Rect {
         1 => Rect::new(w * 0.66, h * 0.06, w * 0.30, h * 0.30),
         2 => Rect::new(w * 0.50, h * 0.08, w * 0.46, h * 0.84),
         _ => Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT),
+    }
+}
+
+/// Per-input picture settings.
+///
+/// Held beside the source rather than inside it, so they survive whatever the
+/// source is and apply identically to a camera, a still or a title.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputSettings {
+    /// 1.0 fits the frame; above that crops in.
+    pub zoom: f32,
+    /// Pan, as a fraction of the frame. Only meaningful once zoomed in.
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub colour: ColourAdjust,
+}
+
+impl Default for InputSettings {
+    fn default() -> Self {
+        Self { zoom: 1.0, offset_x: 0.0, offset_y: 0.0, colour: ColourAdjust::default() }
+    }
+}
+
+impl InputSettings {
+    pub fn is_default(&self) -> bool {
+        (self.zoom - 1.0).abs() < 0.001
+            && self.offset_x.abs() < 0.001
+            && self.offset_y.abs() < 0.001
+            && self.colour.is_neutral()
+    }
+
+    /// Applies zoom and pan to the rectangle a layer would otherwise occupy.
+    ///
+    /// Zoom scales about the centre so the shot grows into the frame rather
+    /// than out of one corner, which is what an operator expects when they
+    /// push in on a wide.
+    pub fn apply(&self, rect: Rect) -> Rect {
+        let zoom = self.zoom.clamp(0.1, 8.0);
+        let width = rect.width * zoom;
+        let height = rect.height * zoom;
+        Rect::new(
+            rect.x - (width - rect.width) / 2.0 + self.offset_x * rect.width,
+            rect.y - (height - rect.height) / 2.0 + self.offset_y * rect.height,
+            width,
+            height,
+        )
     }
 }
 
@@ -139,6 +207,8 @@ pub struct Snapshot {
     pub ftb: bool,
     pub transition_kind: Transition,
     pub audio: Vec<ChannelState>,
+    /// Peak level and clip state for each bus, for the matrix header.
+    pub bus_levels: Vec<(f32, bool)>,
     pub master: MasterState,
 }
 
@@ -164,6 +234,8 @@ pub struct ChannelState {
     pub gain_reduction_db: f32,
     /// Whether the gate is currently passing audio.
     pub gate_open: bool,
+    /// Which buses this channel feeds. Index 0 is Master.
+    pub buses: [bool; rhevia_audio::BUS_COUNT],
 }
 
 #[derive(Clone, Copy, Default)]
@@ -182,6 +254,9 @@ pub struct InputInfo {
     /// Current text, when this input is a title. Lets the UI offer an edit
     /// without keeping its own copy of what the engine holds.
     pub title: Option<(String, String)>,
+    pub settings: InputSettings,
+    /// What kind of source this is, for the settings dialog and the filters.
+    pub kind: &'static str,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -248,6 +323,7 @@ struct SourceSlot {
     mixer_input: usize,
     /// Audio for this input, when a device is attached.
     audio: Option<CaptureHandle>,
+    settings: InputSettings,
 }
 
 const OUTPUT_WIDTH: usize = 1280;
@@ -255,6 +331,15 @@ const OUTPUT_HEIGHT: usize = 720;
 const TARGET_FPS: f32 = 30.0;
 const THUMBNAIL_WIDTH: usize = 320;
 const THUMBNAIL_HEIGHT: usize = 180;
+/// The program picture sent to the UI. Smaller than the canvas because it is
+/// displayed scaled anyway, and every pixel here is paid for on the render
+/// thread.
+const PREVIEW_WIDTH: usize = 640;
+const PREVIEW_HEIGHT: usize = 360;
+/// Thumbnails are regenerated every Nth frame. The eye cannot read a
+/// multiview faster than this, and doing it every frame cost more than the
+/// compositing it was illustrating.
+const THUMBNAIL_EVERY: u64 = 3;
 
 /// Starts the engine thread.
 pub fn start() -> EngineHandle {
@@ -314,6 +399,7 @@ fn run(
         source: Source::Bars,
         mixer_input: 0,
         audio: None,
+        settings: InputSettings::default(),
     });
     mixer.set_input_name(0, "Colour Bars");
     audio.add_channel("Colour Bars");
@@ -321,6 +407,7 @@ fn run(
         source: Source::Colour([20, 90, 160]),
         mixer_input: 1,
         audio: None,
+        settings: InputSettings::default(),
     });
     mixer.set_input_name(1, "Blue");
     audio.add_channel("Blue");
@@ -334,6 +421,7 @@ fn run(
                 source: Source::Colour(rgb),
                 mixer_input: input,
                 audio: None,
+                settings: InputSettings::default(),
             });
             audio.add_channel(name);
         }
@@ -363,6 +451,10 @@ fn run(
     let mut fps_window = Instant::now();
     let mut fps_frames = 0u32;
     let mut measured_fps = 0.0f32;
+    // Held between regenerations so the UI still has pictures on the frames
+    // where none are made.
+    let mut cached_inputs: Vec<InputInfo> = Vec::new();
+    let mut cached_program: Option<Frame> = None;
 
     while running.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -460,6 +552,7 @@ fn run(
                             source: Source::Colour(rgb),
                             mixer_input: input,
                             audio: None,
+                            settings: InputSettings::default(),
                         });
                         audio.add_channel(name);
                     }
@@ -472,6 +565,7 @@ fn run(
                                     source: Source::AudioOnly,
                                     mixer_input: input,
                                     audio: Some(handle),
+                                    settings: InputSettings::default(),
                                 });
                                 let channel = audio.add_channel(name);
                                 // Sound with no picture is almost always a
@@ -525,6 +619,11 @@ fn run(
                         strip.follow_program = !strip.follow_program;
                     }
                 }
+                Command::SetChannelBus { channel, bus, on } => {
+                    if let Some(strip) = audio.channel_mut(channel) {
+                        strip.set_bus(bus, on);
+                    }
+                }
                 Command::SetMasterGain(db) => {
                     audio.master_gain_db = db.clamp(rhevia_audio::SILENCE_DB, 12.0);
                 }
@@ -544,6 +643,7 @@ fn run(
                             source: Source::Bars,
                             mixer_input: input,
                             audio: None,
+                            settings: InputSettings::default(),
                         });
                         audio.add_channel(name);
                     }
@@ -556,6 +656,7 @@ fn run(
                                     source: Source::Still(frame),
                                     mixer_input: input,
                                     audio: None,
+                                    settings: InputSettings::default(),
                                 });
                                 audio.add_channel(name);
                             }
@@ -573,6 +674,7 @@ fn run(
                                 source: Source::Title { style, rendered },
                                 mixer_input: input,
                                 audio: None,
+                                settings: InputSettings::default(),
                             });
                             audio.add_channel(name);
                         }
@@ -581,6 +683,31 @@ fn run(
                         stream_error = Some("no usable font found on this system".into());
                     }
                 },
+                Command::RenameInput { input, name } => {
+                    if let Some(slot) = sources.get(input) {
+                        mixer.set_input_name(slot.mixer_input, name.clone());
+                        if let Some(strip) = audio.channel_mut(input) {
+                            strip.name = name;
+                        }
+                    }
+                }
+                Command::SetInputTransform { input, zoom, offset_x, offset_y } => {
+                    if let Some(slot) = sources.get_mut(input) {
+                        slot.settings.zoom = zoom.clamp(0.1, 8.0);
+                        slot.settings.offset_x = offset_x.clamp(-1.0, 1.0);
+                        slot.settings.offset_y = offset_y.clamp(-1.0, 1.0);
+                    }
+                }
+                Command::SetInputColour { input, colour } => {
+                    if let Some(slot) = sources.get_mut(input) {
+                        slot.settings.colour = colour;
+                    }
+                }
+                Command::ResetInputSettings(input) => {
+                    if let Some(slot) = sources.get_mut(input) {
+                        slot.settings = InputSettings::default();
+                    }
+                }
                 Command::SetTitleText { input, text, subtitle } => {
                     if let (Some(slot), Some(font)) = (sources.get_mut(input), font.as_ref()) {
                         if let Source::Title { style, rendered } = &mut slot.source {
@@ -605,6 +732,7 @@ fn run(
                                 source: Source::File { units, next: 0 },
                                 mixer_input: input,
                                 audio: None,
+                                settings: InputSettings::default(),
                             });
                             audio.add_channel(name);
                         }
@@ -616,10 +744,47 @@ fn run(
                     // Never remove the last source, and never leave Program
                     // pointing at nothing.
                     if sources.len() > 1 && i < sources.len() {
+                        // Free the mixer input too, then shift every stored
+                        // mixer index above it down to match. Without this the
+                        // decoder and its held frame stay alive for the rest
+                        // of the session.
+                        let freed = sources[i].mixer_input;
+                        mixer.remove_input(freed);
                         sources.remove(i);
+                        for slot in sources.iter_mut() {
+                            if slot.mixer_input > freed {
+                                slot.mixer_input -= 1;
+                            }
+                        }
                         audio.remove_channel(i);
-                        program_input = program_input.min(sources.len() - 1);
-                        preview_input = preview_input.min(sources.len() - 1);
+                        // The DSP chains are index-aligned with the channels,
+                        // so the chain has to go with its channel. Truncating
+                        // by length instead shifted every setting onto the
+                        // wrong source.
+                        if i < dsp.len() {
+                            dsp.remove(i);
+                        }
+
+                        // Everything else that holds an input index has to be
+                        // remapped, or it silently addresses a different
+                        // source than the one it was pointed at.
+                        let last = sources.len() - 1;
+                        program_input = remap_after_removal(i, program_input).unwrap_or(0).min(last);
+                        preview_input = remap_after_removal(i, preview_input).unwrap_or(0).min(last);
+                        for slot in 0..4 {
+                            match overlay_source[slot] {
+                                Some(source) => {
+                                    overlay_source[slot] = remap_after_removal(i, source);
+                                    // An overlay whose source is gone must
+                                    // come off air rather than start showing
+                                    // whatever moved into that index.
+                                    if overlay_source[slot].is_none() {
+                                        overlay_on[slot] = false;
+                                    }
+                                }
+                                None => overlay_on[slot] = false,
+                            }
+                        }
                     }
                 }
                 Command::StartStream { url, key } => {
@@ -719,30 +884,45 @@ fn run(
 
         // A scene is built for a given "program" input, so the same code can
         // produce both sides of a transition.
+        // Builds a layer for a mixer input with that input's settings applied.
+        // Going through here means zoom, pan and colour work in every layout
+        // and on overlays, rather than only on the full-screen case.
+        let layer_for = |mixer_input: usize, rect: Rect| -> Layer {
+            let settings = sources
+                .iter()
+                .find(|s| s.mixer_input == mixer_input)
+                .map(|s| s.settings)
+                .unwrap_or_default();
+            Layer {
+                colour: settings.colour,
+                ..Layer::new(mixer_input, settings.apply(rect))
+            }
+        };
+
         let build_scene = |program: usize, preview: usize| -> Scene {
             let mut scene = Scene::new();
             let w = OUTPUT_WIDTH as f32;
             let h = OUTPUT_HEIGHT as f32;
             match layout {
                 Layout::Full => {
-                    scene.push(Layer::new(program, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
+                    scene.push(layer_for(program, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
                 }
                 Layout::Pip => {
-                    scene.push(Layer::new(program, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
-                    scene.push(Layer::new(
+                    scene.push(layer_for(program, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
+                    scene.push(layer_for(
                         preview,
                         Rect::new(w * 0.66, h * 0.62, w * 0.30, h * 0.30),
                     ));
                 }
                 Layout::SideBySide => {
-                    scene.push(Layer::new(program, Rect::new(0.0, h * 0.25, w * 0.5, h * 0.5)));
-                    scene.push(Layer::new(preview, Rect::new(w * 0.5, h * 0.25, w * 0.5, h * 0.5)));
+                    scene.push(layer_for(program, Rect::new(0.0, h * 0.25, w * 0.5, h * 0.5)));
+                    scene.push(layer_for(preview, Rect::new(w * 0.5, h * 0.25, w * 0.5, h * 0.5)));
                 }
                 Layout::Quad => {
                     for (i, slot) in sources.iter().take(4).enumerate() {
                         let col = (i % 2) as f32;
                         let row = (i / 2) as f32;
-                        scene.push(Layer::new(
+                        scene.push(layer_for(
                             slot.mixer_input,
                             Rect::new(col * w * 0.5, row * h * 0.5, w * 0.5, h * 0.5),
                         ));
@@ -759,7 +939,7 @@ fn run(
                 }
                 if let Some(source_index) = overlay_source[slot] {
                     if let Some(source) = sources.get(source_index) {
-                        scene.push(Layer::new(source.mixer_input, overlay_rect(slot)));
+                        scene.push(layer_for(source.mixer_input, overlay_rect(slot)));
                     }
                 }
             }
@@ -874,23 +1054,45 @@ fn run(
         }
 
         let mixer_stats = mixer.stats();
+
+        // Names and title text are cheap and must stay current; only the
+        // pictures are throttled.
+        let redraw_thumbnails =
+            frame_number % THUMBNAIL_EVERY == 0 || cached_inputs.len() != sources.len();
         let infos: Vec<InputInfo> = sources
             .iter()
             .enumerate()
-            .map(|(_, slot)| InputInfo {
+            .map(|(index, slot)| InputInfo {
                 name: mixer
                     .input_name(slot.mixer_input)
                     .unwrap_or("Input")
                     .to_string(),
-                thumbnail: mixer.input_frame(slot.mixer_input).map(thumbnail),
+                thumbnail: if redraw_thumbnails {
+                    mixer.input_frame(slot.mixer_input).map(thumbnail)
+                } else {
+                    cached_inputs.get(index).and_then(|i| i.thumbnail.clone())
+                },
                 title: match &slot.source {
                     Source::Title { style, .. } => {
                         Some((style.text.clone(), style.subtitle.clone()))
                     }
                     _ => None,
                 },
+                settings: slot.settings,
+                kind: match &slot.source {
+                    Source::Colour(_) => "Colour",
+                    Source::Bars => "Colour Bars",
+                    Source::File { .. } => "Video File",
+                    Source::AudioOnly => "Audio Input",
+                    Source::Still(_) => "Image",
+                    Source::Title { .. } => "Title",
+                },
             })
             .collect();
+        if redraw_thumbnails {
+            cached_inputs = infos.clone();
+            cached_program = Some(downscale(mixer.program(), PREVIEW_WIDTH, PREVIEW_HEIGHT));
+        }
 
         if let Ok(mut s) = snapshot.lock() {
             s.inputs = infos;
@@ -898,7 +1100,7 @@ fn run(
             s.preview_input = preview_input;
             s.transition = transition;
             s.transition_seconds = transition_seconds;
-            s.program = Some(thumbnail_sized(mixer.program(), 960, 540));
+            s.program = cached_program.clone();
             s.streaming = delivery.is_some();
             s.stream_error = stream_error.clone();
             s.layout = layout;
@@ -933,7 +1135,13 @@ fn run(
                         .map(|d| d.compressor.gain_reduction_db())
                         .unwrap_or(0.0),
                     gate_open: dsp.get(i).map(|d| d.gate.is_open()).unwrap_or(true),
+                    buses: c.buses,
                 })
+                .collect();
+            s.bus_levels = audio
+                .bus_meters
+                .iter()
+                .map(|m| (m.peak_db(), m.clipped()))
                 .collect();
             s.master = MasterState {
                 gain_db: audio.master_gain_db,
@@ -1037,21 +1245,36 @@ fn load_annexb(path: &str) -> std::io::Result<Vec<Vec<u8>>> {
 }
 
 fn thumbnail(frame: &Frame) -> Frame {
-    thumbnail_sized(frame, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT)
+    downscale(frame, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT)
 }
 
-/// Downscales for display. The UI never needs full resolution, and shipping
-/// 1280x720 to it thirty times a second would cost more than compositing does.
-fn thumbnail_sized(frame: &Frame, width: usize, height: usize) -> Frame {
-    if frame.is_empty() {
+/// Downscales for display, by direct row addressing rather than bilinear
+/// sampling.
+///
+/// The bilinear path costs roughly twenty operations per output pixel, and at
+/// one program preview plus every input thumbnail that came to more work per
+/// frame than compositing the programme itself. Point sampling is visually
+/// fine at thumbnail size and about an order of magnitude cheaper.
+fn downscale(frame: &Frame, width: usize, height: usize) -> Frame {
+    if frame.is_empty() || width == 0 || height == 0 {
         return Frame::new(0, 0);
     }
     let mut out = Frame::new(width, height);
+
+    // Precomputed source columns: the inner loop then does one copy per pixel
+    // with no arithmetic at all.
+    let columns: Vec<usize> = (0..width)
+        .map(|x| (x * frame.width / width).min(frame.width - 1))
+        .collect();
+
     for y in 0..height {
-        let v = (y as f32 + 0.5) / height as f32;
-        for x in 0..width {
-            let u = (x as f32 + 0.5) / width as f32;
-            out.set_pixel(x, y, frame.sample(u, v));
+        let source_row = (y * frame.height / height).min(frame.height - 1);
+        let source_base = source_row * frame.width * 4;
+        let dest_base = y * width * 4;
+        for (x, &column) in columns.iter().enumerate() {
+            let s = source_base + column * 4;
+            let d = dest_base + x * 4;
+            out.data[d..d + 4].copy_from_slice(&frame.data[s..s + 4]);
         }
     }
     out
@@ -1120,4 +1343,66 @@ fn bars(width: usize, height: usize, seconds: f32) -> Frame {
         }
     }
     frame
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removing_a_lower_index_shifts_the_ones_above_it_down() {
+        // Removing input 1 must move what was input 3 to index 2, not leave a
+        // stored index pointing at a different source.
+        assert_eq!(remap_after_removal(1, 3), Some(2));
+        assert_eq!(remap_after_removal(1, 2), Some(1));
+    }
+
+    #[test]
+    fn removing_a_higher_index_leaves_lower_ones_alone() {
+        assert_eq!(remap_after_removal(3, 0), Some(0));
+        assert_eq!(remap_after_removal(3, 2), Some(2));
+    }
+
+    #[test]
+    fn the_removed_index_itself_resolves_to_nothing() {
+        // The caller must decide what to do rather than silently inherit
+        // whatever moved into that slot.
+        assert_eq!(remap_after_removal(2, 2), None);
+    }
+
+    #[test]
+    fn input_settings_zoom_scales_about_the_centre() {
+        // Zooming from a corner would send the shot off frame instead of
+        // pushing in on what the operator is looking at.
+        let settings = InputSettings { zoom: 2.0, ..Default::default() };
+        let rect = settings.apply(Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(rect.width, 200.0);
+        assert_eq!(rect.height, 200.0);
+        assert_eq!(rect.x, -50.0, "should grow equally either side");
+        assert_eq!(rect.y, -50.0);
+    }
+
+    #[test]
+    fn input_settings_pan_moves_by_a_fraction_of_the_frame() {
+        let settings = InputSettings { zoom: 1.0, offset_x: 0.25, offset_y: -0.5, ..Default::default() };
+        let rect = settings.apply(Rect::new(0.0, 0.0, 200.0, 100.0));
+        assert_eq!(rect.x, 50.0);
+        assert_eq!(rect.y, -50.0);
+    }
+
+    #[test]
+    fn default_input_settings_leave_the_rectangle_untouched() {
+        let settings = InputSettings::default();
+        assert!(settings.is_default());
+        let original = Rect::new(10.0, 20.0, 300.0, 200.0);
+        let rect = settings.apply(original);
+        assert_eq!((rect.x, rect.y, rect.width, rect.height), (10.0, 20.0, 300.0, 200.0));
+    }
+
+    #[test]
+    fn a_silly_zoom_is_clamped_rather_than_producing_a_degenerate_rect() {
+        let settings = InputSettings { zoom: 9999.0, ..Default::default() };
+        let rect = settings.apply(Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert!(rect.width <= 800.0, "zoom should clamp, got {}", rect.width);
+    }
 }

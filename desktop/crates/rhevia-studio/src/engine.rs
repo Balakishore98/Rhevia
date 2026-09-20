@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rhevia_audio::{AudioBuffer, AudioMixer, CaptureHandle, SAMPLE_RATE};
-use rhevia_engine::{EncoderSettings, Frame, Layer, Rect, Scene, Transition};
+use rhevia_engine::{EncoderSettings, Frame, Layer, Rect, Scene, TitleStyle, Transition};
 use rhevia_output::h264::{self, ParameterSets};
 use rhevia_output::{flv, RtmpPublisher, RtmpUrl};
 use rhevia_pipeline::Mixer;
@@ -25,6 +25,8 @@ pub enum Command {
     /// Dissolve Preview into Program over the configured duration.
     Auto,
     SetTransitionSeconds(f32),
+    /// Duration in milliseconds, which is how every switcher labels it.
+    SetTransitionMs(f32),
     /// Chooses the effect the AUTO button and the T-bar use.
     SetTransition(Transition),
     SetEq { channel: usize, settings: rhevia_audio::EqSettings },
@@ -60,6 +62,12 @@ pub enum Command {
     ClearClip(usize),
     AddBarsSource { name: String },
     AddFileSource { name: String, path: String },
+    /// A still image: holding slide, sponsor board, stinger graphic.
+    AddImageSource { name: String, path: String },
+    /// A lower third, rendered here rather than in another application.
+    AddTitleSource { name: String, text: String, subtitle: String },
+    /// Re-renders an existing title without rebuilding the input.
+    SetTitleText { input: usize, text: String, subtitle: String },
     RemoveSource(usize),
     StartStream { url: String, key: String },
     StopStream,
@@ -171,6 +179,9 @@ pub struct MasterState {
 pub struct InputInfo {
     pub name: String,
     pub thumbnail: Option<Frame>,
+    /// Current text, when this input is a title. Lets the UI offer an edit
+    /// without keeping its own copy of what the engine holds.
+    pub title: Option<(String, String)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -226,6 +237,10 @@ enum Source {
     /// Sound with no picture. Draws its own level so the tile is not a black
     /// rectangle the operator cannot read.
     AudioOnly,
+    /// A still. Held as a decoded frame, so it costs nothing per tick.
+    Still(Frame),
+    /// A title. Re-rendered only when its text changes.
+    Title { style: TitleStyle, rendered: Frame },
 }
 
 struct SourceSlot {
@@ -335,6 +350,9 @@ fn run(
     let mut overlay_on = [false; 4];
     let mut ftb = false;
     let mut transition_kind = Transition::Fade;
+    // Loaded once. A title that cannot find a face is reported rather than
+    // silently rendering nothing.
+    let font = rhevia_engine::system_font().ok();
     // One DSP chain per channel, index-aligned with the audio mixer.
     let mut dsp: Vec<rhevia_audio::ChannelDsp> = Vec::new();
     let mut recorder: Option<(std::io::BufWriter<std::fs::File>, String, u64)> = None;
@@ -376,6 +394,7 @@ fn run(
                     }
                 }
                 Command::SetTransitionSeconds(s) => transition_seconds = s.clamp(0.1, 10.0),
+                Command::SetTransitionMs(ms) => transition_seconds = (ms / 1000.0).clamp(0.1, 10.0),
                 Command::SetTransition(kind) => transition_kind = kind,
                 Command::SetEq { channel, settings } => {
                     if let Some(chain) = dsp.get_mut(channel) {
@@ -529,6 +548,56 @@ fn run(
                         audio.add_channel(name);
                     }
                 }
+                Command::AddImageSource { name, path } => {
+                    match rhevia_engine::load_image(&path) {
+                        Ok(frame) => {
+                            if let Ok(input) = mixer.add_input(name.clone()) {
+                                sources.push(SourceSlot {
+                                    source: Source::Still(frame),
+                                    mixer_input: input,
+                                    audio: None,
+                                });
+                                audio.add_channel(name);
+                            }
+                        }
+                        Err(e) => stream_error = Some(e.to_string()),
+                    }
+                }
+                Command::AddTitleSource { name, text, subtitle } => match font.as_ref() {
+                    Some(font) => {
+                        let style = TitleStyle { text, subtitle, ..Default::default() };
+                        let rendered =
+                            rhevia_engine::render_title(font, &style, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+                        if let Ok(input) = mixer.add_input(name.clone()) {
+                            sources.push(SourceSlot {
+                                source: Source::Title { style, rendered },
+                                mixer_input: input,
+                                audio: None,
+                            });
+                            audio.add_channel(name);
+                        }
+                    }
+                    None => {
+                        stream_error = Some("no usable font found on this system".into());
+                    }
+                },
+                Command::SetTitleText { input, text, subtitle } => {
+                    if let (Some(slot), Some(font)) = (sources.get_mut(input), font.as_ref()) {
+                        if let Source::Title { style, rendered } = &mut slot.source {
+                            style.text = text;
+                            style.subtitle = subtitle;
+                            // Re-rendered here rather than every tick: a title
+                            // changes when someone types, not thirty times a
+                            // second.
+                            *rendered = rhevia_engine::render_title(
+                                font,
+                                style,
+                                OUTPUT_WIDTH,
+                                OUTPUT_HEIGHT,
+                            );
+                        }
+                    }
+                }
                 Command::AddFileSource { name, path } => match load_annexb(&path) {
                     Ok(units) if !units.is_empty() => {
                         if let Ok(input) = mixer.add_input(name.clone()) {
@@ -617,6 +686,12 @@ fn run(
                 }
                 Source::Bars => {
                     let _ = mixer.push_frame(slot.mixer_input, bars(OUTPUT_WIDTH, OUTPUT_HEIGHT, seconds));
+                }
+                Source::Still(frame) => {
+                    let _ = mixer.push_frame(slot.mixer_input, frame.clone());
+                }
+                Source::Title { rendered, .. } => {
+                    let _ = mixer.push_frame(slot.mixer_input, rendered.clone());
                 }
                 Source::AudioOnly => {
                     let level = audio
@@ -709,6 +784,15 @@ fn run(
             // two layouts rather than only between two sources.
             Some(progress) if !ftb => {
                 let incoming = build_scene(preview_slot, program_slot);
+                // A stinger covers the screen with a designated source. The
+                // overlay slots already hold "a source chosen for a purpose",
+                // so Stinger N uses overlay N rather than inventing a second
+                // assignment the operator has to remember.
+                let stinger_input = transition_kind
+                    .stinger_slot()
+                    .and_then(|slot| overlay_source[slot])
+                    .and_then(|index| sources.get(index))
+                    .map(|slot| slot.mixer_input);
                 if needs_encoding {
                     mixer
                         .render_transition_and_encode(
@@ -716,10 +800,17 @@ fn run(
                             &incoming,
                             transition_kind,
                             progress,
+                            stinger_input,
                         )
                         .unwrap_or_default()
                 } else {
-                    mixer.render_transition(&program_scene, &incoming, transition_kind, progress);
+                    mixer.render_transition(
+                        &program_scene,
+                        &incoming,
+                        transition_kind,
+                        progress,
+                        stinger_input,
+                    );
                     Vec::new()
                 }
             }
@@ -792,6 +883,12 @@ fn run(
                     .unwrap_or("Input")
                     .to_string(),
                 thumbnail: mixer.input_frame(slot.mixer_input).map(thumbnail),
+                title: match &slot.source {
+                    Source::Title { style, .. } => {
+                        Some((style.text.clone(), style.subtitle.clone()))
+                    }
+                    _ => None,
+                },
             })
             .collect();
 

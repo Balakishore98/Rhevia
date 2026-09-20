@@ -173,6 +173,7 @@ impl Mixer {
         to: &Scene,
         kind: Transition,
         progress: f32,
+        stinger_input: Option<usize>,
     ) -> &Frame {
         self.stats.frames_rendered += 1;
 
@@ -192,7 +193,21 @@ impl Mixer {
             self.incoming.data.copy_from_slice(&rendered.data);
         }
 
-        transition::render(kind, &self.outgoing, &self.incoming, progress, &mut self.blended);
+        // The covering picture for a stinger. Cloned because the borrow
+        // checker cannot see that the source input and the scratch buffers do
+        // not overlap; only stingers pay for it.
+        let via = stinger_input
+            .and_then(|i| self.inputs.get(i))
+            .and_then(|i| i.current.clone());
+
+        transition::render(
+            kind,
+            &self.outgoing,
+            &self.incoming,
+            via.as_ref(),
+            progress,
+            &mut self.blended,
+        );
         self.blended_is_current = true;
         &self.blended
     }
@@ -204,8 +219,11 @@ impl Mixer {
         to: &Scene,
         kind: Transition,
         progress: f32,
+        stinger_input: Option<usize>,
     ) -> Result<Vec<u8>, MixError> {
-        let program = self.render_transition(from, to, kind, progress).clone();
+        let program = self
+            .render_transition(from, to, kind, progress, stinger_input)
+            .clone();
         let bitstream = self.encoder.encode(&program)?;
         if !bitstream.is_empty() {
             self.stats.frames_encoded += 1;

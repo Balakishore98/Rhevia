@@ -27,10 +27,11 @@ for having built it in this order.
 
 | Stage | State | What exists |
 |---|---|---|
-| **Source** | works | RheviaLink pairs, negotiates, receives H.264 RTP and reassembles it into frames. Still no phone app to *be* a camera, and no local webcam, capture card, screen capture or media file. |
+| **Source** | works | Generators, H.264 file, audio device, still image, title/lower third. Still missing: webcam, screen capture, NDI, SRT, web browser. |
+| ~~Source (old)~~ | | RheviaLink pairs, negotiates, receives H.264 RTP and reassembles it into frames. Still no phone app to *be* a camera, and no local webcam, capture card, screen capture or media file. |
 | **Depacketise** | **done** | RFC 6184: single-NAL, STAP-A and FU-A, with broken fragments discarded rather than emitted corrupt. |
 | **Decode** | **done** | OpenH264, Annex-B to RGBA. Corrupt packets cost one frame, not the input. |
-| **Composite** | **done** | Scene graph, layers, bilinear scaling, alpha blending, aspect-preserving fit. Program/Preview, four layouts, four overlay slots, FTB, and ten transition effects (cut, fade, zoom, wipe H/V, slide H/V, fly, cross-zoom, cube) that blend two fully composited arrangements rather than two sources. On CPU — the GPU path is an optimisation, not a missing feature. |
+| **Composite** | **done** | Scene graph, layers, bilinear scaling, alpha blending, aspect-preserving fit. Program/Preview, four layouts, four overlay slots, FTB, and the full transition bus -- eighteen effects plus four stingers, matching vMix's list that blend two fully composited arrangements rather than two sources. On CPU — the GPU path is an optimisation, not a missing feature. |
 | **Encode** | **done** | OpenH264, with keyframes forced on cuts and at the start of a recording. NVENC will be faster and is not required for correctness. |
 | **Mux** | **done** | FLV tag muxing for H.264 and AAC, including the decoder configuration record and keyframe flagging. |
 | **Deliver** | **done** | RTMP publishing: handshake, connect, publish, real-time pacing. Verified end to end against a real server. SRT still to do. |

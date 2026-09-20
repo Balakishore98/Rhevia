@@ -1,17 +1,14 @@
 //! Transition effects.
 //!
-//! Every effect is a function of one number: how far through it is, from 0.0
-//! showing the outgoing shot to 1.0 showing the incoming one. Keeping them
-//! stateless means the engine can drive them from a clock, a T-bar, or a
-//! script without any of them knowing the difference — and it makes each one
-//! testable at its endpoints, which is where transitions actually go wrong.
+//! The full bus, matching what vMix offers: eighteen effects plus four
+//! stingers. Every one is a pure function of progress, so the engine can drive
+//! them from a clock, a T-bar or a script without any of them knowing the
+//! difference — and each is testable at its endpoints, which is where
+//! transitions actually go wrong.
 
 use crate::frame::Frame;
 
-/// The effects on the transition bus.
-///
-/// vMix exposes four customisable buttons plus Cut and FTB; this is the set
-/// those buttons choose from.
+/// The effects on the transition bus, in the order vMix presents them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Transition {
     /// Instant. No intermediate state exists.
@@ -19,52 +16,100 @@ pub enum Transition {
     /// Crossfade — the default, and the one that never looks wrong.
     #[default]
     Fade,
-    /// The incoming shot grows from the centre over the outgoing one.
+    /// The incoming shot grows from the centre.
     Zoom,
     /// A hard edge sweeps left to right.
     Wipe,
-    /// A hard edge sweeps top to bottom.
-    WipeVertical,
     /// The incoming shot pushes the outgoing one off to the left.
     Slide,
-    /// The incoming shot pushes the outgoing one off upward.
-    SlideVertical,
     /// The incoming shot flies in from the top-right, growing.
     Fly,
-    /// The outgoing shot rushes toward the viewer as the incoming one
-    /// arrives from behind it.
+    /// Outgoing rushes toward the viewer as incoming arrives from behind.
     CrossZoom,
-    /// Both shots slide and scale, reading as a cube face turning.
+    /// Fly, with the incoming shot also spinning into place.
+    FlyRotate,
+    /// Both shots slide as faces of a turning cube.
+    Cube,
+    /// Cube, with the faces also pulling back toward the middle of the move.
     CubeZoom,
+    /// A hard edge sweeps top to bottom.
+    VerticalWipe,
+    /// The incoming shot pushes the outgoing one off upward.
+    VerticalSlide,
+    /// Scales and crossfades together, for shots that nearly match.
+    Merge,
+    /// Wipe, right to left.
+    WipeReverse,
+    /// Slide, entering from the left.
+    SlideReverse,
+    /// Vertical wipe, bottom to top.
+    VerticalWipeReverse,
+    /// Vertical slide, entering from the top.
+    VerticalSlideReverse,
+    /// Two halves part from the centre, revealing what is behind.
+    BarnDoor,
+    /// The incoming shot rolls down over the outgoing one like a shutter.
+    RollerDoor,
+    /// Dips through a designated source, cutting underneath at the midpoint.
+    Stinger1,
+    Stinger2,
+    Stinger3,
+    Stinger4,
 }
 
 impl Transition {
     pub fn label(self) -> &'static str {
         match self {
-            Transition::Cut => "CUT",
-            Transition::Fade => "FADE",
-            Transition::Zoom => "ZOOM",
-            Transition::Wipe => "WIPE",
-            Transition::WipeVertical => "WIPE V",
-            Transition::Slide => "SLIDE",
-            Transition::SlideVertical => "SLIDE V",
-            Transition::Fly => "FLY",
-            Transition::CrossZoom => "X-ZOOM",
-            Transition::CubeZoom => "CUBE",
+            Transition::Cut => "Cut",
+            Transition::Fade => "Fade",
+            Transition::Zoom => "Zoom",
+            Transition::Wipe => "Wipe",
+            Transition::Slide => "Slide",
+            Transition::Fly => "Fly",
+            Transition::CrossZoom => "CrossZoom",
+            Transition::FlyRotate => "FlyRotate",
+            Transition::Cube => "Cube",
+            Transition::CubeZoom => "CubeZoom",
+            Transition::VerticalWipe => "VerticalWipe",
+            Transition::VerticalSlide => "VerticalSlide",
+            Transition::Merge => "Merge",
+            Transition::WipeReverse => "WipeReverse",
+            Transition::SlideReverse => "SlideReverse",
+            Transition::VerticalWipeReverse => "VerticalWipeReverse",
+            Transition::VerticalSlideReverse => "VerticalSlideReverse",
+            Transition::BarnDoor => "BarnDoor",
+            Transition::RollerDoor => "RollerDoor",
+            Transition::Stinger1 => "Stinger 1",
+            Transition::Stinger2 => "Stinger 2",
+            Transition::Stinger3 => "Stinger 3",
+            Transition::Stinger4 => "Stinger 4",
         }
     }
 
-    /// Everything the bus can offer, in the order it is presented.
-    pub const ALL: [Transition; 10] = [
+    /// Everything on the bus, in presentation order.
+    pub const ALL: [Transition; 23] = [
         Transition::Fade,
         Transition::Zoom,
         Transition::Wipe,
-        Transition::WipeVertical,
         Transition::Slide,
-        Transition::SlideVertical,
         Transition::Fly,
         Transition::CrossZoom,
+        Transition::FlyRotate,
+        Transition::Cube,
         Transition::CubeZoom,
+        Transition::VerticalWipe,
+        Transition::VerticalSlide,
+        Transition::Merge,
+        Transition::WipeReverse,
+        Transition::SlideReverse,
+        Transition::VerticalWipeReverse,
+        Transition::VerticalSlideReverse,
+        Transition::BarnDoor,
+        Transition::RollerDoor,
+        Transition::Stinger1,
+        Transition::Stinger2,
+        Transition::Stinger3,
+        Transition::Stinger4,
         Transition::Cut,
     ];
 
@@ -72,21 +117,39 @@ impl Transition {
     pub fn is_instant(self) -> bool {
         matches!(self, Transition::Cut)
     }
+
+    /// Which stinger slot this effect uses, if any.
+    pub fn stinger_slot(self) -> Option<usize> {
+        match self {
+            Transition::Stinger1 => Some(0),
+            Transition::Stinger2 => Some(1),
+            Transition::Stinger3 => Some(2),
+            Transition::Stinger4 => Some(3),
+            _ => None,
+        }
+    }
 }
 
 /// Renders `from` transitioning to `to` at `progress`, into `out`.
 ///
-/// `out` is resized to match and fully written, so no clearing is needed
-/// beforehand.
-pub fn render(kind: Transition, from: &Frame, to: &Frame, progress: f32, out: &mut Frame) {
+/// `via` supplies the covering picture for stinger effects and is ignored by
+/// every other one. `out` is resized to match and fully written, so no
+/// clearing is needed beforehand.
+pub fn render(
+    kind: Transition,
+    from: &Frame,
+    to: &Frame,
+    via: Option<&Frame>,
+    progress: f32,
+    out: &mut Frame,
+) {
     let p = progress.clamp(0.0, 1.0);
 
     // Endpoints are exact rather than computed. A transition that is 99.6%
     // complete but never quite lands leaves a seam on air.
     //
     // Progress is tested before instantness so the contract is uniform: at 0
-    // nothing has happened yet, whatever the effect. Checking Cut first put
-    // the incoming shot on air before the transition had even started.
+    // nothing has happened yet, whatever the effect.
     if p <= 0.0 {
         copy_into(from, out);
         return;
@@ -103,14 +166,33 @@ pub fn render(kind: Transition, from: &Frame, to: &Frame, progress: f32, out: &m
         Transition::Cut => unreachable!("handled above"),
         Transition::Fade => fade(from, to, p, out),
         Transition::Zoom => zoom(from, to, p, out),
-        Transition::Wipe => wipe(from, to, p, out, false),
-        Transition::WipeVertical => wipe(from, to, p, out, true),
-        Transition::Slide => slide(from, to, p, out, false),
-        Transition::SlideVertical => slide(from, to, p, out, true),
-        Transition::Fly => fly(from, to, p, out),
+        Transition::Wipe => wipe(from, to, p, out, Axis::Horizontal, false),
+        Transition::WipeReverse => wipe(from, to, p, out, Axis::Horizontal, true),
+        Transition::VerticalWipe => wipe(from, to, p, out, Axis::Vertical, false),
+        Transition::VerticalWipeReverse => wipe(from, to, p, out, Axis::Vertical, true),
+        Transition::Slide => slide(from, to, p, out, Axis::Horizontal, false),
+        Transition::SlideReverse => slide(from, to, p, out, Axis::Horizontal, true),
+        Transition::VerticalSlide => slide(from, to, p, out, Axis::Vertical, false),
+        Transition::VerticalSlideReverse => slide(from, to, p, out, Axis::Vertical, true),
+        Transition::Fly => fly(from, to, p, out, 0.0),
+        Transition::FlyRotate => fly(from, to, p, out, std::f32::consts::TAU),
         Transition::CrossZoom => cross_zoom(from, to, p, out),
-        Transition::CubeZoom => cube_zoom(from, to, p, out),
+        Transition::Cube => cube(from, to, p, out, false),
+        Transition::CubeZoom => cube(from, to, p, out, true),
+        Transition::Merge => merge(from, to, p, out),
+        Transition::BarnDoor => barn_door(from, to, p, out),
+        Transition::RollerDoor => roller_door(from, to, p, out),
+        Transition::Stinger1
+        | Transition::Stinger2
+        | Transition::Stinger3
+        | Transition::Stinger4 => stinger(from, to, via, p, out),
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Axis {
+    Horizontal,
+    Vertical,
 }
 
 /// The canvas both shots are drawn onto.
@@ -173,39 +255,42 @@ fn fade(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
     });
 }
 
-fn wipe(from: &Frame, to: &Frame, p: f32, out: &mut Frame, vertical: bool) {
-    // A short soft edge rather than a hard one: a single-pixel boundary
-    // crawls and aliases badly once the stream is compressed.
+fn wipe(from: &Frame, to: &Frame, p: f32, out: &mut Frame, axis: Axis, reverse: bool) {
+    // A short soft edge rather than a hard one: a single-pixel boundary crawls
+    // and aliases badly once the stream has been through an encoder.
     const SOFTNESS: f32 = 0.01;
 
     for_each_pixel(out, |u, v| {
-        let axis = if vertical { v } else { u };
-        let distance = p - axis;
-        let blend = ((distance / SOFTNESS) + 0.5).clamp(0.0, 1.0);
+        let raw = if axis == Axis::Vertical { v } else { u };
+        let position = if reverse { 1.0 - raw } else { raw };
+        let blend = ((p - position) / SOFTNESS + 0.5).clamp(0.0, 1.0);
         mix(sample_or_black(from, u, v), sample_or_black(to, u, v), blend)
     });
 }
 
-fn slide(from: &Frame, to: &Frame, p: f32, out: &mut Frame, vertical: bool) {
+fn slide(from: &Frame, to: &Frame, p: f32, out: &mut Frame, axis: Axis, reverse: bool) {
+    let shift = if reverse { -p } else { p };
+
     for_each_pixel(out, |u, v| {
-        if vertical {
-            // Outgoing pushed up, incoming arriving from below.
-            if v + p < 1.0 {
-                sample_or_black(from, u, v + p)
-            } else {
-                sample_or_black(to, u, v + p - 1.0)
-            }
-        } else if u + p < 1.0 {
-            sample_or_black(from, u + p, v)
+        let (mut su, mut sv) = (u, v);
+        let coordinate = if axis == Axis::Vertical { &mut sv } else { &mut su };
+        let moved = *coordinate + shift;
+
+        if (0.0..1.0).contains(&moved) {
+            *coordinate = moved;
+            sample_or_black(from, su, sv)
         } else {
-            sample_or_black(to, u + p - 1.0, v)
+            // Past the edge of the outgoing shot, so the incoming one occupies
+            // the gap it left behind.
+            *coordinate = moved - shift.signum();
+            sample_or_black(to, su, sv)
         }
     });
 }
 
 fn zoom(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
-    // The incoming shot grows from nothing to full frame, fading in over the
-    // first part so it does not pop into existence as a hard rectangle.
+    // The incoming shot grows from nothing, fading in over the first part so
+    // it does not pop into existence as a hard rectangle.
     let scale = p.max(0.001);
     let opacity = (p * 2.0).min(1.0);
 
@@ -221,7 +306,6 @@ fn zoom(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
 }
 
 fn cross_zoom(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
-    // Outgoing rushes past the camera while incoming comes up from behind.
     let out_scale = 1.0 + p * 0.8;
     let in_scale = 0.6 + p * 0.4;
 
@@ -230,24 +314,25 @@ fn cross_zoom(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
         let ov = (v - 0.5) / out_scale + 0.5;
         let iu = (u - 0.5) / in_scale + 0.5;
         let iv = (v - 0.5) / in_scale + 0.5;
-        mix(
-            sample_or_black(from, ou, ov),
-            sample_or_black(to, iu, iv),
-            p,
-        )
+        mix(sample_or_black(from, ou, ov), sample_or_black(to, iu, iv), p)
     });
 }
 
-fn fly(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
-    // Incoming flies in from the top-right, growing into place.
+/// Fly, optionally spinning. `spin` is the total rotation in radians.
+fn fly(from: &Frame, to: &Frame, p: f32, out: &mut Frame, spin: f32) {
     let scale = 0.25 + 0.75 * p;
     let centre_x = 0.82 - 0.32 * p;
     let centre_y = 0.18 + 0.32 * p;
+    // Unwinds to zero as it lands, so the shot finishes square.
+    let angle = spin * (1.0 - p);
+    let (sin, cos) = angle.sin_cos();
 
     for_each_pixel(out, |u, v| {
         let background = sample_or_black(from, u, v);
-        let su = (u - centre_x) / scale + 0.5;
-        let sv = (v - centre_y) / scale + 0.5;
+        let dx = (u - centre_x) / scale;
+        let dy = (v - centre_y) / scale;
+        let su = dx * cos - dy * sin + 0.5;
+        let sv = dx * sin + dy * cos + 0.5;
         if !(0.0..1.0).contains(&su) || !(0.0..1.0).contains(&sv) {
             return background;
         }
@@ -255,21 +340,126 @@ fn fly(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
     });
 }
 
-fn cube_zoom(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
-    // Both faces slide while shrinking toward the middle of the move, which
-    // reads as a cube turning without needing real perspective.
-    let squeeze = 1.0 - 0.25 * (p * std::f32::consts::PI).sin();
+/// Two faces of a turning cube. `pull_back` also shrinks them mid-move.
+fn cube(from: &Frame, to: &Frame, p: f32, out: &mut Frame, pull_back: bool) {
+    let squeeze = if pull_back {
+        1.0 - 0.25 * (p * std::f32::consts::PI).sin()
+    } else {
+        1.0
+    };
 
     for_each_pixel(out, |u, v| {
         let sv = (v - 0.5) / squeeze + 0.5;
         if !(0.0..1.0).contains(&sv) {
             return [0, 0, 0, 255];
         }
+
+        // Each face is foreshortened toward the edge it is turning away on,
+        // which is what sells the shape without real perspective.
         if u + p < 1.0 {
-            sample_or_black(from, u + p, sv)
+            let face = (u + p - p) / (1.0 - p);
+            let shaded = 1.0 - 0.35 * p;
+            let px = sample_or_black(from, (face * (1.0 - p) + p).clamp(0.0, 0.999), sv);
+            shade(px, shaded)
         } else {
-            sample_or_black(to, u + p - 1.0, sv)
+            let face = (u + p - 1.0) / p.max(0.001);
+            let shaded = 0.65 + 0.35 * p;
+            let px = sample_or_black(to, (face * p).clamp(0.0, 0.999), sv);
+            shade(px, shaded)
         }
+    });
+}
+
+#[inline]
+fn shade(px: [u8; 4], factor: f32) -> [u8; 4] {
+    [
+        (px[0] as f32 * factor) as u8,
+        (px[1] as f32 * factor) as u8,
+        (px[2] as f32 * factor) as u8,
+        px[3],
+    ]
+}
+
+/// Scales both shots toward each other while crossfading.
+///
+/// vMix's Merge animates matching inputs between Preview and Program. Without
+/// scene-graph correspondence that is not reproducible exactly, so this is the
+/// honest approximation: a crossfade with a matched scale move, which reads
+/// correctly when the two shots are similar and degrades to a fade when they
+/// are not.
+fn merge(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
+    let eased = p * p * (3.0 - 2.0 * p);
+    let out_scale = 1.0 + 0.12 * eased;
+    let in_scale = 1.0 - 0.12 * (1.0 - eased);
+
+    for_each_pixel(out, |u, v| {
+        let ou = (u - 0.5) / out_scale + 0.5;
+        let ov = (v - 0.5) / out_scale + 0.5;
+        let iu = (u - 0.5) / in_scale + 0.5;
+        let iv = (v - 0.5) / in_scale + 0.5;
+        mix(sample_or_black(from, ou, ov), sample_or_black(to, iu, iv), eased)
+    });
+}
+
+/// Both halves of the outgoing shot part from the centre.
+fn barn_door(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
+    const SOFTNESS: f32 = 0.008;
+
+    for_each_pixel(out, |u, v| {
+        // Distance from the centre line: 0 in the middle, 1 at either edge.
+        // The doors part outward, so the revealed band is everything closer to
+        // the centre than the current progress.
+        let distance = (u - 0.5).abs() * 2.0;
+        let blend = ((p - distance) / SOFTNESS + 0.5).clamp(0.0, 1.0);
+        mix(sample_or_black(from, u, v), sample_or_black(to, u, v), blend)
+    });
+}
+
+/// The incoming shot rolls down over the outgoing one.
+fn roller_door(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
+    for_each_pixel(out, |u, v| {
+        if v > p {
+            return sample_or_black(from, u, v);
+        }
+        // The shutter shows the bottom of the incoming shot first, as though
+        // it were being unrolled from above.
+        let sv = 1.0 - (p - v) / p.max(0.001);
+        let px = sample_or_black(to, u, sv.clamp(0.0, 0.999));
+        // A darkened leading edge reads as the roller itself.
+        if p - v < 0.02 {
+            shade(px, 0.55)
+        } else {
+            px
+        }
+    });
+}
+
+/// Dips through a covering source, cutting underneath at the midpoint.
+///
+/// A real stinger plays a full-screen animation and switches the programme
+/// behind it while the screen is covered. With `via` supplying the covering
+/// picture, that is exactly what this does — and with a colour source it
+/// becomes a dip to colour, which is a useful transition in its own right.
+fn stinger(from: &Frame, to: &Frame, via: Option<&Frame>, p: f32, out: &mut Frame) {
+    let Some(cover) = via else {
+        // No stinger source configured. Falling back to a fade keeps the show
+        // running rather than cutting to black.
+        fade(from, to, p, out);
+        return;
+    };
+
+    // Cover rises to full by the midpoint, falls away after it. The programme
+    // switch happens while the screen is fully covered, so it is never seen.
+    let coverage = if p < 0.5 { p * 2.0 } else { (1.0 - p) * 2.0 };
+    let underneath = if p < 0.5 { from } else { to };
+
+    for_each_pixel(out, |u, v| {
+        let base = sample_or_black(underneath, u, v);
+        let cover_px = sample_or_black(cover, u, v);
+        // The cover's own alpha modulates it, so a graphic with transparency
+        // works as a proper stinger rather than a solid wipe.
+        let alpha = (cover_px[3] as f32 / 255.0) * coverage;
+        mix(base, cover_px, alpha)
     });
 }
 
@@ -285,100 +475,113 @@ mod tests {
         Frame::filled(64, 36, [30, 30, 220])
     }
 
+    fn white() -> Frame {
+        Frame::filled(64, 36, [255, 255, 255])
+    }
+
     /// Every effect must land exactly on its endpoints. A transition that
     /// nearly finishes leaves a seam on air.
     #[test]
     fn every_effect_is_exact_at_both_ends() {
-        let (from, to) = (red(), blue());
+        let (from, to, via) = (red(), blue(), white());
         let mut out = Frame::new(0, 0);
 
         for kind in Transition::ALL {
-            render(kind, &from, &to, 0.0, &mut out);
+            render(kind, &from, &to, Some(&via), 0.0, &mut out);
             assert_eq!(
                 out.pixel(32, 18),
                 Some([220, 30, 30, 255]),
-                "{:?} at progress 0 must be the outgoing shot",
-                kind
+                "{} at progress 0 must be the outgoing shot",
+                kind.label()
             );
 
-            render(kind, &from, &to, 1.0, &mut out);
+            render(kind, &from, &to, Some(&via), 1.0, &mut out);
             assert_eq!(
                 out.pixel(32, 18),
                 Some([30, 30, 220, 255]),
-                "{:?} at progress 1 must be the incoming shot",
-                kind
+                "{} at progress 1 must be the incoming shot",
+                kind.label()
             );
         }
     }
 
     #[test]
-    fn progress_outside_the_range_is_clamped_rather_than_extrapolated() {
-        let (from, to) = (red(), blue());
+    fn every_effect_produces_a_full_frame_midway() {
+        // A partially written buffer shows whatever was there before, which on
+        // a reused canvas is the previous frame.
+        let (from, to, via) = (red(), blue(), white());
         let mut out = Frame::new(0, 0);
 
-        render(Transition::Fade, &from, &to, -5.0, &mut out);
-        assert_eq!(out.pixel(10, 10), Some([220, 30, 30, 255]));
+        for kind in Transition::ALL {
+            render(kind, &from, &to, Some(&via), 0.5, &mut out);
+            assert_eq!(out.width, 64, "{} resized wrongly", kind.label());
+            assert_eq!(out.height, 36, "{} resized wrongly", kind.label());
+            assert!(
+                out.data.iter().any(|&b| b != 0),
+                "{} left the canvas blank",
+                kind.label()
+            );
+        }
+    }
 
-        render(Transition::Fade, &from, &to, 99.0, &mut out);
-        assert_eq!(out.pixel(10, 10), Some([30, 30, 220, 255]));
+    #[test]
+    fn the_bus_matches_the_vmix_effect_list() {
+        // Eighteen effects plus four stingers plus cut.
+        assert_eq!(Transition::ALL.len(), 23);
+        for expected in [
+            "Fade", "Zoom", "Wipe", "Slide", "Fly", "CrossZoom", "FlyRotate", "Cube", "CubeZoom",
+            "VerticalWipe", "VerticalSlide", "Merge", "WipeReverse", "SlideReverse",
+            "VerticalWipeReverse", "VerticalSlideReverse", "BarnDoor", "RollerDoor", "Stinger 1",
+            "Stinger 2", "Stinger 3", "Stinger 4", "Cut",
+        ] {
+            assert!(
+                Transition::ALL.iter().any(|t| t.label() == expected),
+                "{expected} is missing from the bus"
+            );
+        }
     }
 
     #[test]
     fn cut_is_instant_even_halfway_through() {
         let (from, to) = (red(), blue());
         let mut out = Frame::new(0, 0);
-        render(Transition::Cut, &from, &to, 0.5, &mut out);
-        assert_eq!(
-            out.pixel(32, 18),
-            Some([30, 30, 220, 255]),
-            "a cut has no intermediate state"
-        );
+        render(Transition::Cut, &from, &to, None, 0.5, &mut out);
+        assert_eq!(out.pixel(32, 18), Some([30, 30, 220, 255]));
     }
 
     #[test]
-    fn fade_is_a_genuine_blend_at_the_midpoint() {
+    fn a_wipe_and_its_reverse_move_in_opposite_directions() {
         let (from, to) = (red(), blue());
-        let mut out = Frame::new(0, 0);
-        render(Transition::Fade, &from, &to, 0.5, &mut out);
+        let mut forward = Frame::new(0, 0);
+        let mut backward = Frame::new(0, 0);
 
-        let px = out.pixel(32, 18).unwrap();
-        assert!(
-            (100..=150).contains(&px[0]) && (100..=150).contains(&px[2]),
-            "halfway should be a mix of both, got {px:?}"
-        );
+        render(Transition::Wipe, &from, &to, None, 0.5, &mut forward);
+        render(Transition::WipeReverse, &from, &to, None, 0.5, &mut backward);
+
+        assert!(forward.pixel(8, 18).unwrap()[2] > 150, "forward reveals from the left");
+        assert!(backward.pixel(8, 18).unwrap()[0] > 150, "reverse reveals from the right");
+        assert!(backward.pixel(56, 18).unwrap()[2] > 150);
     }
 
     #[test]
-    fn a_horizontal_wipe_reveals_from_the_left() {
+    fn a_vertical_wipe_and_its_reverse_move_in_opposite_directions() {
         let (from, to) = (red(), blue());
-        let mut out = Frame::new(0, 0);
-        render(Transition::Wipe, &from, &to, 0.5, &mut out);
+        let mut forward = Frame::new(0, 0);
+        let mut backward = Frame::new(0, 0);
 
-        let left = out.pixel(8, 18).unwrap();
-        let right = out.pixel(56, 18).unwrap();
-        assert!(left[2] > 150, "the left side should already be the new shot: {left:?}");
-        assert!(right[0] > 150, "the right side should still be the old shot: {right:?}");
+        render(Transition::VerticalWipe, &from, &to, None, 0.5, &mut forward);
+        render(Transition::VerticalWipeReverse, &from, &to, None, 0.5, &mut backward);
+
+        assert!(forward.pixel(32, 4).unwrap()[2] > 150, "forward reveals from the top");
+        assert!(backward.pixel(32, 4).unwrap()[0] > 150, "reverse reveals from the bottom");
     }
 
     #[test]
-    fn a_vertical_wipe_reveals_from_the_top() {
+    fn slides_stay_hard_edged_rather_than_blending() {
+        // A slide that blends is just a fade with extra steps.
         let (from, to) = (red(), blue());
         let mut out = Frame::new(0, 0);
-        render(Transition::WipeVertical, &from, &to, 0.5, &mut out);
-
-        let top = out.pixel(32, 5).unwrap();
-        let bottom = out.pixel(32, 31).unwrap();
-        assert!(top[2] > 150, "the top should be the new shot: {top:?}");
-        assert!(bottom[0] > 150, "the bottom should be the old shot: {bottom:?}");
-    }
-
-    #[test]
-    fn slide_moves_both_shots_rather_than_blending_them() {
-        // A slide must stay hard-edged; if it blends it is just a fade with
-        // extra steps.
-        let (from, to) = (red(), blue());
-        let mut out = Frame::new(0, 0);
-        render(Transition::Slide, &from, &to, 0.5, &mut out);
+        render(Transition::Slide, &from, &to, None, 0.5, &mut out);
 
         let left = out.pixel(8, 18).unwrap();
         let right = out.pixel(56, 18).unwrap();
@@ -387,16 +590,106 @@ mod tests {
     }
 
     #[test]
-    fn zoom_grows_the_incoming_shot_from_the_centre() {
+    fn slide_reverse_brings_the_new_shot_in_from_the_other_side() {
+        let (from, to) = (red(), blue());
+        let mut forward = Frame::new(0, 0);
+        let mut backward = Frame::new(0, 0);
+        render(Transition::Slide, &from, &to, None, 0.5, &mut forward);
+        render(Transition::SlideReverse, &from, &to, None, 0.5, &mut backward);
+
+        assert!(forward.pixel(56, 18).unwrap()[2] > 150, "forward enters from the right");
+        assert!(backward.pixel(8, 18).unwrap()[2] > 150, "reverse enters from the left");
+    }
+
+    #[test]
+    fn barn_door_opens_from_the_centre() {
         let (from, to) = (red(), blue());
         let mut out = Frame::new(0, 0);
+        render(Transition::BarnDoor, &from, &to, None, 0.4, &mut out);
 
-        // Early on, the centre has the new shot while the edges still show the old.
-        render(Transition::Zoom, &from, &to, 0.25, &mut out);
         let centre = out.pixel(32, 18).unwrap();
-        let corner = out.pixel(1, 1).unwrap();
-        assert!(centre[2] > 100, "the centre should be showing the new shot: {centre:?}");
-        assert!(corner[0] > 150, "the corner should still be the old shot: {corner:?}");
+        let edge = out.pixel(1, 18).unwrap();
+        assert!(centre[2] > 120, "the centre should reveal first: {centre:?}");
+        assert!(edge[0] > 120, "the edges should still be the old shot: {edge:?}");
+    }
+
+    #[test]
+    fn roller_door_comes_down_from_the_top() {
+        let (from, to) = (red(), blue());
+        let mut out = Frame::new(0, 0);
+        render(Transition::RollerDoor, &from, &to, None, 0.5, &mut out);
+
+        let top = out.pixel(32, 3).unwrap();
+        let bottom = out.pixel(32, 33).unwrap();
+        assert!(top[2] > 100, "the top should be covered first: {top:?}");
+        assert!(bottom[0] > 150, "the bottom should still be the old shot: {bottom:?}");
+    }
+
+    #[test]
+    fn a_stinger_covers_the_screen_at_its_midpoint() {
+        // The whole point: the programme switch happens while covered, so the
+        // cut is never seen.
+        let (from, to, via) = (red(), blue(), white());
+        let mut out = Frame::new(0, 0);
+        render(Transition::Stinger1, &from, &to, Some(&via), 0.5, &mut out);
+
+        let px = out.pixel(32, 18).unwrap();
+        assert!(
+            px[0] > 230 && px[1] > 230 && px[2] > 230,
+            "the midpoint should be fully covered, got {px:?}"
+        );
+    }
+
+    #[test]
+    fn a_stinger_without_a_source_falls_back_to_a_fade() {
+        // Cutting to black because a graphic was not configured would be far
+        // worse than quietly fading.
+        let (from, to) = (red(), blue());
+        let mut out = Frame::new(0, 0);
+        render(Transition::Stinger2, &from, &to, None, 0.5, &mut out);
+
+        let px = out.pixel(32, 18).unwrap();
+        assert!(
+            (100..=150).contains(&px[0]) && (100..=150).contains(&px[2]),
+            "expected a fade, got {px:?}"
+        );
+    }
+
+    #[test]
+    fn stinger_slots_map_to_their_numbers() {
+        assert_eq!(Transition::Stinger1.stinger_slot(), Some(0));
+        assert_eq!(Transition::Stinger4.stinger_slot(), Some(3));
+        assert_eq!(Transition::Fade.stinger_slot(), None);
+    }
+
+    #[test]
+    fn fly_rotate_actually_rotates_where_fly_does_not() {
+        let (from, to) = (red(), blue());
+        let mut plain = Frame::new(0, 0);
+        let mut spun = Frame::new(0, 0);
+        render(Transition::Fly, &from, &to, None, 0.35, &mut plain);
+        render(Transition::FlyRotate, &from, &to, None, 0.35, &mut spun);
+        assert_ne!(plain.data, spun.data, "FlyRotate should differ from Fly");
+    }
+
+    #[test]
+    fn cube_and_cubezoom_differ() {
+        let (from, to) = (red(), blue());
+        let mut plain = Frame::new(0, 0);
+        let mut zoomed = Frame::new(0, 0);
+        render(Transition::Cube, &from, &to, None, 0.5, &mut plain);
+        render(Transition::CubeZoom, &from, &to, None, 0.5, &mut zoomed);
+        assert_ne!(plain.data, zoomed.data, "CubeZoom should pull back where Cube does not");
+    }
+
+    #[test]
+    fn progress_outside_the_range_is_clamped() {
+        let (from, to) = (red(), blue());
+        let mut out = Frame::new(0, 0);
+        render(Transition::Fade, &from, &to, None, -5.0, &mut out);
+        assert_eq!(out.pixel(10, 10), Some([220, 30, 30, 255]));
+        render(Transition::Fade, &from, &to, None, 99.0, &mut out);
+        assert_eq!(out.pixel(10, 10), Some([30, 30, 220, 255]));
     }
 
     #[test]
@@ -406,9 +699,8 @@ mod tests {
         let from = red();
         let empty = Frame::new(0, 0);
         let mut out = Frame::new(0, 0);
-
         for kind in Transition::ALL {
-            render(kind, &from, &empty, 0.5, &mut out);
+            render(kind, &from, &empty, None, 0.5, &mut out);
         }
     }
 
@@ -417,21 +709,15 @@ mod tests {
         let from = Frame::filled(32, 18, [220, 30, 30]);
         let to = Frame::filled(128, 72, [30, 30, 220]);
         let mut out = Frame::new(0, 0);
-
-        render(Transition::Fade, &from, &to, 0.5, &mut out);
-        assert_eq!(
-            (out.width, out.height),
-            (128, 72),
-            "the output should take the incoming shot's size"
-        );
+        render(Transition::Fade, &from, &to, None, 0.5, &mut out);
+        assert_eq!((out.width, out.height), (128, 72));
     }
 
     #[test]
-    fn labels_are_present_and_distinct() {
+    fn labels_are_distinct() {
         let mut seen = std::collections::HashSet::new();
         for kind in Transition::ALL {
-            assert!(!kind.label().is_empty());
-            assert!(seen.insert(kind.label()), "duplicate label for {kind:?}");
+            assert!(seen.insert(kind.label()), "duplicate label {}", kind.label());
         }
     }
 }

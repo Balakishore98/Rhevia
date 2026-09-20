@@ -58,6 +58,11 @@ pub struct StudioApp {
     record_path: String,
     new_source_name: String,
     file_path: String,
+    image_path: String,
+    title_text: String,
+    title_subtitle: String,
+    /// The title input being edited, with its working copy of the text.
+    editing_title: Option<(usize, String, String)>,
     show_add_source: bool,
     show_devices: bool,
     /// Which input a chosen device attaches to; None adds an audio-only input.
@@ -81,6 +86,10 @@ impl StudioApp {
             record_path: default_record_path(),
             new_source_name: String::new(),
             file_path: String::new(),
+            image_path: String::new(),
+            title_text: String::new(),
+            title_subtitle: String::new(),
+            editing_title: None,
             show_add_source: false,
             show_devices: false,
             attach_to: None,
@@ -549,6 +558,19 @@ impl StudioApp {
                     self.engine.send(Command::RemoveSource(index));
                 }
             });
+
+            // A lower third is edited constantly during a show, so the way in
+            // sits on the tile rather than behind a settings dialog.
+            if let Some((text, subtitle)) = &info.title {
+                if theme::chip(ui, "EDIT TEXT", false, theme::ACCENT, Vec2::new(186.0, 19.0))
+                    .on_hover_text("change this title without taking it off air")
+                    .clicked()
+                {
+                    self.editing_title = Some((index, text.clone(), subtitle.clone()));
+                }
+            }
+            ui.horizontal(|_ui| {
+            });
         });
     }
 
@@ -650,20 +672,44 @@ impl StudioApp {
 
             ui.add_space(2.0);
             ui.label(RichText::new("EFFECT").size(9.0).strong().color(theme::TEXT_FAINT));
-            // Every effect on the bus, always visible. Hiding them behind a
-            // dropdown costs a click during a show, which is when they are
-            // chosen.
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
-                for effect in Transition::ALL {
-                    let active = snapshot.transition_kind == effect;
-                    if theme::chip(ui, effect.label(), active, theme::ACCENT, Vec2::new(71.0, 20.0))
-                        .clicked()
-                    {
-                        self.engine.send(Command::SetTransition(effect));
+            // Twenty-three effects will not fit as buttons beside the
+            // monitors, so the bus carries the current one and opens the rest,
+            // which is how every switcher presents them.
+            ui.menu_button(
+                RichText::new(format!("{}  ▾", snapshot.transition_kind.label())).size(11.0),
+                |ui| {
+                    ui.set_min_width(190.0);
+                    for effect in Transition::ALL {
+                        if effect == Transition::Cut {
+                            // Cut has its own button; listing it here too
+                            // would offer an AUTO that does not animate.
+                            continue;
+                        }
+                        let active = snapshot.transition_kind == effect;
+                        let label = RichText::new(effect.label())
+                            .size(11.5)
+                            .color(if active { theme::ACCENT } else { theme::TEXT });
+                        if ui.selectable_label(active, label).clicked() {
+                            self.engine.send(Command::SetTransition(effect));
+                            ui.close_menu();
+                        }
                     }
-                }
-            });
+                    ui.separator();
+                    ui.label(
+                        RichText::new("Duration Milliseconds")
+                            .size(10.5)
+                            .strong()
+                            .color(theme::TEXT_DIM),
+                    );
+                    let mut ms = snapshot.transition_seconds * 1000.0;
+                    if ui
+                        .add(egui::DragValue::new(&mut ms).speed(10.0).range(100.0..=10_000.0))
+                        .changed()
+                    {
+                        self.engine.send(Command::SetTransitionMs(ms));
+                    }
+                },
+            );
 
             ui.add_space(2.0);
             ui.label(RichText::new("LAYOUT").size(9.0).strong().color(theme::TEXT_FAINT));
@@ -703,10 +749,10 @@ impl StudioApp {
             });
 
             ui.add_space(4.0);
-            theme::vertical_t_bar(ui, snapshot.transition.unwrap_or(0.0), Vec2::new(width, 56.0));
+            theme::vertical_t_bar(ui, snapshot.transition.unwrap_or(0.0), Vec2::new(width, 84.0));
 
             ui.label(
-                RichText::new(format!("RATE {:.1}s", snapshot.transition_seconds))
+                RichText::new(format!("{:.0} ms", snapshot.transition_seconds * 1000.0))
                     .font(theme::mono(9.5))
                     .color(theme::TEXT_FAINT),
             );
@@ -719,6 +765,19 @@ impl StudioApp {
                 .changed()
             {
                 self.engine.send(Command::SetTransitionSeconds(seconds));
+            }
+
+            if let Some(slot) = snapshot.transition_kind.stinger_slot() {
+                let ready = snapshot.overlay_source[slot].is_some();
+                ui.label(
+                    RichText::new(if ready {
+                        format!("via overlay {}", slot + 1)
+                    } else {
+                        format!("set overlay {}", slot + 1)
+                    })
+                    .size(9.0)
+                    .color(if ready { theme::PREVIEW } else { theme::WARN }),
+                );
             }
 
             ui.add_space(4.0);
@@ -856,6 +915,7 @@ impl StudioApp {
 
     fn dialogs(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
         self.device_picker(ctx, snapshot);
+        self.title_editor(ctx);
 
         if self.show_add_source {
             let mut open = true;
@@ -896,6 +956,55 @@ impl StudioApp {
                     ui.add_space(14.0);
                     ui.separator();
                     ui.add_space(8.0);
+                    ui.label(RichText::new("STILL IMAGE (PNG, JPEG, BMP, GIF)").size(10.5).color(theme::TEXT_DIM));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.image_path)
+                            .hint_text(r"C:\graphics\holding-slide.png")
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Transparency is kept, so a PNG works as an overlay graphic.")
+                            .size(10.0)
+                            .color(theme::TEXT_FAINT),
+                    );
+                    ui.add_space(6.0);
+                    if ui.button("Add image").clicked() && !self.image_path.trim().is_empty() {
+                        self.engine.send(Command::AddImageSource {
+                            name: self.name_or("Image"),
+                            path: self.image_path.trim().to_string(),
+                        });
+                        self.show_add_source = false;
+                    }
+
+                    ui.add_space(14.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("TITLE / LOWER THIRD").size(10.5).color(theme::TEXT_DIM));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.title_text)
+                            .hint_text("ALEX CARTER")
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.title_subtitle)
+                            .hint_text("LEAD ANALYST")
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(6.0);
+                    if ui.button("Add title").clicked() && !self.title_text.trim().is_empty() {
+                        self.engine.send(Command::AddTitleSource {
+                            name: self.name_or("Title"),
+                            text: self.title_text.trim().to_string(),
+                            subtitle: self.title_subtitle.trim().to_string(),
+                        });
+                        self.show_add_source = false;
+                    }
+
+                    ui.add_space(14.0);
+                    ui.separator();
+                    ui.add_space(8.0);
                     ui.label(RichText::new("H.264 FILE (Annex-B, loops)").size(10.5).color(theme::TEXT_DIM));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.file_path)
@@ -921,6 +1030,53 @@ impl StudioApp {
             if !open {
                 self.show_add_source = false;
             }
+        }
+    }
+
+    /// Edits a title in place. Applying while it is on air is the point.
+    fn title_editor(&mut self, ctx: &egui::Context) {
+        let Some((index, mut text, mut subtitle)) = self.editing_title.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut apply = false;
+
+        egui::Window::new("Title text")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.add_space(4.0);
+                ui.label(RichText::new("HEADLINE").size(10.5).color(theme::TEXT_DIM));
+                ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY));
+                ui.add_space(8.0);
+                ui.label(RichText::new("SUBTITLE").size(10.5).color(theme::TEXT_DIM));
+                ui.add(egui::TextEdit::singleline(&mut subtitle).desired_width(f32::INFINITY));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if theme::button(ui, "APPLY", theme::PREVIEW, Vec2::new(100.0, 28.0)).clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Close").clicked() {
+                        apply = false;
+                    }
+                });
+                ui.add_space(4.0);
+            });
+
+        if apply {
+            self.engine.send(Command::SetTitleText {
+                input: index,
+                text: text.clone(),
+                subtitle: subtitle.clone(),
+            });
+        }
+        if open {
+            self.editing_title = Some((index, text, subtitle));
+        } else {
+            self.editing_title = None;
         }
     }
 

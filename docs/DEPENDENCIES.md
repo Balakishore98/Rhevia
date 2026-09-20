@@ -27,6 +27,8 @@ does not fit, it does not go in — find another, or write it.
 | `openh264` | 0.9 | BSD-2-Clause | ✅ | H.264 decode and encode; Cisco covers the patent licensing for their binary |
 | `eframe` / `egui` | 0.29 | MIT / Apache-2.0 | ✅ | the Studio interface, GPU-rendered via wgpu |
 | `cpal` | 0.15 | Apache-2.0 | ✅ | audio capture, WASAPI on Windows |
+| `image` | 0.25 | MIT / Apache-2.0 | ✅ | still image inputs (PNG, JPEG, BMP, GIF) |
+| `ab_glyph` | 0.2 | Apache-2.0 | ✅ | title rendering |
 
 ## Build-time only (not distributed)
 
@@ -52,6 +54,10 @@ does not fit, it does not go in — find another, or write it.
 ⚠️ = usable, but requires a deliberate action (our own build, or registering for
 a licence) before it can ship. Do not let one of these reach a release branch
 without that action completed.
+
+> **No typeface is bundled.** Shipping a font means shipping its licence, and
+> every desktop already has usable faces installed, so titles load one from the
+> system instead.
 
 ## Explicitly rejected
 

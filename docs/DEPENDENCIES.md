@@ -26,6 +26,7 @@ does not fit, it does not go in — find another, or write it.
 | `bytes` | 1.x | MIT | ✅ | zero-copy buffers |
 | `openh264` | 0.9 | BSD-2-Clause | ✅ | H.264 decode and encode; Cisco covers the patent licensing for their binary |
 | `eframe` / `egui` | 0.29 | MIT / Apache-2.0 | ✅ | the Studio interface, GPU-rendered via wgpu |
+| `cpal` | 0.15 | Apache-2.0 | ✅ | audio capture, WASAPI on Windows |
 
 ## Build-time only (not distributed)
 

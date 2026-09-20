@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use eframe::egui::{self, RichText, Vec2};
 use rhevia_engine::Frame;
 
+use crate::audio_ui;
 use crate::engine::{Command, EngineHandle, Layout, Snapshot};
 use crate::theme;
 
@@ -27,6 +28,9 @@ pub struct StudioApp {
     file_path: String,
     show_add_source: bool,
     show_stream_settings: bool,
+    show_devices: bool,
+    /// Which input a chosen device attaches to; None adds an audio-only input.
+    attach_to: Option<usize>,
     /// Which overlay slot the next input click assigns to, if any.
     assigning_overlay: Option<usize>,
 }
@@ -44,6 +48,8 @@ impl StudioApp {
             file_path: String::new(),
             show_add_source: false,
             show_stream_settings: false,
+            show_devices: false,
+            attach_to: None,
             assigning_overlay: None,
         }
     }
@@ -75,8 +81,9 @@ impl eframe::App for StudioApp {
         self.status_bar(ctx, &snapshot);
         self.toolbar(ctx, &snapshot);
         self.inputs(ctx, &snapshot);
+        audio_ui::panel(ctx, &snapshot, &self.engine, &mut self.show_devices);
         self.monitors(ctx, &snapshot);
-        self.dialogs(ctx);
+        self.dialogs(ctx, &snapshot);
     }
 }
 
@@ -521,7 +528,7 @@ impl StudioApp {
             });
     }
 
-    fn dialogs(&mut self, ctx: &egui::Context) {
+    fn dialogs(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
         if self.show_stream_settings {
             let mut open = true;
             egui::Window::new("Stream destination")
@@ -580,6 +587,8 @@ impl StudioApp {
                 self.show_stream_settings = false;
             }
         }
+
+        self.device_picker(ctx, snapshot);
 
         if self.show_add_source {
             let mut open = true;
@@ -644,6 +653,83 @@ impl StudioApp {
         }
     }
 
+    /// Lists capture devices and attaches the chosen one.
+    fn device_picker(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        if !self.show_devices {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Audio device")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_width(440.0);
+                ui.add_space(4.0);
+
+                ui.label(RichText::new("ATTACH TO").size(11.0).color(theme::TEXT_DIM));
+                ui.horizontal_wrapped(|ui| {
+                    let standalone = self.attach_to.is_none();
+                    let colour = if standalone { theme::ACCENT } else { theme::BG_RAISED };
+                    if theme::button(ui, "New audio input", colour, Vec2::new(130.0, 24.0)).clicked() {
+                        self.attach_to = None;
+                    }
+                    for (index, input) in snapshot.inputs.iter().enumerate() {
+                        let selected = self.attach_to == Some(index);
+                        let colour = if selected { theme::ACCENT } else { theme::BG_RAISED };
+                        let label = format!("{} {}", index + 1, input.name);
+                        if theme::button(ui, &label, colour, Vec2::new(118.0, 24.0)).clicked() {
+                            self.attach_to = Some(index);
+                        }
+                    }
+                });
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(RichText::new("DEVICE").size(11.0).color(theme::TEXT_DIM));
+                ui.add_space(4.0);
+
+                // Enumerated every time the dialog opens rather than cached:
+                // devices appear and disappear as things are plugged in.
+                let devices = rhevia_audio::list_input_devices();
+                if devices.is_empty() {
+                    ui.label(
+                        RichText::new("no capture devices found")
+                            .size(11.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                }
+                egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                    for device in &devices {
+                        let label = if device.is_default {
+                            format!("{}  (default)", device.name)
+                        } else {
+                            device.name.clone()
+                        };
+                        if ui.button(label).clicked() {
+                            match self.attach_to {
+                                Some(input) => self.engine.send(Command::AttachAudio {
+                                    input,
+                                    device: Some(device.name.clone()),
+                                }),
+                                None => self.engine.send(Command::AddAudioSource {
+                                    name: shorten(&device.name),
+                                    device: Some(device.name.clone()),
+                                }),
+                            }
+                            self.show_devices = false;
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+            });
+        if !open {
+            self.show_devices = false;
+        }
+    }
+
     fn name_or(&self, fallback: &str) -> String {
         let name = self.new_source_name.trim();
         if name.is_empty() {
@@ -651,6 +737,16 @@ impl StudioApp {
         } else {
             name.to_string()
         }
+    }
+}
+
+/// Device names are long and repetitive; the strip is 62 px wide.
+fn shorten(name: &str) -> String {
+    let trimmed = name.split('(').next().unwrap_or(name).trim();
+    if trimmed.is_empty() {
+        name.chars().take(18).collect()
+    } else {
+        trimmed.chars().take(18).collect()
     }
 }
 

@@ -34,7 +34,7 @@ for having built it in this order.
 | **Encode** | **done** | OpenH264, with keyframes forced on cuts and at the start of a recording. NVENC will be faster and is not required for correctness. |
 | **Mux** | **done** | FLV tag muxing for H.264 and AAC, including the decoder configuration record and keyframe flagging. |
 | **Deliver** | **done** | RTMP publishing: handshake, connect, publish, real-time pacing. Verified end to end against a real server. SRT still to do. |
-| **Audio** | none | Nothing at all: no capture, no mixing, no DSP, no A/V sync. |
+| **Audio** | partial | Capture (WASAPI via cpal), channel strips with fader, mute, solo, constant-power pan and follow-Program, summed to a master bus, with peak/RMS meters and latching clip. **Not yet: encoding audio into the stream, DSP (EQ, compressor, gate), VST3 hosting, or A/V sync.** The stream is still video-only. |
 | **Recording** | none | No fragmented MP4 writer, no proxy, no shorts pipeline. |
 | **UI** | **done** | Rhevia Studio: Preview/Program, per-input controls, layouts, overlays, transitions, recording, streaming, keyboard shortcuts. A single self-contained .exe. |
 | **Recording** | partial | Program writes to Annex-B H.264, readable while being written. No proxy or shorts pipeline yet. |

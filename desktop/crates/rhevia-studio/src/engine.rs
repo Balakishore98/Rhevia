@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use rhevia_audio::{AudioBuffer, AudioMixer, CaptureHandle, SAMPLE_RATE};
 use rhevia_engine::{EncoderSettings, Frame, Layer, Rect, Scene};
 use rhevia_output::h264::{self, ParameterSets};
 use rhevia_output::{flv, RtmpPublisher, RtmpUrl};
@@ -38,6 +39,19 @@ pub enum Command {
     /// Put this input straight to air, skipping Preview.
     CutTo(usize),
     AddColourSource { name: String, rgb: [u8; 3] },
+    /// An audio-only input from a capture device.
+    AddAudioSource { name: String, device: Option<String> },
+    /// Attaches a capture device to an existing input, so a camera carries
+    /// its own sound.
+    AttachAudio { input: usize, device: Option<String> },
+    SetChannelGain { channel: usize, db: f32 },
+    ToggleMute(usize),
+    ToggleSolo(usize),
+    SetPan { channel: usize, pan: f32 },
+    ToggleFollowProgram(usize),
+    SetMasterGain(f32),
+    ToggleMasterMute,
+    ClearClip(usize),
     AddBarsSource { name: String },
     AddFileSource { name: String, path: String },
     RemoveSource(usize),
@@ -109,6 +123,33 @@ pub struct Snapshot {
     pub recorded_bytes: u64,
     pub recording_path: Option<String>,
     pub ftb: bool,
+    pub audio: Vec<ChannelState>,
+    pub master: MasterState,
+}
+
+/// One audio channel strip, as the mixer panel needs it.
+#[derive(Clone, Default)]
+pub struct ChannelState {
+    pub name: String,
+    pub gain_db: f32,
+    pub muted: bool,
+    pub solo: bool,
+    pub pan: f32,
+    pub follow_program: bool,
+    pub peak_db: f32,
+    pub rms_db: f32,
+    pub clipped: bool,
+    /// False when the input has no audio device attached.
+    pub has_source: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct MasterState {
+    pub gain_db: f32,
+    pub muted: bool,
+    pub peak_db: f32,
+    pub rms_db: f32,
+    pub clipped: bool,
 }
 
 #[derive(Clone, Default)]
@@ -167,11 +208,16 @@ enum Source {
         units: Vec<Vec<u8>>,
         next: usize,
     },
+    /// Sound with no picture. Draws its own level so the tile is not a black
+    /// rectangle the operator cannot read.
+    AudioOnly,
 }
 
 struct SourceSlot {
     source: Source,
     mixer_input: usize,
+    /// Audio for this input, when a device is attached.
+    audio: Option<CaptureHandle>,
 }
 
 const OUTPUT_WIDTH: usize = 1280;
@@ -230,19 +276,24 @@ fn run(
         keyframe_interval: (TARGET_FPS as u32) * 2,
     };
     let mut mixer = Mixer::new(settings)?;
+    let mut audio = AudioMixer::new();
     let mut sources: Vec<SourceSlot> = Vec::new();
 
     // Two sources up front so the window is never an empty grid.
     sources.push(SourceSlot {
         source: Source::Bars,
         mixer_input: 0,
+        audio: None,
     });
     mixer.set_input_name(0, "Colour Bars");
+    audio.add_channel("Colour Bars");
     sources.push(SourceSlot {
         source: Source::Colour([20, 90, 160]),
         mixer_input: 1,
+        audio: None,
     });
     mixer.set_input_name(1, "Blue");
+    audio.add_channel("Blue");
     for (rgb, name) in [
         ([150, 30, 60], "Magenta"),
         ([30, 130, 90], "Green"),
@@ -252,7 +303,9 @@ fn run(
             sources.push(SourceSlot {
                 source: Source::Colour(rgb),
                 mixer_input: input,
+                audio: None,
             });
+            audio.add_channel(name);
         }
     }
 
@@ -339,28 +392,108 @@ fn run(
                     }
                 }
                 Command::AddColourSource { name, rgb } => {
-                    if let Ok(input) = mixer.add_input(name) {
+                    if let Ok(input) = mixer.add_input(name.clone()) {
                         sources.push(SourceSlot {
                             source: Source::Colour(rgb),
                             mixer_input: input,
+                            audio: None,
                         });
+                        audio.add_channel(name);
+                    }
+                }
+                Command::AddAudioSource { name, device } => {
+                    match CaptureHandle::open(device.as_deref()) {
+                        Ok(handle) => {
+                            if let Ok(input) = mixer.add_input(name.clone()) {
+                                sources.push(SourceSlot {
+                                    source: Source::AudioOnly,
+                                    mixer_input: input,
+                                    audio: Some(handle),
+                                });
+                                let channel = audio.add_channel(name);
+                                // Sound with no picture is almost always a
+                                // microphone, and a microphone must stay live
+                                // when the camera it sits next to goes off air.
+                                if let Some(strip) = audio.channel_mut(channel) {
+                                    strip.follow_program = false;
+                                }
+                            }
+                        }
+                        Err(e) => stream_error = Some(format!("audio device: {e}")),
+                    }
+                }
+                Command::AttachAudio { input, device } => {
+                    match CaptureHandle::open(device.as_deref()) {
+                        Ok(handle) => {
+                            if let Some(slot) = sources.get_mut(input) {
+                                slot.audio = Some(handle);
+                                // Sound belonging to a camera should come up
+                                // with that camera, so this follows Program.
+                                if let Some(strip) = audio.channel_mut(input) {
+                                    strip.follow_program = true;
+                                }
+                            }
+                        }
+                        Err(e) => stream_error = Some(format!("audio device: {e}")),
+                    }
+                }
+                Command::SetChannelGain { channel, db } => {
+                    if let Some(strip) = audio.channel_mut(channel) {
+                        strip.gain_db = db.clamp(rhevia_audio::SILENCE_DB, 12.0);
+                    }
+                }
+                Command::ToggleMute(channel) => {
+                    if let Some(strip) = audio.channel_mut(channel) {
+                        strip.muted = !strip.muted;
+                    }
+                }
+                Command::ToggleSolo(channel) => {
+                    if let Some(strip) = audio.channel_mut(channel) {
+                        strip.solo = !strip.solo;
+                    }
+                }
+                Command::SetPan { channel, pan } => {
+                    if let Some(strip) = audio.channel_mut(channel) {
+                        strip.pan = pan.clamp(-1.0, 1.0);
+                    }
+                }
+                Command::ToggleFollowProgram(channel) => {
+                    if let Some(strip) = audio.channel_mut(channel) {
+                        strip.follow_program = !strip.follow_program;
+                    }
+                }
+                Command::SetMasterGain(db) => {
+                    audio.master_gain_db = db.clamp(rhevia_audio::SILENCE_DB, 12.0);
+                }
+                Command::ToggleMasterMute => audio.master_muted = !audio.master_muted,
+                Command::ClearClip(channel) => {
+                    // usize::MAX addresses the master, so one command serves
+                    // every meter rather than needing a separate message.
+                    if channel == usize::MAX {
+                        audio.master_meter.clear_clip();
+                    } else if let Some(strip) = audio.channel_mut(channel) {
+                        strip.meter.clear_clip();
                     }
                 }
                 Command::AddBarsSource { name } => {
-                    if let Ok(input) = mixer.add_input(name) {
+                    if let Ok(input) = mixer.add_input(name.clone()) {
                         sources.push(SourceSlot {
                             source: Source::Bars,
                             mixer_input: input,
+                            audio: None,
                         });
+                        audio.add_channel(name);
                     }
                 }
                 Command::AddFileSource { name, path } => match load_annexb(&path) {
                     Ok(units) if !units.is_empty() => {
-                        if let Ok(input) = mixer.add_input(name) {
+                        if let Ok(input) = mixer.add_input(name.clone()) {
                             sources.push(SourceSlot {
                                 source: Source::File { units, next: 0 },
                                 mixer_input: input,
+                                audio: None,
                             });
+                            audio.add_channel(name);
                         }
                     }
                     Ok(_) => stream_error = Some(format!("{path} contained no H.264 frames")),
@@ -371,6 +504,7 @@ fn run(
                     // pointing at nothing.
                     if sources.len() > 1 && i < sources.len() {
                         sources.remove(i);
+                        audio.remove_channel(i);
                         program_input = program_input.min(sources.len() - 1);
                         preview_input = preview_input.min(sources.len() - 1);
                     }
@@ -396,6 +530,21 @@ fn run(
             break;
         }
 
+        // ---- audio ---------------------------------------------------------
+        // One video frame worth of audio per tick. Driving audio off the video
+        // clock keeps them locked together by construction; a separate audio
+        // clock would drift apart over a long show.
+        let audio_frames = (SAMPLE_RATE as f32 / TARGET_FPS) as usize;
+        let captured: Vec<Option<AudioBuffer>> = sources
+            .iter()
+            .map(|slot| slot.audio.as_ref().map(|handle| handle.take(audio_frames)))
+            .collect();
+        let on_air: Vec<bool> = (0..sources.len()).map(|i| i == program_input).collect();
+        {
+            let refs: Vec<Option<&AudioBuffer>> = captured.iter().map(|c| c.as_ref()).collect();
+            audio.mix(&refs, &on_air, audio_frames);
+        }
+
         // ---- sources -------------------------------------------------------
         let seconds = start.elapsed().as_secs_f32();
         for slot in &mut sources {
@@ -408,6 +557,16 @@ fn run(
                 }
                 Source::Bars => {
                     let _ = mixer.push_frame(slot.mixer_input, bars(OUTPUT_WIDTH, OUTPUT_HEIGHT, seconds));
+                }
+                Source::AudioOnly => {
+                    let level = audio
+                        .channel(slot.mixer_input)
+                        .map(|c| c.meter.peak())
+                        .unwrap_or(0.0);
+                    let _ = mixer.push_frame(
+                        slot.mixer_input,
+                        audio_tile(OUTPUT_WIDTH, OUTPUT_HEIGHT, level),
+                    );
                 }
                 Source::File { units, next } => {
                     if !units.is_empty() {
@@ -570,6 +729,30 @@ fn run(
             s.recording = recorder.is_some();
             s.recorded_bytes = recorder.as_ref().map(|(_, _, b)| *b).unwrap_or(0);
             s.recording_path = recorder.as_ref().map(|(_, p, _)| p.clone());
+            s.audio = audio
+                .channels
+                .iter()
+                .enumerate()
+                .map(|(i, c)| ChannelState {
+                    name: c.name.clone(),
+                    gain_db: c.gain_db,
+                    muted: c.muted,
+                    solo: c.solo,
+                    pan: c.pan,
+                    follow_program: c.follow_program,
+                    peak_db: c.meter.peak_db(),
+                    rms_db: c.meter.rms_db(),
+                    clipped: c.meter.clipped(),
+                    has_source: sources.get(i).map(|s| s.audio.is_some()).unwrap_or(false),
+                })
+                .collect();
+            s.master = MasterState {
+                gain_db: audio.master_gain_db,
+                muted: audio.master_muted,
+                peak_db: audio.master_meter.peak_db(),
+                rms_db: audio.master_meter.rms_db(),
+                clipped: audio.master_meter.clipped(),
+            };
             s.stats = Stats {
                 fps: measured_fps,
                 frames_rendered: mixer_stats.frames_rendered,
@@ -683,6 +866,38 @@ fn thumbnail_sized(frame: &Frame, width: usize, height: usize) -> Frame {
         }
     }
     out
+}
+
+/// A picture for an audio-only input: a level bar on a dark field.
+///
+/// vMix leaves these tiles black, which tells the operator nothing. Showing
+/// the level means a dead microphone is visible in the multiview at a glance
+/// rather than only in the mixer panel.
+fn audio_tile(width: usize, height: usize, level: f32) -> Frame {
+    let mut frame = Frame::filled(width, height, [18, 20, 26]);
+
+    let bar_height = height / 6;
+    let top = height / 2 - bar_height / 2;
+    let filled = (width as f32 * level.clamp(0.0, 1.0)) as usize;
+
+    for y in top..(top + bar_height).min(height) {
+        for x in 0..width {
+            // Green up to -12 dBFS, amber to -3, red above: the same reading
+            // as the meters in the mixer panel.
+            let fraction = x as f32 / width.max(1) as f32;
+            let colour = if x >= filled {
+                [32, 35, 42]
+            } else if fraction > 0.85 {
+                [226, 62, 62]
+            } else if fraction > 0.65 {
+                [232, 168, 56]
+            } else {
+                [64, 196, 118]
+            };
+            frame.set_pixel(x, y, [colour[0], colour[1], colour[2], 255]);
+        }
+    }
+    frame
 }
 
 /// Colour bars with a sweeping highlight, so a frozen picture is obvious.

@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod audio_ui;
 mod engine;
 mod theme;
 
@@ -19,9 +20,9 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1480.0, 940.0])
+            .with_inner_size([1760.0, 1000.0])
             // Below this the two monitors stop being usable side by side.
-            .with_min_inner_size([1100.0, 720.0])
+            .with_min_inner_size([1340.0, 760.0])
             .with_title("Rhevia Studio"),
         ..Default::default()
     };

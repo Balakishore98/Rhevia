@@ -11,6 +11,7 @@ name = "rhevia-studio"
 path = "src/main.rs"
 
 [dependencies]
+rhevia-audio = { path = "../rhevia-audio" }
 rhevia-engine = { path = "../rhevia-engine" }
 rhevia-output = { path = "../rhevia-output" }
 rhevia-pipeline = { path = "../rhevia-pipeline" }

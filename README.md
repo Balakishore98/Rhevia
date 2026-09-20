@@ -48,7 +48,9 @@ which runs a synthetic camera against the actual server rather than a mock.
 four layouts, four overlay slots, fade to black, recording and live RTMP
 streaming — the whole pipeline, nothing bypassed.
 
-Not yet built: the phone app, hardware (NVENC/NVDEC) codecs, and audio.
+Audio capture and mixing work, with meters and faders, but **audio is not yet
+encoded into the outgoing stream** — that needs an AAC encoder and a licensing
+decision first. Also not built: the phone app and hardware (NVENC/NVDEC) codecs.
 
 | Component | State |
 |---|---|
@@ -59,6 +61,7 @@ Not yet built: the phone app, hardware (NVENC/NVDEC) codecs, and audio.
 | Passthrough relay (`desktop/crates/rhevia-pipeline`) | **working — camera to live RTMP, end to end** |
 | Decode / composite / encode (`desktop/crates/rhevia-engine`) | **working — the full mixer, nothing bypassed** |
 | Rhevia Studio (`desktop/crates/rhevia-studio`) | **working — the application** |
+| Audio (`desktop/crates/rhevia-audio`) | capture, mixing, metering — **not yet in the stream** |
 | FLV mux + RTMP output (`desktop/crates/rhevia-output`) | working — verified against a real RTMP server |
 | Relay deployment (`infra/deploy`) | scripted, not yet deployed |
 | Phone app | not started |

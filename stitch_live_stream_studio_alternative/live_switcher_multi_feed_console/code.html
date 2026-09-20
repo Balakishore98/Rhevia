@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><title>OmniCast Studio</title><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;600;700&amp;family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = {"darkMode":"class","theme":{"extend":{"colors":{"error-container":"#93000a","inverse-surface":"#dfe2ef","surface-container-high":"#262a33","secondary-fixed":"#6bff8f","surface":"#0f131c","on-tertiary-fixed":"#001f26","surface-container-low":"#181c25","on-secondary-container":"#004119","on-primary-fixed-variant":"#930013","error":"#ffb4ab","surface-tint":"#ffb3ad","primary-container":"#ff5451","on-tertiary-container":"#002f38","outline":"#ab8986","primary":"#ffb3ad","surface-container-lowest":"#0a0e17","surface-container":"#1c2029","surface-dim":"#0f131c","tertiary-fixed-dim":"#4cd7f6","secondary-fixed-dim":"#4ae176","secondary":"#4ae176","inverse-primary":"#b91a24","tertiary":"#4cd7f6","tertiary-container":"#009eb9","on-error":"#690005","on-surface":"#dfe2ef","on-tertiary-fixed-variant":"#004e5c","on-secondary-fixed-variant":"#005321","on-surface-variant":"#e4beba","secondary-container":"#00b954","inverse-on-surface":"#2c303a","on-tertiary":"#003640","surface-variant":"#31353e","surface-container-highest":"#31353e","on-primary-container":"#5c0008","on-background":"#dfe2ef","primary-fixed-dim":"#ffb3ad","primary-fixed":"#ffdad7","on-secondary":"#003915","outline-variant":"#5b403e","on-primary":"#68000a","on-secondary-fixed":"#002109","background":"#0f131c","surface-bright":"#353943","tertiary-fixed":"#acedff","on-error-container":"#ffdad6","on-primary-fixed":"#410004"},"borderRadius":{"DEFAULT":"0.125rem","lg":"0.25rem","xl":"0.5rem","full":"0.75rem"},"spacing":{"space-lg":"0.75rem","space-xl":"1rem","space-xs":"0.125rem","margin":"0.5rem","space-md":"0.5rem","gutter":"0.375rem","space-sm":"0.25rem"},"fontFamily":{"label-cap-micro":["JetBrains Mono"],"label-telemetry-md":["JetBrains Mono"],"headline-md":["Chivo"],"label-telemetry-sm":["JetBrains Mono"],"label-telemetry-lg":["JetBrains Mono"],"body-sm":["Inter"],"headline-sm":["Chivo"],"headline-lg":["Chivo"],"body-lg":["Inter"],"body-md":["Inter"]},"fontSize":{"label-cap-micro":["0.5625rem",{"lineHeight":"0.6875rem","letterSpacing":"0.08em","fontWeight":"700"}],"label-telemetry-md":["0.8125rem",{"lineHeight":"1rem","letterSpacing":"0.02em","fontWeight":"600"}],"headline-md":["1.125rem",{"lineHeight":"1.375rem","letterSpacing":"-0.01em","fontWeight":"600"}],"label-telemetry-sm":["0.6875rem",{"lineHeight":"0.8125rem","letterSpacing":"0.01em","fontWeight":"500"}],"label-telemetry-lg":["1.25rem",{"lineHeight":"1.25rem","letterSpacing":"0.04em","fontWeight":"700"}],"body-sm":["0.6875rem",{"lineHeight":"0.875rem","fontWeight":"400"}],"headline-sm":["0.875rem",{"lineHeight":"1.125rem","letterSpacing":"0.02em","fontWeight":"600"}],"headline-lg":["1.5rem",{"lineHeight":"1.75rem","letterSpacing":"-0.02em","fontWeight":"700"}],"body-lg":["0.875rem",{"lineHeight":"1.25rem","fontWeight":"500"}],"body-md":["0.75rem",{"lineHeight":"1rem","fontWeight":"400"}]}}}};</script></head><body class="bg-background font-body-md text-on-surface antialiased select-none"><header class="fixed top-0 left-0 right-0 z-50 bg-surface-container-lowest/95 backdrop-blur-md"><div class="h-7 px-space-md bg-surface-container-low flex items-center justify-between"><div class="flex items-center gap-space-md"><img alt="OmniCast Studio Logo" class="h-4 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1VaXG2zG4AJVy8l7qUp_MJnZhom_YsR3J-2X7K_kQK7gSPRFE7LzRfgFD4PiEYjobOlZxSnpl4QnfZMZ8qV86uoKxBw3cniW1SnGi3IUcwVdvHX-mFznv9UG15TyZVgdyWU9vOcUm11-drH-bYrc2PrINYLWQBA0Zzc4srdIAAzZeWP87HHvpEEhPL5x-P8k6OvmU1A5v0frvDzmodOZKbmzAxxs7QkrRXfdCrKCzSdjaZ1yVO6Ep6-H0za"/><span class="font-label-telemetry-sm text-label-telemetry-sm font-bold tracking-wider text-primary uppercase">OmniCast</span><div class="flex items-center gap-space-xs font-body-sm text-body-sm text-on-surface-variant"><span class="hover:text-on-surface cursor-pointer px-space-xs">File</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Edit</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Bus</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Outputs</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Audio</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Tools</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Help</span></div></div><div class="flex items-center gap-space-md bg-surface-container-lowest px-space-md py-space-xs rounded"><span class="font-label-cap-micro text-label-cap-micro uppercase text-outline">PROJECT</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-semibold">Esports_Championship_GrandFinals.ocst</span><span class="font-label-cap-micro text-label-cap-micro px-space-xs rounded bg-surface-container-high text-tertiary-fixed">PROFILE: PROD_STAGE_A</span></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs"><button class="w-5 h-5 flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[14px]">remove</span></button><button class="w-5 h-5 flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[14px]">crop_square</span></button><button class="w-5 h-5 flex items-center justify-center text-on-surface-variant hover:text-error hover:bg-error-container"><span class="material-symbols-outlined text-[14px]">close</span></button></div><div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[14px]">person</span></div></div></div><div class="h-12 px-space-md bg-surface-container-lowest flex items-center justify-between gap-space-md"><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-sm bg-primary-container px-space-md py-space-xs rounded"><div class="w-2.5 h-2.5 rounded-full bg-on-primary-container animate-pulse"></div><span class="font-label-telemetry-md text-label-telemetry-md font-bold text-on-primary-container tracking-wider">LIVE ON-AIR</span></div><div class="flex items-center gap-space-md bg-surface-container-low px-space-md py-space-xs rounded"><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-outline">PRIMARY RTMP / SRT</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">01:42:18</span></div><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-outline">ENCODER / BITRATE</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface">6000 Kbps 1080p60 NVENC</span></div><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-outline">DROPPED FRAMES</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary">0 frames (0.0%)</span></div></div><div class="flex items-center gap-space-sm bg-surface-container-low px-space-md py-space-xs rounded"><button class="flex items-center gap-space-xs bg-error-container text-on-error-container px-space-sm py-space-xs rounded font-label-telemetry-sm text-label-telemetry-sm font-bold"><span class="material-symbols-outlined text-[14px] text-error">radio_button_checked</span>REC 4K PRORES HQ</button><div class="flex items-center gap-space-xs"><button class="bg-surface-container px-space-sm py-space-xs rounded font-label-telemetry-sm text-label-telemetry-sm text-tertiary hover:bg-surface-container-high hover:text-on-surface">EXT OUT 1</button><button class="bg-surface-container px-space-sm py-space-xs rounded font-label-telemetry-sm text-label-telemetry-sm text-secondary hover:bg-surface-container-high hover:text-on-surface">NDI HX3</button></div></div></div><div class="flex items-center gap-space-lg"><div class="flex items-center gap-space-md bg-surface-container-low px-space-md py-space-xs rounded"><div class="flex flex-col items-center"><span class="font-label-cap-micro text-label-cap-micro text-outline">CPU</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-semibold">18%</span></div><div class="flex flex-col items-center"><span class="font-label-cap-micro text-label-cap-micro text-outline">GPU</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-semibold">32%</span></div><div class="flex flex-col items-center"><span class="font-label-cap-micro text-label-cap-micro text-outline">RAM</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-semibold">8.4G / 32G</span></div><div class="flex flex-col items-center"><span class="font-label-cap-micro text-label-cap-micro text-outline">FPS</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">59.94</span></div></div><div class="bg-surface-container-lowest px-space-md py-space-xs rounded"><div class="flex items-center gap-space-xs"><span class="font-label-cap-micro text-label-cap-micro text-outline">SMPTE MASTER (PTP)</span><span class="font-label-telemetry-lg text-label-telemetry-lg text-tertiary font-bold tracking-widest">19:42:08:14</span></div></div></div></div><nav class="h-9 px-space-md bg-surface-container-low flex items-center gap-space-xs" data-active-classes="bg-surface-container text-tertiary font-semibold"><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="switcher-and-feeds" href="#">Switcher &amp; Feeds</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="audio-matrix-and-dsp" href="#">Audio Matrix &amp; DSP</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="replay-and-highlights" href="#">Replay &amp; Highlights</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="stream-and-multi-output" href="#">Stream &amp; Multi-Output</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="graphics-and-overlays" href="#">Graphics &amp; Overlays</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="settings-and-hardware-io" href="#">Settings / Hardware I/O</a></nav></header><aside class="fixed left-0 top-28 bottom-9 w-16 bg-surface-container-lowest z-40 flex flex-col items-center py-space-md gap-space-md"><div class="flex flex-col gap-space-xs items-center"><button class="w-10 h-10 rounded bg-surface-container-high flex flex-col items-center justify-center text-tertiary"><span class="material-symbols-outlined text-[18px]">grid_view</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">ME 1</span></button><button class="w-10 h-10 rounded bg-surface-container-low flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">layers</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">ME 2</span></button><button class="w-10 h-10 rounded bg-surface-container-low flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">equalizer</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">AUX 1</span></button><button class="w-10 h-10 rounded bg-surface-container-low flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">featured_video</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">AUX 2</span></button></div><div class="w-8 h-px bg-surface-variant my-space-xs"></div><div class="flex flex-col gap-space-xs items-center"><button class="w-10 h-10 rounded bg-surface-container-low flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">auto_awesome_motion</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">DSK 1</span></button><button class="w-10 h-10 rounded bg-surface-container-low flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">title</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">DSK 2</span></button><button class="w-10 h-10 rounded bg-surface-container-low flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">picture_in_picture</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">PIP</span></button></div><div class="mt-auto flex flex-col gap-space-xs items-center"><button class="w-10 h-10 rounded bg-surface-container-low flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">tune</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">SYNC</span></button></div></aside><div class="pl-16"><main class="relative pt-28 pb-9 w-full min-h-screen bg-surface"><div class="flex flex-col w-full text-on-surface select-none pb-4">
+<!-- Master Workspace Header Ribbon -->
+<div class="flex items-center justify-between px-space-md py-space-xs bg-surface-container-lowest mb-1">
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-space-xs bg-surface-container-low px-space-sm py-0.5 rounded">
+<span class="w-2 h-2 rounded-full bg-secondary animate-pulse"></span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface uppercase">M/E 1: MAIN PROGRAM</span>
+</div>
+<span class="font-label-cap-micro text-label-cap-micro text-outline">CLOCK REF: <span class="text-tertiary font-bold">LTC 59.94DF</span></span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline">CANVAS: <span class="text-on-surface font-semibold">3840x2160 UHD HDR10</span></span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline">BUFFER: <span class="text-secondary font-semibold">0.4 ms (ZERO LATENCY)</span></span>
+</div>
+<div class="flex items-center gap-space-sm font-label-telemetry-sm text-label-telemetry-sm">
+<span class="text-outline font-label-cap-micro text-label-cap-micro">OUTPUT STREAMS</span>
+<span class="bg-surface-container px-space-sm py-0.5 rounded text-secondary font-bold">SRT: CH-1 14.2 Mbps</span>
+<span class="bg-surface-container px-space-sm py-0.5 rounded text-tertiary font-bold">NDI: MAIN PROGRAM</span>
+<span class="bg-surface-container-high px-space-sm py-0.5 rounded text-on-surface">RECORD: SSD-1 (42 min rem)</span>
+</div>
+</div>
+<!-- TIER 1: DUAL MASTER BROADCAST MONITORS & HARDWARE TRANSITION ENGINE -->
+<section class="grid grid-cols-12 gap-1 px-1 mb-1">
+<!-- LEFT VIEWPORT: PREVIEW MONITOR (Green Tally #22C55E) -->
+<div class="col-span-5 bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col shadow-xl">
+<!-- Monitor Header Bar -->
+<div class="h-6 bg-secondary-container/20 px-space-sm flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="w-2.5 h-2.5 rounded-full bg-secondary shadow-[0_0_8px_rgba(74,225,118,0.8)]"></span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-secondary uppercase tracking-wider">PREVIEW — CAM 2 [HOST &amp; DESK]</span>
+</div>
+<div class="flex items-center gap-space-xs font-label-cap-micro text-label-cap-micro">
+<span class="px-1 bg-surface-container-high rounded text-secondary font-bold">STG</span>
+<span class="text-outline">1080p59.94 NDI-HX</span>
+</div>
+</div>
+<!-- Preview 16:9 Canvas Container -->
+<div class="relative w-full aspect-video bg-black overflow-hidden flex items-center justify-center">
+<!-- Live Video Image Placeholder -->
+<img class="w-full h-full object-cover" data-alt="Wide esports broadcast anchor desk with two professional esports casters wearing high-end broadcast headsets, seated behind an illuminated gaming desk with RGB underglow, background featuring large LED arena stage monitors displaying game logos in high contrast cinematic studio lighting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBps2Zm2VjdUeOBpdb8AHUn57ly3Cd8Z-boGY4XjC508lEYyaGl_Eqrfwa910oHC5AZkFsnoAF47E6Cb5rlhb8crDMJWXIJ2CrqMWrlgECRugU8APeDsxxudCEz8jJhHUVx6d-o9DslySizdgOrN0C8lHtfcNK86ff4TDgUAWVUw9xntoEgZQuqVU44jMc5BBCOYAA4FWhqHh5hpOq6JZgaqEW2hE3ZbcwOaqMlF_Og809xzeQg4ua3GA"/>
+<!-- Safe Title & Action Guides (Crosshair Grids) -->
+<div class="absolute inset-4 pointer-events-none opacity-40">
+<div class="w-full h-full border border-dashed border-tertiary/40"></div>
+</div>
+<div class="absolute inset-8 pointer-events-none opacity-25">
+<div class="w-full h-full border border-dotted border-tertiary/60"></div>
+</div>
+<div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-30">
+<div class="w-8 h-px bg-tertiary"></div>
+<div class="h-8 w-px bg-tertiary -ml-4"></div>
+</div>
+<!-- Telemetry & Overlay Badges inside Monitor -->
+<div class="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none">
+<div class="bg-surface-container-lowest/80 backdrop-blur px-2 py-0.5 rounded text-secondary font-label-cap-micro text-label-cap-micro flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]">videocam</span>
+<span>SONY FX6 • COLOR: S-CINETONE</span>
+</div>
+<div class="bg-surface-container-lowest/80 backdrop-blur px-2 py-0.5 rounded text-tertiary font-label-cap-micro text-label-cap-micro flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]">face</span>
+<span>AI FACE-TRACK: LOCKED (CONF 98%)</span>
+</div>
+</div>
+<!-- Right Side Mini VU meter on Preview screen -->
+<div class="absolute right-2 top-2 bottom-8 w-2 bg-surface-container-lowest/90 rounded-sm p-0.5 flex flex-col justify-end gap-0.5">
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1 bg-error"></div>
+<div class="w-full h-1 bg-secondary-container"></div>
+<div class="w-full h-2 bg-secondary"></div>
+<div class="w-full h-3 bg-secondary"></div>
+<div class="w-full h-4 bg-secondary"></div>
+</div>
+<!-- Staged Overlay Graphic Lower-Third Preview Box -->
+<div class="absolute bottom-2 left-3 right-8 bg-surface-container-lowest/95 backdrop-blur px-3 py-1.5 rounded flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="bg-secondary text-surface-container-lowest font-label-cap-micro text-label-cap-micro font-black px-1 rounded">STG GFX</span>
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold leading-none">ALEX CARTER — LEAD ANALYST</span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline leading-none mt-0.5">VCL GRAND FINALS • MAP 3 ANALYSIS</span>
+</div>
+</div>
+<div class="flex items-center gap-1 font-label-cap-micro text-label-cap-micro text-secondary">
+<span class="material-symbols-outlined text-[14px]">timer</span>
+<span>AUTO-OUT 08s</span>
+</div>
+</div>
+</div>
+<!-- Monitor Lower Metadata Strip -->
+<div class="h-6 bg-surface-container-low px-space-sm flex items-center justify-between font-label-telemetry-sm text-label-telemetry-sm">
+<span class="text-outline font-label-cap-micro text-label-cap-micro">IN: CAM 2 (DANTE L/R -14.2 dB)</span>
+<div class="flex items-center gap-space-sm">
+<button class="text-on-surface-variant hover:text-on-surface font-label-cap-micro text-label-cap-micro uppercase">ZEBRA: ON</button>
+<button class="text-on-surface-variant hover:text-on-surface font-label-cap-micro text-label-cap-micro uppercase">FALSE COLOR: OFF</button>
+<button class="text-secondary font-label-cap-micro text-label-cap-micro uppercase font-bold">GRID: 16:9 REC</button>
+</div>
+</div>
+</div>
+<!-- CENTER CONSOLE: HARDWARE T-BAR & TRANSITION BUS -->
+<div class="col-span-2 bg-surface-container-low rounded-sm p-2 flex flex-col justify-between shadow-xl">
+<!-- Transition Type Selector Matrix -->
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between pb-1">
+<span class="font-label-cap-micro text-label-cap-micro text-outline uppercase font-bold">TRANSITION BUS</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-bold">M/E 1</span>
+</div>
+<div class="grid grid-cols-3 gap-1">
+<button class="py-1 px-0.5 rounded-sm bg-primary-container text-on-primary-container font-label-telemetry-sm text-label-telemetry-sm font-bold shadow-[0_0_8px_rgba(255,84,81,0.5)]">CUT</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container-highest text-on-surface hover:bg-surface-bright font-label-telemetry-sm text-label-telemetry-sm font-semibold">FADE</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container text-on-surface-variant hover:text-on-surface font-label-telemetry-sm text-label-telemetry-sm">WIPE</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container text-on-surface-variant hover:text-on-surface font-label-telemetry-sm text-label-telemetry-sm">STING 1</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container text-on-surface-variant hover:text-on-surface font-label-telemetry-sm text-label-telemetry-sm">STING 2</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container text-on-surface-variant hover:text-on-surface font-label-telemetry-sm text-label-telemetry-sm">ZOOM</button>
+</div>
+<!-- Frame Rate / Time Duration Selector -->
+<div class="bg-surface-container-lowest p-1.5 rounded-sm flex items-center justify-between mt-1">
+<span class="font-label-cap-micro text-label-cap-micro text-outline">AUTO RATE</span>
+<div class="flex items-center gap-1 font-label-telemetry-sm text-label-telemetry-sm">
+<button class="w-4 h-4 rounded bg-surface-container flex items-center justify-center text-outline hover:text-on-surface">-</button>
+<span class="font-bold text-tertiary">30 f / 500ms</span>
+<button class="w-4 h-4 rounded bg-surface-container flex items-center justify-center text-outline hover:text-on-surface">+</button>
+</div>
+</div>
+<button class="w-full py-1.5 rounded bg-tertiary-container text-on-tertiary-container font-label-telemetry-md text-label-telemetry-md font-bold tracking-wide hover:brightness-110 active:scale-95 transition-all">AUTO TRANSITION</button>
+</div>
+<!-- T-BAR HARDWARE SLIDER CONTROL (Centerpiece) -->
+<div class="my-2 bg-surface-container-lowest rounded p-2 flex flex-col items-center justify-center relative">
+<div class="flex items-center justify-between w-full font-label-cap-micro text-label-cap-micro text-outline px-1 mb-1">
+<span>PROGRAM [0%]</span>
+<span class="text-tertiary font-bold font-label-telemetry-sm text-label-telemetry-sm">68%</span>
+<span>PREVIEW [100%]</span>
+</div>
+<!-- Fader Mechanical Track Slot -->
+<div class="w-full h-14 bg-surface-container-high rounded relative flex items-center px-2">
+<!-- Stepped Detents -->
+<div class="absolute left-2 top-1 bottom-1 w-0.5 bg-outline-variant"></div>
+<div class="absolute left-1/2 -ml-px top-1 bottom-1 w-0.5 bg-outline-variant"></div>
+<div class="absolute right-2 top-1 bottom-1 w-0.5 bg-outline-variant"></div>
+<!-- LED Bar Track Progress (68%) -->
+<div class="h-2 rounded-full bg-surface-container-lowest w-full overflow-hidden flex items-center">
+<div class="h-full bg-gradient-to-r from-primary via-tertiary to-secondary rounded-full" style="width: 68%;"></div>
+</div>
+<!-- Physical Knurled T-Bar Fader Cap (Draggable Visual) -->
+<div class="absolute w-8 h-10 bg-surface-variant hover:bg-surface-bright rounded shadow-2xl flex flex-col items-center justify-center cursor-ew-resize transition-transform" style="left: calc(68% - 16px);">
+<div class="w-5 h-0.5 bg-on-surface-variant rounded-full mb-0.5"></div>
+<div class="w-5 h-0.5 bg-on-surface-variant rounded-full mb-0.5"></div>
+<div class="w-5 h-0.5 bg-tertiary rounded-full"></div>
+</div>
+</div>
+<div class="flex items-center justify-between w-full mt-1 font-label-cap-micro text-label-cap-micro text-outline">
+<span class="hover:text-tertiary cursor-pointer">REV BUS</span>
+<span class="text-secondary">MIX LOCKED</span>
+<span class="hover:text-tertiary cursor-pointer">RESET</span>
+</div>
+</div>
+<!-- Quick Overlays & Emergency FTB Controls -->
+<div class="flex flex-col gap-1">
+<div class="grid grid-cols-4 gap-1 text-center font-label-cap-micro text-label-cap-micro">
+<button class="py-1 rounded bg-secondary-container text-on-secondary-container font-bold shadow-[0_0_6px_rgba(0,185,84,0.4)]">DSK 1</button>
+<button class="py-1 rounded bg-secondary-container text-on-secondary-container font-bold shadow-[0_0_6px_rgba(0,185,84,0.4)]">DSK 2</button>
+<button class="py-1 rounded bg-tertiary-container text-on-tertiary-container font-bold">DSK 3</button>
+<button class="py-1 rounded bg-surface-container text-outline hover:text-on-surface">DSK 4</button>
+</div>
+<!-- Protected Emergency FTB (Fade To Black) with Switch Cover Guard -->
+<div class="bg-surface-container-lowest p-1 rounded flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-error text-[16px]">warning</span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline font-bold">EMERGENCY FTB</span>
+</div>
+<button class="bg-error-container text-on-error-container px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro font-black uppercase hover:brightness-120">
+            FADE TO BLK
+          </button>
+</div>
+</div>
+</div>
+<!-- RIGHT VIEWPORT: PROGRAM ON-AIR MONITOR (Glowing Red Tally #EF4444) -->
+<div class="col-span-5 bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col shadow-xl">
+<!-- Program Monitor Header Bar -->
+<div class="h-6 bg-error-container/30 px-space-sm flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="w-2.5 h-2.5 rounded-full bg-primary animate-ping"></span>
+<span class="w-2.5 h-2.5 rounded-full bg-primary -ml-3.5 shadow-[0_0_10px_rgba(255,84,81,1)]"></span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-black text-primary uppercase tracking-wider">PROGRAM — LIVE ON AIR</span>
+</div>
+<div class="flex items-center gap-space-xs font-label-cap-micro text-label-cap-micro">
+<span class="px-1.5 py-0.5 bg-primary-container text-on-primary-container rounded font-bold uppercase animate-pulse">ON AIR</span>
+<span class="text-on-surface font-semibold">3840x2160 UHD @ 59.94 FPS</span>
+</div>
+</div>
+<!-- Program 16:9 Canvas Container -->
+<div class="relative w-full aspect-video bg-black overflow-hidden flex items-center justify-center">
+<!-- Live Program Image Placeholder -->
+<img class="w-full h-full object-cover" data-alt="High stakes esports championship grand final match view on a giant stage arena screen. Vibrant neon blue and deep red game graphics, Valorant tournament branding, with dynamic crowd cheering in blurred background silhouette and confetti lighting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuB8K6e8_K8MzTYfZRBjMJBSENrXfjgMm8LCImTDRPLWavpcUdsHf3U6MX538zcv9RUCR5jOFk2UvBRcw_nSEEii1UUBvkSbmU4SIDu_8Q0qeqN7GpdzqWB3WOi8K3ws66bvYmXSGZyp9cDJnWMHfUXTSvqL7_kHAf7KZzwdGp2Ebpiiy7BByFrKiGel8t8D8tn4B9pcbw8pr1g9EtZU1Te8gk3j-Ci5JJ1g73XQd8EbY_mzpr1tDnVwQA"/>
+<!-- Active Scoreboard Overlay Bar -->
+<div class="absolute top-3 left-4 bg-surface-container-lowest/90 backdrop-blur px-3 py-1.5 rounded-sm flex items-center gap-3">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-secondary"></span>
+<span class="font-headline-sm text-headline-sm font-bold text-on-surface">TEAM LIQUID</span>
+<span class="font-label-telemetry-md text-label-telemetry-md font-bold text-secondary bg-surface-container-high px-1.5 rounded">11</span>
+</div>
+<span class="font-label-cap-micro text-label-cap-micro text-outline font-bold">VS</span>
+<div class="flex items-center gap-1.5">
+<span class="font-label-telemetry-md text-label-telemetry-md font-bold text-primary bg-surface-container-high px-1.5 rounded">9</span>
+<span class="font-headline-sm text-headline-sm font-bold text-on-surface">SENTINELS</span>
+<span class="w-2 h-2 rounded-full bg-primary"></span>
+</div>
+<div class="h-3 w-px bg-surface-variant"></div>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-bold">MAP 3: ASCENT</span>
+</div>
+<!-- Caster PIP (Picture-In-Picture) Camera Staged in Bottom Right -->
+<div class="absolute bottom-3 right-3 w-36 aspect-video bg-surface-container-lowest rounded overflow-hidden shadow-2xl">
+<img class="w-full h-full object-cover" data-alt="Close-up broadcast shot of two esports commentators with microphones yelling excitedly into camera during live tournament play." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDFJENCzUQQWsE7f84bCrOWLivjlwRt_Wz6YmN_drn-WGfXp408TZPK9HP82Q5A4MW1QyuZp8eZcdBLS_SotOHLgAPzwSbHE1mHVYQ9CokxA23EqCCYTi6dQwK39pNXmITY89Bku2hX1m5Z-arFpvqMy2MWUew_wD9s7fI5Z6ALtprOkOAFzazbWwwD4b7i7YpYU8JpzJQUwCYxhq1WAm6IfJONiZuPbgahQBnkvK4-uhHBJ0UiiX_raA"/>
+<div class="absolute bottom-0 left-0 right-0 bg-surface-container-lowest/80 px-1 py-0.5 flex items-center justify-between text-[8px] font-label-cap-micro">
+<span class="text-tertiary">CAM 1: TALENT</span>
+<span class="text-secondary font-bold">LIVE</span>
+</div>
+</div>
+<!-- Master Audio VU Meter Overlay on Live Screen (Left side) -->
+<div class="absolute left-2 top-10 bottom-4 w-2.5 bg-surface-container-lowest/90 rounded-sm p-0.5 flex flex-col justify-end gap-0.5">
+<div class="w-full h-1.5 bg-surface-variant"></div>
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1 bg-error"></div>
+<div class="w-full h-1.5 bg-secondary-container"></div>
+<div class="w-full h-3 bg-secondary"></div>
+<div class="w-full h-5 bg-secondary"></div>
+<div class="w-full h-6 bg-secondary"></div>
+</div>
+<!-- Master Live On-Air Watermark Bottom Left -->
+<div class="absolute bottom-2 left-5 flex items-center gap-2 pointer-events-none">
+<span class="font-label-telemetry-sm text-label-telemetry-sm bg-surface-container-lowest/80 px-2 py-0.5 rounded text-outline">SRT OUT: 14,200 Kbps | 0 DROPPED</span>
+</div>
+</div>
+<!-- Monitor Lower Metadata Strip -->
+<div class="h-6 bg-surface-container-low px-space-sm flex items-center justify-between font-label-telemetry-sm text-label-telemetry-sm">
+<span class="text-outline font-label-cap-micro text-label-cap-micro">PGM MIX 1: AUDIO MASTER 0.0 dB | LIMITER: ENGAGED</span>
+<div class="flex items-center gap-space-sm font-label-cap-micro text-label-cap-micro">
+<span class="text-secondary">PRORES 422 MASTER REC: 01:42:18</span>
+<button class="bg-surface-container px-1 rounded text-tertiary font-bold hover:bg-surface-bright">SNAPSHOT</button>
+</div>
+</div>
+</div>
+</section>
+<!-- TIER 2: MULTI-CAMERA LIVE INPUT MATRIX (vMix Style Multi-Input Grid) -->
+<section class="bg-surface-container-lowest mx-1 p-2 rounded-sm mb-1 shadow-lg">
+<!-- Matrix Header Bar -->
+<div class="flex items-center justify-between mb-2">
+<div class="flex items-center gap-space-md">
+<span class="font-headline-sm text-headline-sm font-bold text-on-surface flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-tertiary">grid_view</span>
+          LIVE PRODUCTION INPUT MATRIX
+        </span>
+<span class="bg-surface-container-high px-2 py-0.5 rounded font-label-telemetry-sm text-label-telemetry-sm text-outline">8 OF 64 CHANNELS ACTIVE</span>
+</div>
+<!-- Quick Filter & Add Input Button Group -->
+<div class="flex items-center gap-1">
+<div class="flex items-center gap-0.5 bg-surface-container-low p-0.5 rounded mr-2">
+<button class="px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro bg-surface-container-high text-tertiary font-bold">ALL (8)</button>
+<button class="px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro text-outline hover:text-on-surface">CAMERAS (4)</button>
+<button class="px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro text-outline hover:text-on-surface">FEEDS (2)</button>
+<button class="px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro text-outline hover:text-on-surface">MEDIA &amp; GFX (2)</button>
+</div>
+<button class="flex items-center gap-1 bg-tertiary px-3 py-1 rounded text-on-tertiary font-label-telemetry-sm text-label-telemetry-sm font-bold hover:brightness-110 active:scale-95 transition-all shadow-[0_0_8px_rgba(76,215,246,0.3)]">
+<span class="material-symbols-outlined text-[15px]">add_circle</span>
+          ADD INPUT
+        </button>
+</div>
+</div>
+<!-- 8 High-Density Live Input Cards Grid -->
+<div class="grid grid-cols-4 gap-1.5">
+<!-- INPUT CARD 1: LIVE IN PGM (Tally Red) -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col shadow-[0_0_10px_rgba(255,84,81,0.25)]">
+<div class="h-6 bg-error-container/40 px-2 flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="bg-primary text-on-primary font-label-cap-micro text-label-cap-micro font-black px-1 rounded">1</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-primary truncate">CAM 1: STAGE WIDE 4K</span>
+</div>
+<span class="bg-primary text-on-primary font-label-cap-micro text-label-cap-micro px-1 rounded font-bold animate-pulse">PGM</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Wide panoramic arena shot of a world championship esports stage with laser show and giant video cube hanging from ceiling, thousands of spectators cheering in darkened arena." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAFZ0DbJbeBTBZDaSiShEi5u2FXUXVSaWWpBCNmxY7L3Apy4GoQ6LQozrb0kT_Nhq7ZviEJk7VhCHSzNKm13MDxCWwsRKLgHk_cWcMAUByMKdXSeMB2F2HGLJNNutOASKf8uVvfUiIeGZQ95WV8hSETb_gvQBNerow6P7fCQBqltfCpnHtTTfkm6bm2FwAgULNaxe-kYB9F9b1PjzCRePYFfB_kmZrOXHHR08ds0-wklhWlpVxr7_Rc9A"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/80 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline">12G-SDI • 2160p60</div>
+<div class="absolute top-1 right-1 flex items-center gap-0.5">
+<span class="material-symbols-outlined text-secondary text-[12px]">mic</span>
+</div>
+</div>
+<!-- Card Control Footers -->
+<div class="p-1 bg-surface-container flex items-center justify-between">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-primary-container text-on-primary-container font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-cap-micro text-label-cap-micro rounded">AUTO</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">volume_up</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 2: STAGED IN PVW (Tally Green) -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col shadow-[0_0_10px_rgba(74,225,118,0.25)]">
+<div class="h-6 bg-secondary-container/30 px-2 flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="bg-secondary text-surface-container-lowest font-label-cap-micro text-label-cap-micro font-black px-1 rounded">2</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-secondary truncate">CAM 2: CASTER DESK</span>
+</div>
+<span class="bg-secondary text-surface-container-lowest font-label-cap-micro text-label-cap-micro px-1 rounded font-bold">PVW</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Two enthusiastic esports commentators sitting at a futuristic desk talking into studio microphones with illuminated studio backdrop." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBbZ69hiUuGWDi50vB6_e0-8vTnBdpnHrB0mh-20UG6tpaaVlGsiElUMv2Bftj3CjhhZASROQ5PLvoo-Pg3UnuZPm2mDgrVBcwOOPUcxH4enlhQrUdKNLbJK9Op8SNtA1QjOp9Grqzax8yfvteNFpEndxY6nhvRgVSx1k6en8G4uXx6vXdGtWxZTUB9XvMtO6tWq2axZ_G162L97yvNknaR3xHHpTlsxAyocHoXNhuptSKdcHbFYuJ3DQ"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/80 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline">NDI-HX3 • 1080p60</div>
+<div class="absolute top-1 right-1 flex items-center gap-0.5">
+<span class="material-symbols-outlined text-secondary text-[12px]">mic</span>
+</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-primary hover:text-on-primary font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-cap-micro text-label-cap-micro rounded">AUTO</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">volume_up</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 3: CAM 3 PLAYER CAM A -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">3</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">CAM 3: PLAYER CAM A (LIQUID)</span>
+</div>
+<span class="text-outline font-label-cap-micro text-label-cap-micro">IDLE</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Intense close up of focused esports pro player wearing black team jersey and gaming headset, glowing computer screen reflection in dark tournament booth." src="https://lh3.googleusercontent.com/aida-public/AB6AXuB6T43ZRZLkx5Zb0M2gYLWWq4iMa8e45ZHrx1_gih8wa9b22gAnXQWqh07d8spUWY5tcnaLGS7HOEEOTzvZJwZ-vFmfNprG9KIO3kPI4JCpFAvAOyOKRPh5SJinftIJud7GrhyERWnVF63zEUH93BFrx2vYeWe0hdxrk8g6_jVe5Fi9y6HNTg-D6AB0K0C_H_PDY4tTnisn1j_q5ZYS6fb3UJcD-lunutBmWVNA_6KibLTM1ijCrZgjYw"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/80 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline">NDI • PTZ PRESET 2</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-primary hover:text-on-primary font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-secondary hover:text-surface font-label-cap-micro text-label-cap-micro rounded">QUICK</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">pan_tool</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 4: CAM 4 PLAYER CAM B -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">4</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">CAM 4: PLAYER CAM B (SEN)</span>
+</div>
+<span class="text-outline font-label-cap-micro text-label-cap-micro">IDLE</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Side profile shot of rival esports player in red jersey intensely staring at monitor in booth with aggressive posture during tournament round." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCjMjZwG4lK0iFSL_vqMACjH1NglFEm5We4nfz0M4cAm5ylPik8nmxxcNQPiU78n3NrJ5N-PD2FVT_EKQ8V4s4mraQrXTSQYBSc3ZtaJ2cSb3JK-IYXIqiR4x9Z3N5GrbwZnZciQ2ep1fzJKgOMQKLnrqETBC_Ni6oVTNPiQBS0ASGGMtURj_eTKiUIWmmq5KBBXpmtnLNZDAbKs-RtsnZmaiQtLdQWvk7CbTrz0FaeSvi1Q4nrB-3Jvg"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/80 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline">NDI • PTZ PRESET 1</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-primary hover:text-on-primary font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-secondary hover:text-surface font-label-cap-micro text-label-cap-micro rounded">QUICK</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">pan_tool</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 5: FEED 5 GAMEPLAY FEED 1 -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">5</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-tertiary truncate">FEED 5: GAMEPLAY OBSERVER 1</span>
+</div>
+<span class="bg-tertiary text-on-tertiary font-label-cap-micro text-label-cap-micro px-1 rounded font-bold">120 FPS</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="High quality first person perspective competitive shooter video game match view with colorful sci-fi arena, weapon HUD, tactical minimap, and health bars." src="https://lh3.googleusercontent.com/aida-public/AB6AXuC4NSpHHmRjz1wUXRraq4aUwOb8znGASuISDf6ZygWFRA9LYtwfKYhTR275Vv6mSNOl70I2IsH2Vv4eeIR9TBoPr6erNIi01slGKKG1DGy0ybz5pZ1LXgpDJ3kcqGEOdjAdsKWtu9aLywRSN7J5pfXPSC98Z2Y2pD4m-kZutfLZ9cDwnQDA1yspoUXJYDuFc5S6i0JZ_XDzJ-HjRTqRAOCCvMne3y2DPa4c7VvZUCPP45FvXRCMdkGKrg"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/80 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline">MAGEWELL HDMI 2.1 4K</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-primary hover:text-on-primary font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-secondary hover:text-surface font-label-cap-micro text-label-cap-micro rounded">AUTO</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">graphic_eq</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 6: FEED 6 INSTANT REPLAY BUFFER A -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">6</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">FEED 6: REPLAY BUFFER A</span>
+</div>
+<span class="text-secondary font-label-cap-micro text-label-cap-micro font-bold">100% PLAY</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Slow motion esports highlight replay moment of a clutch shot in a tournament arena with orange slow motion speed watermark in upper corner." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAPBxpCCll7rxT_b1F9wh_ilnRZGHXDa5jeUOZft5wfdTOPDB_gaT2O_SzB55agiqR5ZfuhHZ0MhMbX8nws__gMnLvd0QJataT8oDLolQBroPztfwDwz06pV_8xncLf7eKz2Mf9KjJDVaiqRaIYM_i1vgRD70DwZQfAig9nYMFZ0wUlCoqtax8zm1Ehlo7vwEccn73MVWxPISH4IEv9THuZQa-5kQBM6VxGYPvfd1GjGBHS-tPPzYCV9A"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/80 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline">DDR 4-ANGLE SYNC</div>
+<div class="absolute bottom-1 right-1 bg-surface-container-lowest/80 px-1 rounded font-label-telemetry-sm text-label-telemetry-sm text-tertiary">00:08.40</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-secondary text-surface-container-lowest font-label-cap-micro text-label-cap-micro font-bold rounded">PLAY</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-cap-micro text-label-cap-micro rounded">MARK IN</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-cap-micro text-label-cap-micro rounded">MARK OUT</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 7: FEED 7 GRAPHICS / HTML5 OVERLAYS -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">7</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">FEED 7: HTML5 SCOREBOARD</span>
+</div>
+<span class="text-tertiary font-label-cap-micro text-label-cap-micro font-bold">ALPHA CH</span>
+</div>
+<div class="relative w-full aspect-video bg-surface-container-lowest flex items-center justify-center p-3">
+<div class="w-full bg-surface-container-high/70 p-2 rounded flex flex-col items-center justify-center text-center">
+<span class="font-headline-sm text-headline-sm text-tertiary font-bold tracking-wider">LIVE TICKER / STATS ENGINE</span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline mt-1">SINGULAR.LIVE V3 • TRANSPARENT WEBVIEW</span>
+</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-tertiary text-on-tertiary font-label-cap-micro text-label-cap-micro font-bold rounded">OVERLAY 1</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high text-outline font-label-cap-micro text-label-cap-micro rounded">PREVIEW</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">refresh</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 8: FEED 8 MEDIA CLIP PLAYER -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">8</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">FEED 8: SPONSOR B-ROLL 4K</span>
+</div>
+<span class="text-secondary font-label-cap-micro text-label-cap-micro font-bold">REMAIN 00:24</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="High tech gaming hardware product commercial shot with sleek black gaming laptop, RGB neon lighting details and metallic reflections." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDGZCPzHdpKTOnSa6WKdlNWGM7ehmXMAzKtniMyOF25lGPGbqAvivCoHMRmEoHbnaWAul8QVyOs9HWV8WC_WHfRSneh78tQa7V1N0XkOng7nO05P62652p6XjANvSmRbMOF1YBlDIBpOX8Ss4RCEZTVzqRafOJFF_M__2iBP7teDyLE3nQlE9NIHSKFco8uke4rTGA0joEnoz7OFMSkgKv9oaPlwcphJCuH2WGQ8r9RbEknvuCdhD-jYw"/>
+<!-- Playback progress scrub bar -->
+<div class="absolute bottom-0 left-0 right-0 h-1 bg-surface-container-lowest">
+<div class="h-full bg-secondary w-3/4"></div>
+</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-primary hover:text-on-primary font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-cap-micro text-label-cap-micro rounded">LOOP</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">pause</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- TIER 3: DOCKABLE MASTER AUDIO MIXER & BUS ROUTING STRIP -->
+<section class="bg-surface-container-lowest mx-1 p-2 rounded-sm shadow-xl">
+<!-- Audio Matrix Header Bar -->
+<div class="flex items-center justify-between pb-1.5 mb-2 border-b border-surface-container-high">
+<div class="flex items-center gap-space-md">
+<span class="font-headline-sm text-headline-sm font-bold text-on-surface flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-secondary">equalizer</span>
+          DANTE DSP AUDIO SURFACE &amp; BUS MATRIX
+        </span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-outline">48kHz / 24-bit 64ch Virtual Soundcard Sync</span>
+</div>
+<div class="flex items-center gap-space-sm font-label-cap-micro text-label-cap-micro">
+<span class="bg-surface-container px-2 py-0.5 rounded text-secondary font-bold">AUTO-DUCKING: ACTIVE</span>
+<span class="bg-surface-container px-2 py-0.5 rounded text-outline">LIMITER THRESH: -0.5 dBFS</span>
+<button class="bg-surface-container-high px-2 py-0.5 rounded text-tertiary font-bold hover:bg-surface-bright">DSP EXPAND</button>
+</div>
+</div>
+<!-- 6 Channel Fader Strips Horizontal Rack -->
+<div class="grid grid-cols-6 gap-2">
+<!-- STRIP 1: MASTER OUTPUT PGM -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between shadow-inner">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-black text-primary">MASTER L/R</span>
+<span class="bg-primary-container text-on-primary-container font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">PGM</span>
+</div>
+<!-- dB Readout & Gain Knob Graphic -->
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-bold">0.0 dB</span>
+</div>
+<!-- Vertical Dual-Bar VU Meter & Motorized Fader Track -->
+<div class="flex items-center justify-center gap-2 h-28 my-1">
+<!-- Left/Right Meter Bars -->
+<div class="flex gap-0.5 h-full py-1">
+<div class="w-1.5 bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5">
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-2 bg-error"></div>
+<div class="w-full h-3 bg-secondary-container"></div>
+<div class="w-full h-14 bg-secondary"></div>
+</div>
+<div class="w-1.5 bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5">
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-2 bg-error"></div>
+<div class="w-full h-3 bg-secondary-container"></div>
+<div class="w-full h-12 bg-secondary"></div>
+</div>
+</div>
+<!-- Master Physical Fader Slider Track -->
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<!-- Slider Thumb at 0.0dB position (approx 75% up) -->
+<div class="absolute w-6 h-5 bg-surface-bright rounded shadow-lg flex items-center justify-center cursor-ns-resize" style="bottom: 70%;">
+<div class="w-4 h-0.5 bg-primary"></div>
+</div>
+</div>
+</div>
+<!-- Bus Routing Buttons -->
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold">
+<button class="py-1 bg-primary text-on-primary rounded-sm">M</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">A</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">B</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">H</button>
+</div>
+</div>
+<!-- STRIP 2: CASTER 1 MIC (Shure SM7B) -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">MIC 1: ALEX</span>
+<span class="text-secondary font-label-cap-micro text-label-cap-micro font-bold">DANTE</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">-14.2 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-28 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5">
+<div class="w-full h-3 bg-surface-variant"></div>
+<div class="w-full h-4 bg-secondary-container"></div>
+<div class="w-full h-12 bg-secondary"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize" style="bottom: 58%;">
+<div class="w-4 h-0.5 bg-secondary"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold">
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">M</button>
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">A</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">B</button>
+<button class="py-1 bg-tertiary text-on-tertiary rounded-sm">H</button>
+</div>
+</div>
+<!-- STRIP 3: CASTER 2 MIC -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">MIC 2: DAVE</span>
+<span class="text-secondary font-label-cap-micro text-label-cap-micro font-bold">DANTE</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">-16.0 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-28 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5">
+<div class="w-full h-4 bg-surface-variant"></div>
+<div class="w-full h-3 bg-secondary-container"></div>
+<div class="w-full h-10 bg-secondary"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize" style="bottom: 54%;">
+<div class="w-4 h-0.5 bg-secondary"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold">
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">M</button>
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">A</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">B</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">H</button>
+</div>
+</div>
+<!-- STRIP 4: GAME AUDIO CAPTURE -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">GAME FEED 1</span>
+<span class="text-tertiary font-label-cap-micro text-label-cap-micro font-bold">HDMI</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-bold">-18.4 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-28 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5">
+<div class="w-full h-5 bg-surface-variant"></div>
+<div class="w-full h-4 bg-secondary-container"></div>
+<div class="w-full h-11 bg-secondary"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize" style="bottom: 50%;">
+<div class="w-4 h-0.5 bg-tertiary"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold">
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">M</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">A</button>
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">B</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">H</button>
+</div>
+</div>
+<!-- STRIP 5: MEDIA / MUSIC STINGER -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">BGM / STING</span>
+<span class="text-outline font-label-cap-micro text-label-cap-micro">DUCKED</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-outline font-bold">-24.1 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-28 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5">
+<div class="w-full h-8 bg-surface-variant"></div>
+<div class="w-full h-3 bg-secondary-container"></div>
+<div class="w-full h-7 bg-secondary"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize" style="bottom: 40%;">
+<div class="w-4 h-0.5 bg-outline"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold">
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">M</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">A</button>
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">B</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">H</button>
+</div>
+</div>
+<!-- STRIP 6: AUX CUE / HEADPHONE MONITOR -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-tertiary truncate">SOLO / CUE</span>
+<span class="bg-tertiary-container text-on-tertiary-container font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">CUE</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-bold">-6.0 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-28 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5">
+<div class="w-full h-2 bg-surface-variant"></div>
+<div class="w-full h-5 bg-secondary-container"></div>
+<div class="w-full h-15 bg-tertiary"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize" style="bottom: 65%;">
+<div class="w-4 h-0.5 bg-tertiary"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold">
+<button class="py-1 bg-surface-container text-outline rounded-sm">M</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">A</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">B</button>
+<button class="py-1 bg-tertiary text-on-tertiary rounded-sm">H</button>
+</div>
+</div>
+</div>
+</section>
+</div></main></div><footer class="fixed bottom-0 left-0 right-0 h-9 z-50 bg-surface-container-lowest flex items-center justify-between px-space-md"><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs"><button class="h-6 px-space-sm bg-surface-container-low hover:bg-surface-container-high hover:text-on-surface rounded flex items-center gap-space-xs text-on-surface-variant"><span class="material-symbols-outlined text-[14px]">lock</span><span class="font-label-cap-micro text-label-cap-micro uppercase">SURFACE LOCK</span></button><button class="h-6 px-space-sm bg-surface-container-low hover:bg-surface-container-high hover:text-on-surface rounded flex items-center gap-space-xs text-on-surface-variant"><span class="material-symbols-outlined text-[14px]">sports_score</span><span class="font-label-cap-micro text-label-cap-micro uppercase">T-BAR LOCK</span></button></div><div class="h-4 w-px bg-surface-variant"></div><div class="flex items-center gap-space-xs"><span class="font-label-cap-micro text-label-cap-micro text-outline mr-space-xs">MACROS:</span><button class="h-6 px-space-sm rounded bg-surface-container-low text-secondary font-label-telemetry-sm text-label-telemetry-sm font-bold hover:bg-surface-container-high hover:text-on-surface">M1: INTRO</button><button class="h-6 px-space-sm rounded bg-surface-container-low text-tertiary font-label-telemetry-sm text-label-telemetry-sm font-bold hover:bg-surface-container-high hover:text-on-surface">M2: SPONSOR</button><button class="h-6 px-space-sm rounded bg-surface-container-low text-primary font-label-telemetry-sm text-label-telemetry-sm font-bold hover:bg-surface-container-high hover:text-on-surface">M3: STING</button><button class="h-6 px-space-sm rounded bg-surface-container-low text-on-surface-variant font-label-telemetry-sm text-label-telemetry-sm font-bold hover:bg-surface-container-high hover:text-on-surface">M4: OUTRO</button></div></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-sm"><span class="w-2 h-2 rounded-full bg-secondary"></span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface-variant">GENLOCK: REF OK (1080p 59.94)</span></div><div class="flex items-center gap-space-xs"><button class="h-6 px-space-md bg-surface-container-low hover:bg-surface-container-high hover:text-on-surface rounded flex items-center gap-space-xs text-tertiary font-label-telemetry-sm text-label-telemetry-sm font-bold"><span class="material-symbols-outlined text-[14px]">tv</span>FULLSCREEN MULTIVIEW [F11]</button></div></div></footer></body></html>

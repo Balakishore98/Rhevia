@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><title>OmniCast Master Control | International Policy Summit</title><link href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;600;700&amp;family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script><script id="tailwind-config">tailwind.config = {"darkMode":"class","theme":{"extend":{"colors":{"error-container":"#93000a","inverse-surface":"#dfe2ef","surface-container-high":"#262a33","secondary-fixed":"#6bff8f","surface":"#0f131c","on-tertiary-fixed":"#001f26","surface-container-low":"#181c25","on-secondary-container":"#004119","on-primary-fixed-variant":"#930013","error":"#ffb4ab","surface-tint":"#ffb3ad","primary-container":"#ff5451","on-tertiary-container":"#002f38","outline":"#ab8986","primary":"#ffb3ad","surface-container-lowest":"#0a0e17","surface-container":"#1c2029","surface-dim":"#0f131c","tertiary-fixed-dim":"#4cd7f6","secondary-fixed-dim":"#4ae176","secondary":"#4ae176","inverse-primary":"#b91a24","tertiary":"#4cd7f6","tertiary-container":"#009eb9","on-error":"#690005","on-surface":"#dfe2ef","on-tertiary-fixed-variant":"#004e5c","on-secondary-fixed-variant":"#005321","on-surface-variant":"#e4beba","secondary-container":"#00b954","inverse-on-surface":"#2c303a","on-tertiary":"#003640","surface-variant":"#31353e","surface-container-highest":"#31353e","on-primary-container":"#5c0008","on-background":"#dfe2ef","primary-fixed-dim":"#ffb3ad","primary-fixed":"#ffdad7","on-secondary":"#003915","outline-variant":"#5b403e","on-primary":"#68000a","on-secondary-fixed":"#002109","background":"#0f131c","surface-bright":"#353943","tertiary-fixed":"#acedff","on-error-container":"#ffdad6","on-primary-fixed":"#410004"},"borderRadius":{"DEFAULT":"0.125rem","lg":"0.25rem","xl":"0.5rem","full":"0.75rem"},"spacing":{"space-lg":"0.75rem","space-xl":"1rem","space-xs":"0.125rem","margin":"0.5rem","space-md":"0.5rem","gutter":"0.375rem","space-sm":"0.25rem"},"fontFamily":{"label-cap-micro":["JetBrains Mono"],"label-telemetry-md":["JetBrains Mono"],"headline-md":["Chivo"],"label-telemetry-sm":["JetBrains Mono"],"label-telemetry-lg":["JetBrains Mono"],"body-sm":["Inter"],"headline-sm":["Chivo"],"headline-lg":["Chivo"],"body-lg":["Inter"],"body-md":["Inter"]},"fontSize":{"label-cap-micro":["0.5625rem",{"lineHeight":"0.6875rem","letterSpacing":"0.08em","fontWeight":"700"}],"label-telemetry-md":["0.8125rem",{"lineHeight":"1rem","letterSpacing":"0.02em","fontWeight":"600"}],"headline-md":["1.125rem",{"lineHeight":"1.375rem","letterSpacing":"-0.01em","fontWeight":"600"}],"label-telemetry-sm":["0.6875rem",{"lineHeight":"0.8125rem","letterSpacing":"0.01em","fontWeight":"500"}],"label-telemetry-lg":["1.25rem",{"lineHeight":"1.25rem","letterSpacing":"0.04em","fontWeight":"700"}],"body-sm":["0.6875rem",{"lineHeight":"0.875rem","fontWeight":"400"}],"headline-sm":["0.875rem",{"lineHeight":"1.125rem","letterSpacing":"0.02em","fontWeight":"600"}],"headline-lg":["1.5rem",{"lineHeight":"1.75rem","letterSpacing":"-0.02em","fontWeight":"700"}],"body-lg":["0.875rem",{"lineHeight":"1.25rem","fontWeight":"500"}],"body-md":["0.75rem",{"lineHeight":"1rem","fontWeight":"400"}]}}}};</script></head><body class="bg-background font-body-md text-on-surface antialiased select-none"><header class="fixed top-0 left-0 right-0 z-50 bg-surface-container-lowest/95 backdrop-blur-md border-b border-surface-variant"><div class="h-7 px-space-md bg-surface-container-low flex items-center justify-between border-b border-surface-container"><div class="flex items-center gap-space-md"><div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-[16px] text-tertiary">settings_input_hdmi</span><span class="font-label-telemetry-sm text-label-telemetry-sm font-bold tracking-wider text-on-surface uppercase">OMNICAST <span class="text-tertiary font-normal">MASTER CONTROL PRO</span></span></div><div class="h-3.5 w-px bg-surface-container-highest"></div><div class="flex items-center gap-space-xs font-body-sm text-body-sm text-on-surface-variant"><span class="hover:text-on-surface cursor-pointer px-space-xs">Production</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Routing (ST 2110)</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Compliance &amp; CC</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Multiview</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Dante DSP</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Automation</span><span class="hover:text-on-surface cursor-pointer px-space-xs">Diagnostics</span></div></div><div class="flex items-center gap-space-md bg-surface-container-lowest px-space-md py-space-xs rounded border border-surface-container"><span class="font-label-cap-micro text-label-cap-micro uppercase text-outline">TRANSMISSION</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-semibold">GLOBAL_CLIMATE_PLENARY_HALL_A.txproj</span><span class="font-label-cap-micro text-label-cap-micro px-space-xs rounded bg-surface-container-high text-tertiary font-bold">EBU R128 / ITU-R BS.1770-4 COMPLIANT</span></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs"><button class="w-5 h-5 flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high rounded"><span class="material-symbols-outlined text-[14px]">remove</span></button><button class="w-5 h-5 flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high rounded"><span class="material-symbols-outlined text-[14px]">crop_square</span></button><button class="w-5 h-5 flex items-center justify-center text-on-surface-variant hover:text-error hover:bg-error-container rounded"><span class="material-symbols-outlined text-[14px]">close</span></button></div><div class="w-6 h-6 rounded-full bg-surface-container-high border border-surface-variant flex items-center justify-center text-tertiary font-label-cap-micro font-bold">DIR</div></div></div><div class="h-12 px-space-md bg-surface-container-lowest flex items-center justify-between gap-space-md"><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-sm bg-rose-950/70 border border-rose-600 px-space-md py-space-xs rounded"><div class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></div><span class="font-label-telemetry-md text-label-telemetry-md font-bold text-rose-200 tracking-wider">LIVE GLOBAL TX</span></div><div class="flex items-center gap-space-md bg-surface-container-low px-space-md py-space-xs rounded border border-surface-container"><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-outline">GENEVA EBU POOL / SRT</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">02:18:41 ACTIVE</span></div><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-outline">ST 2110-20 / UHD HDR</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface">3840x2160p50 10-Bit 4:2:2</span></div><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-outline">PACKET LOSS / JITTER</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary">0.000% (&lt;0.05ms)</span></div></div><!-- Ethical Broadcast Delay Censor & Safe Dump Module --><div class="flex items-center gap-space-sm bg-surface-container-low px-space-md py-space-xs rounded border border-surface-container"><div class="flex flex-col"><div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span><span class="font-label-cap-micro text-label-cap-micro text-emerald-400 font-bold">SAFETY PROFANITY DELAY</span></div><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-mono font-bold">BUFFER: 7.00s ARMED</span></div><button class="flex items-center gap-1 bg-amber-500/20 text-amber-300 border border-amber-500/50 hover:bg-amber-500 hover:text-black px-2 py-1 rounded font-label-telemetry-sm text-label-telemetry-sm font-bold transition-all"><span class="material-symbols-outlined text-[13px]">published_with_changes</span>SAFE PASS</button><button class="flex items-center gap-1 bg-rose-600/30 text-rose-300 border border-rose-600/80 hover:bg-rose-600 hover:text-white px-2 py-1 rounded font-label-telemetry-sm text-label-telemetry-sm font-bold transition-all"><span class="material-symbols-outlined text-[13px]">block</span>DUMP BUFFER</button></div><!-- EIA-708 / CEA-608 Live Captioning Compliance Status --><div class="flex items-center gap-space-sm bg-surface-container-low px-space-md py-space-xs rounded border border-surface-container"><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-outline">EIA-708 CC TELEMETRY</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-bold">CC1: EN (99.4% AI CONF)</span></div><span class="px-1.5 py-0.5 rounded bg-surface-container-high text-secondary font-label-cap-micro font-bold border border-secondary/30">SYNCED</span></div></div><div class="flex items-center gap-space-lg"><div class="flex items-center gap-space-md bg-surface-container-low px-space-md py-space-xs rounded border border-surface-container"><div class="flex flex-col items-center"><span class="font-label-cap-micro text-label-cap-micro text-outline">ST 2059-2 PTP</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-semibold">LOCKED</span></div><div class="flex flex-col items-center"><span class="font-label-cap-micro text-label-cap-micro text-outline">EBU R128</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-semibold">-24.1 LUFS</span></div><div class="flex flex-col items-center"><span class="font-label-cap-micro text-label-cap-micro text-outline">TRUE PEAK</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-semibold">-1.2 dBTP</span></div><div class="flex flex-col items-center"><span class="font-label-cap-micro text-label-cap-micro text-outline">TX FPS</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">50.00</span></div></div><div class="bg-surface-container-lowest px-space-md py-space-xs rounded border border-surface-variant"><div class="flex items-center gap-space-xs"><span class="font-label-cap-micro text-label-cap-micro text-outline uppercase">SMPTE MASTER (LTC)</span><span class="font-label-telemetry-lg text-label-telemetry-lg text-tertiary font-bold tracking-widest font-mono">14:28:39:18</span></div></div></div></div><nav class="h-9 px-space-md bg-surface-container-low flex items-center gap-space-xs border-b border-surface-container"><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm bg-surface-container text-tertiary font-semibold border border-tertiary/20" data-path="switcher-and-feeds" href="#">Master Switcher &amp; Ingest</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="audio-matrix-and-dsp" href="#">Audio Matrix &amp; R128 DSP</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="replay-and-highlights" href="#">Accessible Captions &amp; CC Telemetry</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="stream-and-multi-output" href="#">Satellite &amp; EBU Distribution</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="graphics-and-overlays" href="#">Journalistic Graphics &amp; Slates</a><a class="px-space-md py-space-xs rounded font-headline-sm text-headline-sm text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors" data-path="settings-and-hardware-io" href="#">Hardware I/O &amp; ST 2110 Crossbar</a></nav></header><aside class="fixed left-0 top-28 bottom-9 w-16 bg-surface-container-lowest z-40 flex flex-col items-center py-space-md gap-space-md border-r border-surface-variant"><div class="flex flex-col gap-space-xs items-center"><button class="w-10 h-10 rounded bg-surface-container-high border border-tertiary/40 flex flex-col items-center justify-center text-tertiary shadow-sm"><span class="material-symbols-outlined text-[18px]">videocam</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs font-bold">M/E 1</span></button><button class="w-10 h-10 rounded bg-surface-container-low border border-surface-container flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">layers</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">M/E 2</span></button><button class="w-10 h-10 rounded bg-surface-container-low border border-surface-container flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">sign_language</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs font-bold text-amber-300">ASL</span></button><button class="w-10 h-10 rounded bg-surface-container-low border border-surface-container flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">closed_caption</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs font-bold text-emerald-400">CC708</span></button></div><div class="w-8 h-px bg-surface-variant my-space-xs"></div><div class="flex flex-col gap-space-xs items-center"><button class="w-10 h-10 rounded bg-surface-container-low border border-surface-container flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">branding_watermark</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">KEY 1</span></button><button class="w-10 h-10 rounded bg-surface-container-low border border-surface-container flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">subtitles</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">KEY 2</span></button><button class="w-10 h-10 rounded bg-surface-container-low border border-surface-container flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">grid_goldenratio</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">CLEAN</span></button></div><div class="mt-auto flex flex-col gap-space-xs items-center"><button class="w-10 h-10 rounded bg-surface-container-low border border-surface-container flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"><span class="material-symbols-outlined text-[18px]">sync_alt</span><span class="font-label-cap-micro text-label-cap-micro mt-space-xs">GEN</span></button></div></aside><div class="pl-16"><main class="relative pt-28 pb-9 w-full min-h-screen bg-surface"><div class="flex flex-col w-full text-on-surface select-none pb-4">
+<!-- Master Workspace Header Ribbon -->
+<div class="flex items-center justify-between px-space-md py-space-xs bg-surface-container-lowest border-b border-surface-container mb-1">
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-space-xs bg-surface-container-low px-space-sm py-0.5 rounded border border-surface-container">
+<span class="w-2 h-2 rounded-full bg-secondary animate-pulse"></span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface uppercase">M/E 1: GLOBAL BROADCAST MASTER</span>
+</div>
+<span class="font-label-cap-micro text-label-cap-micro text-outline">TIMEBASE REF: <span class="text-tertiary font-bold font-mono">IEEE 1588 PTP (ST 2059-2)</span></span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline">COLOR SPACE: <span class="text-on-surface font-semibold">ITU-R BT.2020 / HLG HDR</span></span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline">LATENCY: <span class="text-secondary font-semibold font-mono">0.2 f (FRAME SYNC LOCKED)</span></span>
+</div>
+<div class="flex items-center gap-space-sm font-label-telemetry-sm text-label-telemetry-sm">
+<span class="text-outline font-label-cap-micro text-label-cap-micro">TX FEEDS:</span>
+<span class="bg-surface-container px-space-sm py-0.5 rounded text-secondary font-bold border border-secondary/20">EBU CLOUD POOL A</span>
+<span class="bg-surface-container px-space-sm py-0.5 rounded text-tertiary font-bold border border-tertiary/20">UN SATELLITE ASIA/EU</span>
+<span class="bg-surface-container-high px-space-sm py-0.5 rounded text-on-surface border border-surface-variant font-mono">ARCHIVE PRORES 422HQ (CH-1..8)</span>
+</div>
+</div>
+<!-- TIER 1: DUAL MASTER BROADCAST MONITORS & HARDWARE TRANSITION ENGINE -->
+<section class="grid grid-cols-12 gap-1 px-1 mb-1">
+<!-- LEFT VIEWPORT: PREVIEW MONITOR (Green Tally SMPTE PST) -->
+<div class="col-span-5 bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col shadow-xl border border-surface-container">
+<!-- Monitor Header Bar -->
+<div class="h-6 bg-emerald-950/40 border-b border-emerald-500/40 px-space-sm flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"></span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-emerald-300 uppercase tracking-wider">PRESET (PVW) — CAM 2 [DELEGATE ASSEMBLY FLOOR]</span>
+</div>
+<div class="flex items-center gap-space-xs font-label-cap-micro text-label-cap-micro">
+<span class="px-1 bg-surface-container-high rounded text-emerald-300 font-bold border border-emerald-500/30">PST</span>
+<span class="text-outline font-mono">ST 2110-20 • 2160p50</span>
+</div>
+</div>
+<!-- Preview 16:9 Canvas Container -->
+<div class="relative w-full aspect-video bg-black overflow-hidden flex items-center justify-center">
+<!-- Conference Assembly Wide Shot -->
+<img class="w-full h-full object-cover" data-alt="Prestigious international plenary hall with formal circular desk arrangements, national delegate place cards, state flags, conference audio stations, and professional cinematic ambient stage illumination." src="https://lh3.googleusercontent.com/aida-public/AB6AXuD98K1mWoaoixiGfVAy978qzAA96_2YgBQW4UQMyfYh2QKj4jYy7RxRklJzZza1P49-vJWWrU_IzjDvzaFoSu3afyHM-7vvIsF-VcvKlrdmks0FIb22l_8NpD6RLyJxeb-kXiQXMhUgFNSXp9xvdhxbM_zk8XzPskYH6L1DIZyqO4ZBiswMs0yBmBC6RsnmdxWRntLmfkBCJ4ZYa9VZOwNW1VEcPzB2gZq9ARe-MUJUHt9y3xCs9MyqEA"/>
+<!-- Safe Title & Safe Action Guides (SMPTE RP218 Broadcast Grids) -->
+<div class="absolute inset-5 pointer-events-none opacity-40">
+<div class="w-full h-full border border-dashed border-emerald-400/50"></div>
+</div>
+<div class="absolute inset-10 pointer-events-none opacity-25">
+<div class="w-full h-full border border-dotted border-tertiary/60"></div>
+</div>
+<div class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-30">
+<div class="w-8 h-px bg-emerald-400"></div>
+<div class="h-8 w-px bg-emerald-400 -ml-4"></div>
+</div>
+<!-- Telemetry & Overlay Badges inside Monitor -->
+<div class="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none">
+<div class="bg-surface-container-lowest/85 backdrop-blur px-2 py-0.5 rounded text-emerald-300 font-label-cap-micro text-label-cap-micro flex items-center gap-1 border border-emerald-500/30">
+<span class="material-symbols-outlined text-[13px]">verified</span>
+<span>CERTIFIED BROADCAST CHAIN • UHD BT.2020</span>
+</div>
+<div class="bg-surface-container-lowest/85 backdrop-blur px-2 py-0.5 rounded text-tertiary font-label-cap-micro text-label-cap-micro flex items-center gap-1 border border-tertiary/30">
+<span class="material-symbols-outlined text-[13px]">videocam</span>
+<span>SONY HDC-4300 • OPTICAL 12G ST 2110</span>
+</div>
+</div>
+<!-- Right Side Calibrated DIN/VU meter on Preview screen -->
+<div class="absolute right-2 top-2 bottom-8 w-2 bg-surface-container-lowest/90 rounded-sm p-0.5 flex flex-col justify-end gap-0.5 border border-surface-container">
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1 bg-rose-500"></div>
+<div class="w-full h-1.5 bg-amber-400"></div>
+<div class="w-full h-2 bg-emerald-400"></div>
+<div class="w-full h-3 bg-emerald-400"></div>
+<div class="w-full h-4 bg-emerald-400"></div>
+</div>
+<!-- Staged Lower-Third Graphic Preview Box (Ethical Policy Conference Lower-Third) -->
+<div class="absolute bottom-2 left-3 right-8 bg-surface-container-lowest/95 backdrop-blur px-3 py-1.5 rounded flex items-center justify-between border-l-4 border-emerald-400 shadow-lg">
+<div class="flex items-center gap-2">
+<span class="bg-emerald-500 text-black font-label-cap-micro text-label-cap-micro font-black px-1.5 py-0.5 rounded">STAGED GFX</span>
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold leading-none">AMB. SOPHIA MARTINEZ — SPECIAL ENVOY FOR CLIMATE RESILIENCE</span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline leading-none mt-0.5 font-mono">PLENARY 04: TRANSNATIONAL ENERGY INFRASTRUCTURE FRAMEWORK</span>
+</div>
+</div>
+<div class="flex items-center gap-1 font-label-cap-micro text-label-cap-micro text-emerald-400 font-mono">
+<span class="material-symbols-outlined text-[14px]">checklist</span>
+<span>VERIFIED ATTRIBUTION</span>
+</div>
+</div>
+</div>
+<!-- Monitor Lower Metadata Strip -->
+<div class="h-6 bg-surface-container-low px-space-sm flex items-center justify-between font-label-telemetry-sm text-label-telemetry-sm border-t border-surface-container">
+<span class="text-outline font-label-cap-micro text-label-cap-micro">SOURCE: CAM 02 FLOOR WIDE • SONY VENICE 2 REF</span>
+<div class="flex items-center gap-space-sm">
+<span class="text-emerald-400 font-label-cap-micro text-label-cap-micro uppercase font-bold">COLOR MATCH: CALIBRATED</span>
+<span class="text-on-surface-variant font-label-cap-micro text-label-cap-micro uppercase">ZEBRA: 70% SKIN</span>
+<span class="text-tertiary font-label-cap-micro text-label-cap-micro uppercase font-bold">GRID: 16:9 ACTION/TITLE</span>
+</div>
+</div>
+</div>
+<!-- CENTER CONSOLE: HARDWARE T-BAR & TRANSITION CONTROL BLOCK (Tactile Broadcast Crossbar) -->
+<div class="col-span-2 bg-surface-container-low rounded-sm p-2 flex flex-col justify-between shadow-xl border border-surface-container">
+<!-- Transition Type Selector Matrix -->
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between pb-1 border-b border-surface-container">
+<span class="font-label-cap-micro text-label-cap-micro text-outline uppercase font-bold tracking-wider">M/E 1 TRANSITION</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-mono font-bold">25 f (500ms)</span>
+</div>
+<div class="grid grid-cols-3 gap-1">
+<button class="py-1 px-0.5 rounded-sm bg-rose-600 text-white font-label-telemetry-sm text-label-telemetry-sm font-bold shadow-[0_0_8px_rgba(225,29,72,0.5)] border border-rose-400">CUT</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container-highest text-on-surface hover:bg-surface-bright font-label-telemetry-sm text-label-telemetry-sm font-semibold border border-surface-variant">MIX</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container text-on-surface-variant hover:text-on-surface font-label-telemetry-sm text-label-telemetry-sm border border-surface-variant">WIPE</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container text-on-surface-variant hover:text-on-surface font-label-telemetry-sm text-label-telemetry-sm border border-surface-variant">DIP BLK</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container text-on-surface-variant hover:text-on-surface font-label-telemetry-sm text-label-telemetry-sm border border-surface-variant">DVE SLIDE</button>
+<button class="py-1 px-0.5 rounded-sm bg-surface-container text-on-surface-variant hover:text-on-surface font-label-telemetry-sm text-label-telemetry-sm border border-surface-variant">STINGER</button>
+</div>
+<!-- Keyer Priority Layering Assignment -->
+<div class="flex items-center justify-between bg-surface-container-lowest p-1 rounded-sm border border-surface-container mt-0.5">
+<span class="font-label-cap-micro text-label-cap-micro text-outline font-bold">KEY LAYERS</span>
+<div class="flex items-center gap-1 font-label-cap-micro">
+<span class="px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">K1:DVE</span>
+<span class="px-1 py-0.5 rounded bg-tertiary-container/30 text-tertiary font-bold border border-tertiary/30">K2:CG</span>
+<span class="px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">K3:ASL</span>
+<span class="px-1 py-0.5 rounded bg-surface-container text-outline">K4:BUG</span>
+</div>
+</div>
+<!-- Frame Rate / Time Duration Selector -->
+<div class="bg-surface-container-lowest p-1.5 rounded-sm flex items-center justify-between border border-surface-container">
+<span class="font-label-cap-micro text-label-cap-micro text-outline font-mono">TRANS RATE</span>
+<div class="flex items-center gap-1 font-label-telemetry-sm text-label-telemetry-sm">
+<button class="w-4 h-4 rounded bg-surface-container flex items-center justify-center text-outline hover:text-on-surface border border-surface-variant">-</button>
+<span class="font-bold text-tertiary font-mono">25 FRAMES</span>
+<button class="w-4 h-4 rounded bg-surface-container flex items-center justify-center text-outline hover:text-on-surface border border-surface-variant">+</button>
+</div>
+</div>
+<button class="w-full py-1.5 rounded bg-gradient-to-r from-tertiary-container to-cyan-700 text-on-tertiary-container font-label-telemetry-md text-label-telemetry-md font-bold tracking-wider hover:brightness-110 active:scale-95 transition-all shadow-md">AUTO TRANSITION</button>
+</div>
+<!-- T-BAR HARDWARE SLIDER CONTROL (Calibrated Broadcast Fader) -->
+<div class="my-1.5 bg-surface-container-lowest rounded p-2 flex flex-col items-center justify-center relative border border-surface-container">
+<div class="flex items-center justify-between w-full font-label-cap-micro text-label-cap-micro text-outline px-1 mb-1 font-mono">
+<span class="text-rose-400 font-bold">PGM [0%]</span>
+<span class="text-tertiary font-bold font-label-telemetry-sm text-label-telemetry-sm">POSITION: 72%</span>
+<span class="text-emerald-400 font-bold">PST [100%]</span>
+</div>
+<!-- Fader Mechanical Track Slot with Calibrated Tick Marks -->
+<div class="w-full h-12 bg-surface-container-high rounded relative flex items-center px-2 border border-surface-variant">
+<!-- Millimeter and Percentage Detents -->
+<div class="absolute left-2 top-1 bottom-1 w-0.5 bg-outline-variant"></div>
+<div class="absolute left-1/4 top-2 bottom-2 w-px bg-outline-variant"></div>
+<div class="absolute left-1/2 -ml-px top-1 bottom-1 w-0.5 bg-tertiary/70"></div>
+<div class="absolute left-3/4 top-2 bottom-2 w-px bg-outline-variant"></div>
+<div class="absolute right-2 top-1 bottom-1 w-0.5 bg-outline-variant"></div>
+<!-- LED Fader Progress Indicator -->
+<div class="h-2 rounded-full bg-surface-container-lowest w-full overflow-hidden flex items-center border border-surface-variant">
+<div class="h-full bg-gradient-to-r from-rose-500 via-tertiary to-emerald-400 rounded-full" style="width: 72%;"></div>
+</div>
+<!-- Matte Aluminum Tactile T-Bar Handle -->
+<div class="absolute w-8 h-9 bg-slate-300 hover:bg-white text-slate-900 rounded-sm shadow-2xl flex flex-col items-center justify-center cursor-ew-resize border border-slate-400" style="left: calc(72% - 16px);">
+<div class="w-4 h-0.5 bg-slate-700 rounded-full mb-0.5"></div>
+<div class="w-4 h-0.5 bg-slate-700 rounded-full mb-0.5"></div>
+<div class="w-4 h-0.5 bg-rose-600 rounded-full"></div>
+</div>
+</div>
+<div class="flex items-center justify-between w-full mt-1 font-label-cap-micro text-label-cap-micro text-outline font-mono">
+<span class="hover:text-tertiary cursor-pointer">NOR / REV</span>
+<span class="text-emerald-400 font-bold">LIMIT LOCKED</span>
+<span class="hover:text-tertiary cursor-pointer">ZERO-STOP</span>
+</div>
+</div>
+<!-- Quick Downstream Keyers & Emergency Broadcast FTB Controls -->
+<div class="flex flex-col gap-1">
+<div class="grid grid-cols-4 gap-1 text-center font-label-cap-micro text-label-cap-micro">
+<button class="py-1 rounded bg-secondary-container text-on-secondary-container font-bold shadow-[0_0_6px_rgba(0,185,84,0.4)] border border-secondary/40">DSK 1</button>
+<button class="py-1 rounded bg-secondary-container text-on-secondary-container font-bold shadow-[0_0_6px_rgba(0,185,84,0.4)] border border-secondary/40">DSK 2</button>
+<button class="py-1 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40">DSK 3</button>
+<button class="py-1 rounded bg-surface-container text-outline hover:text-on-surface border border-surface-variant">CLEAN</button>
+</div>
+<!-- Protected Emergency FTB (Fade To Black) with Protected Border Guard -->
+<div class="bg-surface-container-lowest p-1 rounded flex items-center justify-between border border-rose-900/60">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-rose-500 text-[15px]">security</span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline font-bold">FTB GUARD</span>
+</div>
+<button class="bg-rose-700 hover:bg-rose-600 text-white px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro font-bold uppercase tracking-wider shadow-sm transition-all">
+FADE TO BLK
+</button>
+</div>
+</div>
+</div>
+<!-- RIGHT VIEWPORT: PROGRAM ON-AIR MONITOR (Glowing Red SMPTE PGM Tally) -->
+<div class="col-span-5 bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col shadow-xl border border-surface-container">
+<!-- Program Monitor Header Bar -->
+<div class="h-6 bg-rose-950/50 border-b border-rose-600/50 px-space-sm flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping"></span>
+<span class="w-2.5 h-2.5 rounded-full bg-rose-500 -ml-3.5 shadow-[0_0_10px_rgba(244,63,94,1)]"></span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-black text-rose-300 uppercase tracking-wider">PROGRAM (PGM) — LIVE TRANSMISSION ON AIR</span>
+</div>
+<div class="flex items-center gap-space-xs font-label-cap-micro text-label-cap-micro">
+<span class="px-1.5 py-0.5 bg-rose-600 text-white rounded font-bold uppercase animate-pulse">ON AIR</span>
+<span class="text-on-surface font-semibold font-mono">3840x2160 UHD @ 50.00 FPS (ST 2110)</span>
+</div>
+</div>
+<!-- Program 16:9 Canvas Container -->
+<div class="relative w-full aspect-video bg-black overflow-hidden flex items-center justify-center">
+<!-- Keynote Key Speaker Plenary Feed -->
+<img class="w-full h-full object-cover" data-alt="Distinguished international woman policy leader speaking at conference lectern with official global summit emblem, subtle stage lighting and attentive international audience in soft focus background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBnZ3CVBIE5kuDCN7ZF8o7kWMPHj9bGX5rQx8FZdv_D8b6c8-ft1znEBtKscpW809AyLCDwkiMZM6aT_EM5CAF9fe3WM_-4DiKucMa33NY-qRrd4VIjnt_Hn1LPjByu7SNAOylPPA8At3dHbVvZUqpNac1Db1kctH6zSb-vENyXh-v9ACzmlQ5cSWkezJM5Oi2Sq-tNIoXLFSEYgLwDLGRQl2-t8p-1vRcVmqlQRUE-7sc_avSwHndh0g"/>
+<!-- Ethical Journalistic Lower-Third Keyer Overlay -->
+<div class="absolute bottom-3 left-4 right-32 bg-slate-950/95 backdrop-blur-md rounded-sm border-l-4 border-rose-500 shadow-2xl p-2 flex flex-col">
+<div class="flex items-center justify-between">
+<span class="font-headline-sm text-headline-sm font-bold text-white tracking-wide">DR. ELENA VANCE — CHAIR, GLOBAL POLICY INITIATIVE</span>
+<span class="bg-rose-600 text-white text-[9px] font-mono font-bold px-1.5 py-0.2 rounded">LIVE • GENEVA</span>
+</div>
+<span class="font-label-cap-micro text-label-cap-micro text-slate-300 font-mono mt-0.5">OPENING KEYNOTE: ACCELERATING RENEWABLE TRANSITION BY 2035 • PLENARY SESSION 04</span>
+</div>
+<!-- Sign Language Accessibility Interpreter PIP (Keyer 3 Active) -->
+<div class="absolute bottom-3 right-3 w-32 aspect-square bg-surface-container-lowest rounded overflow-hidden shadow-2xl border-2 border-amber-400">
+<img class="w-full h-full object-cover" data-alt="Certified professional sign language interpreter translating live speech in formal suit against neutral broadcast studio backdrop." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDgWxDy8Kbl7z5pMPYUosCuMLweVIhbr-Xx8_Ppf48AtTSlApBGV53kCU-Nx5h9hYlBEKED9LNaMNO4Ujk8ZBqIoonxNvKz86vapj9-damAEYESx493aix9gpTt6wXCLyMij4ig1RAqDKvNgs9flB8ae69EiiNJYPdZDFX3H2YgBzcP2XAnZjW3Ovcxqrv_9mVOe41k6rwjJSJ3VQj6CRQq-RtrXIvtMGcLEbGdutN6jK25T3EhqCOjrA"/>
+<div class="absolute bottom-0 left-0 right-0 bg-surface-container-lowest/90 px-1 py-0.5 flex items-center justify-between text-[8px] font-label-cap-micro">
+<span class="text-amber-300 font-bold font-mono">ISL INTERPRET</span>
+<span class="text-emerald-400 font-bold">KEY 3</span>
+</div>
+</div>
+<!-- Broadcast Live Closed Caption Overlay (EIA-708 CC1 Live Stream) -->
+<div class="absolute top-3 left-4 right-24 bg-black/85 backdrop-blur px-2.5 py-1 rounded border border-surface-variant flex items-center gap-2">
+<span class="bg-yellow-400 text-black font-label-cap-micro font-bold px-1 rounded">CC1</span>
+<p class="font-mono text-xs text-white leading-tight truncate">"...we cannot delay national grid decarbonization commitments beyond the current fiscal cycle."</p>
+</div>
+<!-- Master Audio VU Meter Overlay on Live Screen (Calibrated Left Margin) -->
+<div class="absolute left-2 top-12 bottom-14 w-2.5 bg-surface-container-lowest/90 rounded-sm p-0.5 flex flex-col justify-end gap-0.5 border border-surface-container">
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1 bg-rose-500"></div>
+<div class="w-full h-1.5 bg-amber-400"></div>
+<div class="w-full h-3 bg-emerald-400"></div>
+<div class="w-full h-5 bg-emerald-400"></div>
+<div class="w-full h-6 bg-emerald-400"></div>
+</div>
+</div>
+<!-- Monitor Lower Metadata Strip -->
+<div class="h-6 bg-surface-container-low px-space-sm flex items-center justify-between font-label-telemetry-sm text-label-telemetry-sm border-t border-surface-container">
+<span class="text-outline font-label-cap-micro text-label-cap-micro font-mono">TX ENCODER: HEVC 50Mbps MAIN10 • EBU R128 (-24.0 LUFS TARGET)</span>
+<div class="flex items-center gap-space-sm font-label-cap-micro text-label-cap-micro font-mono">
+<span class="text-secondary font-bold">MASTER PRORES RECORDING: 02:18:41</span>
+<button class="bg-surface-container px-1.5 py-0.5 rounded text-tertiary font-bold hover:bg-surface-bright border border-surface-variant">FREEZE FRAME</button>
+</div>
+</div>
+</div>
+</section>
+<!-- TIER 2: PROFESSIONAL MULTI-FEED INGEST GRID (Ethical, Global Ingest) -->
+<section class="bg-surface-container-lowest mx-1 p-2 rounded-sm mb-1 shadow-lg border border-surface-container">
+<!-- Matrix Header Bar -->
+<div class="flex items-center justify-between mb-1.5">
+<div class="flex items-center gap-space-md">
+<span class="font-headline-sm text-headline-sm font-bold text-on-surface flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-tertiary">tune</span>
+INGEST SOURCE MATRIX &amp; CROSSPOINT ROUTER
+</span>
+<span class="bg-surface-container-high px-2 py-0.5 rounded font-label-telemetry-sm text-label-telemetry-sm text-outline font-mono">8 PRIMARY ROUTED INGESTS (ST 2110-20 / 12G-SDI)</span>
+</div>
+<!-- Filter Tabs & Router Config -->
+<div class="flex items-center gap-1">
+<div class="flex items-center gap-0.5 bg-surface-container-low p-0.5 rounded border border-surface-container mr-2">
+<button class="px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro bg-surface-container-high text-tertiary font-bold">ALL FEEDS (8)</button>
+<button class="px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro text-outline hover:text-on-surface">BROADCAST CAMERAS (4)</button>
+<button class="px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro text-outline hover:text-on-surface">SATELLITE &amp; REMOTE (2)</button>
+<button class="px-2 py-0.5 rounded font-label-cap-micro text-label-cap-micro text-outline hover:text-on-surface">GRAPHICS &amp; TEST (2)</button>
+</div>
+<button class="flex items-center gap-1 bg-surface-container-high hover:bg-surface-bright px-2.5 py-1 rounded text-tertiary font-label-telemetry-sm text-label-telemetry-sm font-bold border border-tertiary/30 transition-all">
+<span class="material-symbols-outlined text-[14px]">router</span>
+ROUTING CROSSET
+</button>
+</div>
+</div>
+<!-- 8 High-Density Live Input Cards Grid -->
+<div class="grid grid-cols-4 gap-1.5">
+<!-- INPUT CARD 1: MAIN PODIUM 4K HDR (Active in PGM) -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col border border-rose-600/70 shadow-[0_0_10px_rgba(225,29,72,0.25)]">
+<div class="h-6 bg-rose-950/70 px-2 flex items-center justify-between border-b border-rose-600/40">
+<div class="flex items-center gap-1">
+<span class="bg-rose-600 text-white font-label-cap-micro text-label-cap-micro font-black px-1 rounded">1</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-rose-200 truncate">CAM 1: MAIN PODIUM 4K HDR</span>
+</div>
+<span class="bg-rose-600 text-white font-label-cap-micro text-label-cap-micro px-1 rounded font-bold animate-pulse">PGM</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Official keynote speaker addressing assembly at formal podium with summit logo." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBtNwcEqdZweBKSWGdZJPxqLiObyeWyK5N344z9e0nVJW-vslhYubtal-tSIqhvu65-zC2cWYLROq4hrM_m7sR25_JXD7PjlQJYCJxlw7g3Owfd11BpyxiluJYEx8mFZPNJutf__j1u9qZ-_1hQB5rjfb5Fl0FEDlIQjAza_XPMu7jQdv9dLSGnyFDschJ3lFv46k5SAXytB4aBSJTJwQ_hEeAwQBDaNjaGI4BELboYk-xTVWvxnTlNpA"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/85 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline font-mono">SMPTE ST 2110 • 2160p50 HDR</div>
+<div class="absolute top-1 right-1 flex items-center gap-0.5">
+<span class="material-symbols-outlined text-secondary text-[12px]">mic</span>
+</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between border-t border-surface-container">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-rose-600 text-white font-label-cap-micro text-label-cap-micro font-bold rounded shadow-sm">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-cap-micro text-label-cap-micro rounded">AUTO</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">volume_up</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 2: DELEGATE HALL WIDE (Active in PST/PVW) -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col border border-emerald-500/70 shadow-[0_0_10px_rgba(16,185,129,0.25)]">
+<div class="h-6 bg-emerald-950/70 px-2 flex items-center justify-between border-b border-emerald-500/40">
+<div class="flex items-center gap-1">
+<span class="bg-emerald-500 text-black font-label-cap-micro text-label-cap-micro font-black px-1 rounded">2</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-emerald-300 truncate">CAM 2: DELEGATE HALL WIDE</span>
+</div>
+<span class="bg-emerald-500 text-black font-label-cap-micro text-label-cap-micro px-1 rounded font-bold">PVW</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Panoramic perspective of international delegate assembly seating rows with conference monitors." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDF_wh6DrpO1dyaj39uYnn8rrU47nWTKXGIzIuExSMhQCfXKbU-ryZb-FOMIcxTsG5Ot0qIoVWXsgwyty7xdSj5Y1WFyj4rxNdQxW1Zyi0BfsTqVszxNIqBUAhxkF9av8oPdPx9G6WE2sgHNNk9y6b0RQsc1siih7G1b5GkrA4g6D_thuy_zsvw1jPv8UQ2AON7Bi-JvipngqkZ39lE0zLKaocRTcHFTJK6Us7sCofKJyf2XU0Zbx2mJg"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/85 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline font-mono">12G-SDI • PTZ 04 GALLERY</div>
+<div class="absolute top-1 right-1 flex items-center gap-0.5">
+<span class="material-symbols-outlined text-secondary text-[12px]">mic</span>
+</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between border-t border-surface-container">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-rose-600 hover:text-white font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-emerald-600 text-white font-label-cap-micro text-label-cap-micro rounded">AUTO</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">volume_up</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 3: SATELLITE DOWNLINK GENEVA BUREAU -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col border border-surface-container">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between border-b border-surface-container">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">3</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">SAT: GENEVA HEADQUARTERS</span>
+</div>
+<span class="text-secondary font-label-cap-micro text-label-cap-micro font-mono">SRT OK (32ms)</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Broadcast journalist reporting live from international diplomacy headquarters with European architecture in background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAUe4NBO9gY29Ua2CGSoI-6dMJklMZSGeTcFE1jPhLr5tgfDBomUseqpY4jN_bOgyGcUXPaaiyDvkKDZQ82Tj3XVecKA5_IaYFcOTv6GFwJ6EzmPsiBM3OBru6XiL8k7rAR8RnLqBoSuVBMi9zQoMbUlCaTX1JUFy27t6i_9sYOxgrcciZELRlMuFZYz0_LnwbYC1ub6W7df1sSTEx2czj28WfJ_3pbb0ThLxBX8cFsvdfQEJD0jJf_2Q"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/85 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline font-mono">SRT CALLER • H.265 25Mbps</div>
+<div class="absolute top-1 right-1 flex items-center gap-0.5">
+<span class="material-symbols-outlined text-secondary text-[12px]">satellite_alt</span>
+</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between border-t border-surface-container">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-rose-600 hover:text-white font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-emerald-600 hover:text-white font-label-cap-micro text-label-cap-micro rounded">AUTO</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">volume_up</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 4: SIGN LANGUAGE INTERPRETER (Accessibility Cam) -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col border border-surface-container">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between border-b border-surface-container">
+<div class="flex items-center gap-1">
+<span class="bg-amber-500/20 text-amber-300 font-label-cap-micro text-label-cap-micro font-bold px-1 rounded border border-amber-500/40">4</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">ISO: ASL / ISL INTERPRETER</span>
+</div>
+<span class="text-amber-300 font-label-cap-micro text-label-cap-micro font-bold font-mono">ACCESSIBILITY</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Official sign language specialist performing simultaneous translation in dedicated television studio booth." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAdYhDT0UhpnRI1OLbOopwTc4WQKXAiXuTMbOknUUtgBNLoKyIzjfuwd_UHI6ZjAwH-M_8u25H2wq99Zywn3qBj4iVTwVgBQM5Vf5xn3CzpfyEnyBGEhA3zSVtF7RHrJjPVqUK2nY6Lbvyl2q6RcWlAsjfJ2ioGIaOHgQk3DefnSpCwNmYFP1DRx8-D7XA2JxUOCcphPri7i7Xrrk8iS6z9cLxpCL2zdHEpwFJipTw7EPtC5Rg9ELTmxA"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/85 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline font-mono">1080p50 • KEY 3 ROUTED</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between border-t border-surface-container">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-rose-600 hover:text-white font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-amber-500/30 text-amber-200 border border-amber-500/40 font-label-cap-micro text-label-cap-micro rounded font-bold">KEY 3</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">sign_language</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 5: TRANSLATION AUDIO MATRIX & KEYNOTE SLIDES -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col border border-surface-container">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between border-b border-surface-container">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">5</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-tertiary truncate">DVI/DP: POLICY KEYNOTE SLIDES</span>
+</div>
+<span class="bg-tertiary/20 text-tertiary font-label-cap-micro text-label-cap-micro px-1 rounded font-bold">4K UHD</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Sophisticated statistical global emission reduction forecast graphs and international energy treaty timeline displayed on formal presentation canvas." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBKx4nekPcU1hwiPXBIs8AyCnfffKudjGIDTS5clb9CwCeCvxmCHrwOYfTeekkw-7SOc3FG7TC0BT7qdWFzl02kcsQq2n1hBpC1CV35h5qCPQPie0Yb1Rm9S84kevShXHXkWb0Az1ZaQVdNM_mLl9uMnbjrTyNJhJsLNHV6pmtoM3wouuvK0Ogx8p0mumRCbc7dV95QMpWlKP41ISHh44kXBXE3Cos2_4r5rSCJHmNgP8fBdOUtO27tNQ"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/85 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline font-mono">EDID: 3840x2160@50Hz RGB</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between border-t border-surface-container">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-rose-600 hover:text-white font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-emerald-600 hover:text-white font-label-cap-micro text-label-cap-micro rounded">AUTO</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">slideshow</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 6: VERIFIED CLIMATE ARCHIVE & B-ROLL -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col border border-surface-container">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between border-b border-surface-container">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">6</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">CLIP: SOLAR &amp; WIND INFRASTRUCTURE</span>
+</div>
+<span class="text-secondary font-label-cap-micro text-label-cap-micro font-bold font-mono">READY</span>
+</div>
+<div class="relative w-full aspect-video bg-black">
+<img class="w-full h-full object-cover" data-alt="Clean renewable energy wind farm turbine arrays turning across rolling green hills under dramatic sky." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCVhc4aDoNQHwW5n3GmNs65F4ijDnxTHCMTzSVhgXSGLJuvi9ck0k5xIPGRA5SEzfoflRx9FOZMrJIVliMNPkljdq-TBjWgVIUgEk9276pNOd-JyoZCPwrrOi_x00_IxLEYf-Dxwm_6u3Aa5TH2JLExhgfBBhS2XmihHRUMOgAEvIyvZ2zf0hiJ_bVjV0zjuLLHRT4tcvcAQcHy-A7geou8MaS7J2RYcdtDVV9ndVp6hHr-B03cXWu_Ew"/>
+<div class="absolute bottom-1 left-1 bg-surface-container-lowest/85 px-1 rounded font-label-cap-micro text-label-cap-micro text-outline font-mono">DDR 01 • PRORES 422HQ</div>
+<div class="absolute bottom-1 right-1 bg-surface-container-lowest/85 px-1 rounded font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-mono">03:45.12</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between border-t border-surface-container">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-secondary text-surface-container-lowest font-label-cap-micro text-label-cap-micro font-bold rounded">CUE</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-cap-micro text-label-cap-micro rounded">TAKE</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">play_arrow</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 7: BROADCAST GRAPHICS / VIZRT COMPLIANCE -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col border border-surface-container">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between border-b border-surface-container">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">7</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">GFX: VIZRT / JOURNALISTIC LOWER 3RD</span>
+</div>
+<span class="text-tertiary font-label-cap-micro text-label-cap-micro font-bold font-mono">FILL+KEY</span>
+</div>
+<div class="relative w-full aspect-video bg-surface-container-lowest flex items-center justify-center p-2 border-y border-surface-container">
+<div class="w-full bg-surface-container-high/60 p-2 rounded flex flex-col items-center justify-center text-center border border-surface-variant">
+<span class="font-headline-sm text-headline-sm text-emerald-400 font-bold tracking-wider">LIVE DUAL-CHANNEL LOWER-THIRD ENGINE</span>
+<span class="font-label-cap-micro text-label-cap-micro text-outline mt-0.5 font-mono">JOURNALISTIC INTEGRITY PROTOCOL CERTIFIED</span>
+</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between border-t border-surface-container">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-tertiary text-on-tertiary font-label-cap-micro text-label-cap-micro font-bold rounded">STG KEY 2</button>
+<button class="px-1.5 py-0.5 bg-surface-container-high text-outline font-label-cap-micro text-label-cap-micro rounded">CLEAR</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">refresh</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+<!-- INPUT CARD 8: SMPTE COLOR BARS & EMERGENCY STANDBY SLATE -->
+<div class="bg-surface-container-low rounded-sm overflow-hidden flex flex-col border border-surface-container">
+<div class="h-6 bg-surface-container px-2 flex items-center justify-between border-b border-surface-container">
+<div class="flex items-center gap-1">
+<span class="bg-surface-container-highest text-on-surface font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">8</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">TEST: SMPTE EG-1 BARS / STANDBY SLATE</span>
+</div>
+<span class="text-amber-300 font-label-cap-micro text-label-cap-micro font-mono">1kHz @ -20dB</span>
+</div>
+<!-- SMPTE HD Color Bars Render -->
+<div class="relative w-full aspect-video bg-black flex flex-col overflow-hidden">
+<div class="flex-1 grid grid-cols-7 w-full h-3/4">
+<div class="bg-slate-300"></div>
+<div class="bg-yellow-400"></div>
+<div class="bg-cyan-400"></div>
+<div class="bg-green-500"></div>
+<div class="bg-purple-600"></div>
+<div class="bg-red-600"></div>
+<div class="bg-blue-700"></div>
+</div>
+<div class="h-1/4 grid grid-cols-7 w-full">
+<div class="bg-blue-700"></div>
+<div class="bg-black"></div>
+<div class="bg-purple-600"></div>
+<div class="bg-black"></div>
+<div class="bg-cyan-400"></div>
+<div class="bg-black"></div>
+<div class="bg-slate-300"></div>
+</div>
+<div class="absolute inset-0 flex items-center justify-center">
+<span class="bg-black/85 text-white font-mono font-bold text-[10px] px-2 py-0.5 border border-white/40">STANDBY TECHNICAL SLATE</span>
+</div>
+</div>
+<div class="p-1 bg-surface-container flex items-center justify-between border-t border-surface-container">
+<div class="flex items-center gap-0.5">
+<button class="px-1.5 py-0.5 bg-surface-container-high hover:bg-rose-600 hover:text-white font-label-cap-micro text-label-cap-micro font-bold rounded">CUT</button>
+<button class="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 font-label-cap-micro text-label-cap-micro rounded">HOLD</button>
+</div>
+<div class="flex items-center gap-1">
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">graphic_eq</span></button>
+<button class="text-outline hover:text-on-surface"><span class="material-symbols-outlined text-[14px]">settings</span></button>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- TIER 3: PROFESSIONAL AUDIO & EBU R128 COMPLIANCE RACK -->
+<section class="bg-surface-container-lowest mx-1 p-2 rounded-sm shadow-xl border border-surface-container">
+<!-- Audio Matrix Header Bar with ITU-R BS.1770-4 Standards Banner -->
+<div class="flex items-center justify-between pb-1.5 mb-2 border-b border-surface-container-high">
+<div class="flex items-center gap-space-md">
+<span class="font-headline-sm text-headline-sm font-bold text-on-surface flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-tertiary">tune</span>
+BROADCAST AUDIO COMPLIANCE &amp; DANTE ROUTING CORE
+</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-outline font-mono">ITU-R BS.1770-4 / EBU R128 (-24.0 LUFS TARGET) • 48kHz / 24-BIT BROADCAST DANTE</span>
+</div>
+<div class="flex items-center gap-space-sm font-label-cap-micro text-label-cap-micro">
+<span class="bg-surface-container px-2 py-0.5 rounded text-emerald-400 font-bold border border-emerald-500/30 font-mono">INTEGRATED: -23.9 LUFS</span>
+<span class="bg-surface-container px-2 py-0.5 rounded text-tertiary font-mono">LRA: 8.2 LU</span>
+<span class="bg-surface-container px-2 py-0.5 rounded text-amber-300 font-mono">MAX TRUE PEAK: -1.2 dBTP</span>
+<button class="bg-surface-container-high px-2 py-0.5 rounded text-tertiary font-bold hover:bg-surface-bright border border-surface-variant">LOUDNESS RADAR</button>
+</div>
+</div>
+<!-- 6 Channel High-Fidelity Fader Strips -->
+<div class="grid grid-cols-6 gap-2">
+<!-- STRIP 1: MASTER BROADCAST OUTPUT (EBU R128 Reference) -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between border border-rose-600/30 shadow-inner">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-black text-rose-300 font-mono">TX MASTER L/R</span>
+<span class="bg-rose-600 text-white font-label-cap-micro text-label-cap-micro font-bold px-1 rounded">R128</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5 border border-surface-container font-mono">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-bold">-24.0 LUFS</span>
+</div>
+<!-- Dual VU & Peak Meter Scale -->
+<div class="flex items-center justify-center gap-2 h-24 my-1">
+<div class="flex gap-0.5 h-full py-1">
+<div class="w-1.5 bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5 border border-surface-container">
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1.5 bg-rose-500"></div>
+<div class="w-full h-2.5 bg-amber-400"></div>
+<div class="w-full h-12 bg-emerald-400"></div>
+</div>
+<div class="w-1.5 bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5 border border-surface-container">
+<div class="w-full h-1 bg-surface-variant"></div>
+<div class="w-full h-1.5 bg-rose-500"></div>
+<div class="w-full h-2.5 bg-amber-400"></div>
+<div class="w-full h-11 bg-emerald-400"></div>
+</div>
+</div>
+<!-- Master Fader Slider Track -->
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center border border-surface-container">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-slate-200 text-black rounded shadow-lg flex items-center justify-center cursor-ns-resize border border-slate-400" style="bottom: 68%;">
+<div class="w-4 h-0.5 bg-rose-600"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold font-mono">
+<button class="py-1 bg-rose-600 text-white rounded-sm">PGM</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">AUX1</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">AUX2</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">ISO</button>
+</div>
+</div>
+<!-- STRIP 2: PODIUM REDUNDANT DANTE MIC (Main Keynote) -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between border border-surface-container">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">PODIUM MIC A/B</span>
+<span class="text-emerald-400 font-label-cap-micro text-label-cap-micro font-bold font-mono">PRI/SEC</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5 border border-surface-container font-mono">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-emerald-400 font-bold">-18.4 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-24 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5 border border-surface-container">
+<div class="w-full h-2 bg-surface-variant"></div>
+<div class="w-full h-3 bg-amber-400"></div>
+<div class="w-full h-11 bg-emerald-400"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center border border-surface-container">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize border border-surface-container-highest" style="bottom: 60%;">
+<div class="w-4 h-0.5 bg-emerald-400"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold font-mono">
+<button class="py-1 bg-emerald-600 text-white rounded-sm">ON</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">MUTE</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">DUCK</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">DSP</button>
+</div>
+</div>
+<!-- STRIP 3: ASSEMBLY FLOOR INTERVENTION MICS -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between border border-surface-container">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">FLOOR DELEGATES</span>
+<span class="text-tertiary font-label-cap-micro text-label-cap-micro font-bold font-mono">AUTO-MIX</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5 border border-surface-container font-mono">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-bold">-22.1 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-24 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5 border border-surface-container">
+<div class="w-full h-3 bg-surface-variant"></div>
+<div class="w-full h-2 bg-amber-400"></div>
+<div class="w-full h-9 bg-emerald-400"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center border border-surface-container">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize border border-surface-container-highest" style="bottom: 52%;">
+<div class="w-4 h-0.5 bg-tertiary"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold font-mono">
+<button class="py-1 bg-emerald-600 text-white rounded-sm">ON</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">GATE</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">NOM</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">H/P</button>
+</div>
+</div>
+<!-- STRIP 4: SIMULTANEOUS INTERPRETATION (French / Spanish / Arabic) -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between border border-surface-container">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">INTERPRETATION L/R</span>
+<span class="text-amber-300 font-label-cap-micro text-label-cap-micro font-bold font-mono">CH 3-8</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5 border border-surface-container font-mono">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-amber-300 font-bold">-20.0 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-24 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5 border border-surface-container">
+<div class="w-full h-4 bg-surface-variant"></div>
+<div class="w-full h-2 bg-amber-400"></div>
+<div class="w-full h-10 bg-emerald-400"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center border border-surface-container">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize border border-surface-container-highest" style="bottom: 56%;">
+<div class="w-4 h-0.5 bg-amber-300"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold font-mono">
+<button class="py-1 bg-emerald-600 text-white rounded-sm">FR</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">ES</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">AR</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">ZH</button>
+</div>
+</div>
+<!-- STRIP 5: SATELLITE DOWNLINK GENEVA (Remote Bureau) -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between border border-surface-container">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-on-surface truncate">GENEVA REMOTE RX</span>
+<span class="text-secondary font-label-cap-micro text-label-cap-micro font-mono">MIX-MINUS</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5 border border-surface-container font-mono">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">-19.5 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-24 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5 border border-surface-container">
+<div class="w-full h-5 bg-surface-variant"></div>
+<div class="w-full h-2 bg-amber-400"></div>
+<div class="w-full h-10 bg-emerald-400"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center border border-surface-container">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize border border-surface-container-highest" style="bottom: 54%;">
+<div class="w-4 h-0.5 bg-secondary"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold font-mono">
+<button class="py-1 bg-emerald-600 text-white rounded-sm">ON</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">IFB</button>
+<button class="py-1 bg-secondary text-surface-container-lowest rounded-sm">M-MINUS</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">EQ</button>
+</div>
+</div>
+<!-- STRIP 6: DIRECTOR TALKBACK & ENGINEERING CUE -->
+<div class="bg-surface-container-low p-2 rounded-sm flex flex-col justify-between border border-surface-container">
+<div class="flex items-center justify-between mb-1">
+<span class="font-label-telemetry-sm text-label-telemetry-sm font-bold text-tertiary truncate">DIRECTOR TB / CUE</span>
+<span class="bg-tertiary-container text-on-tertiary-container font-label-cap-micro text-label-cap-micro font-bold px-1 rounded font-mono">INTERCOM</span>
+</div>
+<div class="bg-surface-container-lowest p-1 rounded-sm text-center mb-1.5 border border-surface-container font-mono">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary font-bold">-6.0 dB</span>
+</div>
+<div class="flex items-center justify-center gap-2 h-24 my-1">
+<div class="w-1.5 h-full bg-surface-container-lowest rounded-sm overflow-hidden flex flex-col justify-end gap-0.5 p-0.5 border border-surface-container">
+<div class="w-full h-2 bg-surface-variant"></div>
+<div class="w-full h-4 bg-amber-400"></div>
+<div class="w-full h-14 bg-tertiary"></div>
+</div>
+<div class="w-4 h-full bg-surface-container-lowest rounded-sm relative flex flex-col items-center justify-center border border-surface-container">
+<div class="w-0.5 h-full bg-surface-variant"></div>
+<div class="absolute w-6 h-5 bg-surface-variant rounded shadow flex items-center justify-center cursor-ns-resize border border-surface-container-highest" style="bottom: 70%;">
+<div class="w-4 h-0.5 bg-tertiary"></div>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-0.5 mt-1 font-label-cap-micro text-label-cap-micro text-center font-bold font-mono">
+<button class="py-1 bg-tertiary text-on-tertiary rounded-sm">PROD</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">ENG</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">SAT</button>
+<button class="py-1 bg-surface-container text-outline rounded-sm">FLOOR</button>
+</div>
+</div>
+</div>
+</section>
+</div></main></div><footer class="fixed bottom-0 left-0 right-0 h-9 z-50 bg-surface-container-lowest flex items-center justify-between px-space-md border-t border-surface-variant"><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs"><button class="h-6 px-space-sm bg-surface-container-low hover:bg-surface-container-high hover:text-on-surface rounded flex items-center gap-space-xs text-on-surface-variant border border-surface-container"><span class="material-symbols-outlined text-[14px]">lock</span><span class="font-label-cap-micro text-label-cap-micro uppercase">CONSOLE LOCK</span></button><button class="h-6 px-space-sm bg-surface-container-low hover:bg-surface-container-high hover:text-on-surface rounded flex items-center gap-space-xs text-on-surface-variant border border-surface-container"><span class="material-symbols-outlined text-[14px]">security</span><span class="font-label-cap-micro text-label-cap-micro uppercase font-mono">SAFETY ARMED</span></button></div><div class="h-4 w-px bg-surface-variant"></div><div class="flex items-center gap-space-xs"><span class="font-label-cap-micro text-label-cap-micro text-outline mr-space-xs font-mono">BROADCAST ROUTINES:</span><button class="h-6 px-space-sm rounded bg-surface-container-low text-secondary font-label-telemetry-sm text-label-telemetry-sm font-bold hover:bg-surface-container-high border border-surface-container font-mono">R1: KEYNOTE COMMENCE</button><button class="h-6 px-space-sm rounded bg-surface-container-low text-tertiary font-label-telemetry-sm text-label-telemetry-sm font-bold hover:bg-surface-container-high border border-surface-container font-mono">R2: FLOOR INTERVENTION</button><button class="h-6 px-space-sm rounded bg-surface-container-low text-amber-300 font-label-telemetry-sm text-label-telemetry-sm font-bold hover:bg-surface-container-high border border-surface-container font-mono">R3: RECESS SLATE</button><button class="h-6 px-space-sm rounded bg-surface-container-low text-rose-400 font-label-telemetry-sm text-label-telemetry-sm font-bold hover:bg-surface-container-high border border-surface-container font-mono">R4: PRESS CONCLAVE</button></div></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-sm font-mono"><span class="w-2 h-2 rounded-full bg-emerald-400"></span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface-variant">ST 2059-2 PTP: GRANDMASTER SYNCED (0ns DEV)</span></div><div class="flex items-center gap-space-xs"><button class="h-6 px-space-md bg-surface-container-low hover:bg-surface-container-high hover:text-on-surface rounded flex items-center gap-space-xs text-tertiary font-label-telemetry-sm text-label-telemetry-sm font-bold border border-tertiary/30"><span class="material-symbols-outlined text-[14px]">desktop_windows</span>MULTIVIEW 16-SPLIT [F11]</button></div></div></footer></body></html>

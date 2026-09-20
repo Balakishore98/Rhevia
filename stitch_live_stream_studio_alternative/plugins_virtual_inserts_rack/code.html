@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Chivo:wght@600;700&amp;family=Inter:wght@400;500&amp;family=JetBrains+Mono:wght@500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "inverse-surface": "#dfe2ef", "on-primary-fixed": "#410004", "tertiary-fixed-dim": "#4cd7f6", "on-error-container": "#ffdad6", "surface-dim": "#0f131c", "error": "#ffb4ab", "surface-container-low": "#181c25", "secondary-fixed-dim": "#4ae176", "on-surface-variant": "#e4beba", "on-tertiary-fixed": "#001f26", "on-secondary-container": "#004119", "primary-fixed": "#ffdad7", "surface-container-high": "#262a33", "surface-container-highest": "#31353e", "surface-container": "#1c2029", "outline-variant": "#5b403e", "surface-container-lowest": "#0a0e17", "secondary-container": "#00b954", "surface-tint": "#ffb3ad", "primary": "#ffb3ad", "secondary-fixed": "#6bff8f", "on-tertiary-container": "#002f38", "inverse-on-surface": "#2c303a", "tertiary-container": "#009eb9", "tertiary-fixed": "#acedff", "error-container": "#93000a", "on-surface": "#dfe2ef", "background": "#0f131c", "surface": "#0f131c", "on-error": "#690005", "primary-fixed-dim": "#ffb3ad", "secondary": "#4ae176", "on-tertiary-fixed-variant": "#004e5c", "surface-bright": "#353943", "on-primary-container": "#5c0008", "on-primary-fixed-variant": "#930013", "on-background": "#dfe2ef", "primary-container": "#ff5451", "inverse-primary": "#b91a24", "surface-variant": "#31353e", "on-secondary-fixed": "#002109", "outline": "#ab8986", "on-secondary": "#003915", "on-primary": "#68000a", "on-tertiary": "#003640", "on-secondary-fixed-variant": "#005321", "tertiary": "#4cd7f6" }, "borderRadius": { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" }, "spacing": { "space-xl": "1rem", "space-sm": "0.25rem", "margin": "0.5rem", "space-lg": "0.75rem", "gutter": "0.375rem", "space-md": "0.5rem", "space-xs": "0.125rem" }, "fontFamily": { "label-telemetry-lg": [ "JetBrains Mono" ], "label-cap-micro": [ "JetBrains Mono" ], "label-telemetry-md": [ "JetBrains Mono" ], "body-sm": [ "Inter" ], "body-md": [ "Inter" ], "headline-lg": [ "Chivo" ], "label-telemetry-sm": [ "JetBrains Mono" ], "headline-md": [ "Chivo" ], "headline-sm": [ "Chivo" ], "body-lg": [ "Inter" ] }, "fontSize": { "label-telemetry-lg": [ "1.25rem", { "lineHeight": "1.25rem", "letterSpacing": "0.04em", "fontWeight": "700" } ], "label-cap-micro": [ "0.5625rem", { "lineHeight": "0.6875rem", "letterSpacing": "0.08em", "fontWeight": "700" } ], "label-telemetry-md": [ "0.8125rem", { "lineHeight": "1rem", "letterSpacing": "0.02em", "fontWeight": "600" } ], "body-sm": [ "0.6875rem", { "lineHeight": "0.875rem", "fontWeight": "400" } ], "body-md": [ "0.75rem", { "lineHeight": "1rem", "fontWeight": "400" } ], "headline-lg": [ "1.5rem", { "lineHeight": "1.75rem", "letterSpacing": "-0.02em", "fontWeight": "700" } ], "label-telemetry-sm": [ "0.6875rem", { "lineHeight": "0.8125rem", "letterSpacing": "0.01em", "fontWeight": "500" } ], "headline-md": [ "1.125rem", { "lineHeight": "1.375rem", "letterSpacing": "-0.01em", "fontWeight": "600" } ], "headline-sm": [ "0.875rem", { "lineHeight": "1.125rem", "letterSpacing": "0.02em", "fontWeight": "600" } ], "body-lg": [ "0.875rem", { "lineHeight": "1.25rem", "fontWeight": "500" } ] } } } };</script></head><body class="bg-background font-body-md text-body-md text-on-surface select-none antialiased"><header class="fixed top-0 left-0 right-0 z-50 bg-surface-container-lowest/95 backdrop-blur-md shadow-[0_1px_8px_rgba(0,0,0,0.6)]"><div class="h-14 w-full px-margin flex items-center justify-between gap-space-lg"><div class="flex items-center gap-space-lg shrink-0"><img alt="Brand logo. - Primary color: #ef4444
+- Font: chivo
+- Mode: dark
+- Roundness: rounded-sm
+" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1VaXG2zG4AJVy8l7qUp_MJnZhom_YsR3J-2X7K_kQK7gSPRFE7LzRfgFD4PiEYjobOlZxSnpl4QnfZMZ8qV86uoKxBw3cniW1SnGi3IUcwVdvHX-mFznv9UG15TyZVgdyWU9vOcUm11-drH-bYrc2PrINYLWQBA0Zzc4srdIAAzZeWP87HHvpEEhPL5x-P8k6OvmU1A5v0frvDzmodOZKbmzAxxs7QkrRXfdCrKCzSdjaZ1yVO6Ep6-H0za"/><div class="flex flex-col justify-center"><div class="flex items-center gap-space-sm"><span class="font-headline-sm text-headline-sm text-on-surface tracking-tight uppercase">OmniCast</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary uppercase">MCR-1</span></div><span class="font-body-sm text-body-sm text-on-surface-variant truncate max-w-[200px]">Plenary Hall A — Global Climate Summit</span></div><div class="flex items-center gap-space-xs bg-error-container/80 px-space-md py-space-xs rounded shadow-[0_0_12px_rgba(239,68,68,0.45)]"><span class="w-2 h-2 rounded-full bg-primary-container animate-pulse"></span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-error-container uppercase font-bold tracking-wider">LIVE ON AIR</span></div></div><nav class="hidden xl:flex items-center h-full gap-space-xs" data-active-classes="bg-surface-container-high text-tertiary font-bold shadow-[inset_0_-2px_0_#4cd7f6]"><a class="h-full flex items-center px-space-md text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors font-headline-sm text-headline-sm" data-path="switcher-ingest" href="#">Switcher &amp; Ingest</a><a class="h-full flex items-center px-space-md text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors font-headline-sm text-headline-sm" data-path="audio-matrix" href="#">Audio Matrix</a><a class="h-full flex items-center px-space-md text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors font-headline-sm text-headline-sm" data-path="video-hardware-settings" href="#">Video &amp; Hardware Settings</a><a class="h-full flex items-center px-space-md text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors font-headline-sm text-headline-sm" data-path="plugins-inserts" href="#">Plugins &amp; Inserts</a><a class="h-full flex items-center px-space-md text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors font-headline-sm text-headline-sm" data-path="stream-destinations" href="#">Stream &amp; Destinations</a></nav><div class="flex items-center gap-space-md shrink-0"><div class="hidden md:flex items-center gap-space-md bg-surface-container-low px-space-md py-space-xs rounded"><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">Profanity Safe</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">7.0s SAFE</span></div><div class="w-px h-6 bg-surface-container-high"></div><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">SMPTE TC (REC)</span><span class="font-label-telemetry-md text-label-telemetry-md text-on-surface tracking-widest">14:28:39:18</span></div><div class="w-px h-6 bg-surface-container-high"></div><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">Sync / Genlock</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary flex items-center gap-space-xs"><span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span>PTP LOCKED</span></div><div class="w-px h-6 bg-surface-container-high"></div><div class="flex flex-col"><span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">Master SDI/NDI</span><span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface font-semibold">2160p50 UHD</span></div></div><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></header><aside class="fixed left-0 top-14 bottom-0 w-16 bg-surface-container-lowest z-40 flex flex-col items-center py-space-md gap-space-md shadow-[1px_0_6px_rgba(0,0,0,0.5)]"><div class="flex flex-col items-center gap-space-xs"><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container hover:bg-surface-container-high text-tertiary transition-all" title="M/E 1 Bus Master"><span class="material-symbols-outlined text-[20px]">view_quilt</span><span class="font-label-cap-micro text-label-cap-micro">ME 1</span></button><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all" title="M/E 2 Bus Aux"><span class="material-symbols-outlined text-[20px]">splitscreen</span><span class="font-label-cap-micro text-label-cap-micro">ME 2</span></button><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all" title="Auxiliary Matrix Routing"><span class="material-symbols-outlined text-[20px]">hub</span><span class="font-label-cap-micro text-label-cap-micro">AUX</span></button></div><div class="w-8 h-px bg-surface-container-high my-space-xs"></div><div class="flex flex-col items-center gap-space-xs"><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all" title="DSK Downstream Keyers"><span class="material-symbols-outlined text-[20px]">layers</span><span class="font-label-cap-micro text-label-cap-micro">DSK</span></button><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all" title="Graphics &amp; Stills Media Player"><span class="material-symbols-outlined text-[20px]">perm_media</span><span class="font-label-cap-micro text-label-cap-micro">MEDIA</span></button><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all" title="Instant Replay &amp; Ingest Cue"><span class="material-symbols-outlined text-[20px]">replay</span><span class="font-label-cap-micro text-label-cap-micro">RPLY</span></button><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all" title="PTZ Robotic Camera Control"><span class="material-symbols-outlined text-[20px]">videocam</span><span class="font-label-cap-micro text-label-cap-micro">PTZ</span></button></div><div class="mt-auto flex flex-col items-center gap-space-xs"><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all" title="System Telemetry &amp; Health"><span class="material-symbols-outlined text-[20px]">vital_signs</span><span class="font-label-cap-micro text-label-cap-micro">DIAG</span></button><button class="w-11 h-11 rounded flex flex-col items-center justify-center bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all" title="Master Control Surface Lock"><span class="material-symbols-outlined text-[20px]">lock_open</span><span class="font-label-cap-micro text-label-cap-micro">LOCK</span></button></div></aside><div class="pl-16"><main class="relative pt-14 min-h-screen bg-background text-on-surface"><div class="flex flex-col w-full">
+<!-- Sub-Header / Control Strip -->
+<div class="w-full bg-surface-container-lowest px-space-xl py-space-md flex flex-wrap items-center justify-between gap-space-md shadow-md z-20">
+<div class="flex items-center gap-space-md flex-wrap">
+<button class="flex items-center gap-space-xs bg-tertiary-container hover:bg-tertiary text-on-tertiary-container hover:text-on-tertiary px-space-md py-space-xs rounded transition-all shadow-sm">
+<span class="material-symbols-outlined text-[18px]">add_circle</span>
+<span class="font-headline-sm text-headline-sm uppercase tracking-wider">Add Insert</span>
+</button>
+<button class="flex items-center gap-space-xs bg-surface-container hover:bg-surface-container-high text-on-surface px-space-md py-space-xs rounded transition-all" id="scanBtn">
+<span class="material-symbols-outlined text-[18px]" id="scanIcon">sync</span>
+<span class="font-headline-sm text-headline-sm">Scan VST3 &amp; OFX</span>
+</button>
+<div class="h-6 w-px bg-surface-container-highest"></div>
+<!-- Preset Selector Dropdown -->
+<div class="flex items-center gap-space-xs bg-surface-container-low px-space-md py-space-xs rounded">
+<span class="material-symbols-outlined text-tertiary text-[18px]">tune</span>
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">Chain Preset:</span>
+<select class="bg-transparent font-label-telemetry-sm text-label-telemetry-sm text-on-surface focus:outline-none cursor-pointer pr-space-xs">
+<option class="bg-surface-container-high text-on-surface">Climate Summit M/E Chain</option>
+<option class="bg-surface-container-high text-on-surface">Debate Primetime Studio A</option>
+<option class="bg-surface-container-high text-on-surface">Clean Feed Passthrough</option>
+<option class="bg-surface-container-high text-on-surface">Acoustic Symphony Live Rec</option>
+</select>
+<span class="material-symbols-outlined text-on-surface-variant text-[16px]">expand_more</span>
+</div>
+</div>
+<!-- Rack Status & Master Bypass -->
+<div class="flex items-center gap-space-lg">
+<div class="hidden sm:flex items-center gap-space-md bg-surface-container-low px-space-md py-space-xs rounded">
+<div class="flex flex-col">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">Rack DSP Load</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">14.8% (Buffer 128)</span>
+</div>
+<div class="w-px h-5 bg-surface-container-highest"></div>
+<div class="flex flex-col">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">I/O Roundtrip</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary">2.8ms UHD-50</span>
+</div>
+</div>
+<!-- Master Bypass Toggle Button -->
+<button class="flex items-center gap-space-xs bg-surface-container-high hover:bg-surface-bright text-on-surface px-space-md py-space-xs rounded transition-all cursor-pointer" id="masterBypassBtn">
+<span class="w-2.5 h-2.5 rounded-full bg-secondary-container shadow-[0_0_8px_rgba(0,185,84,0.6)]" id="masterBypassDot"></span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm uppercase font-bold" id="masterBypassText">Master Active</span>
+</button>
+</div>
+</div>
+<!-- Filter Category Chips -->
+<div class="w-full bg-surface-container-low px-space-xl py-space-xs flex items-center gap-space-xs overflow-x-auto shadow-inner">
+<button class="filter-tab active-tab flex items-center gap-space-xs px-space-md py-space-xs rounded bg-surface-container-high text-tertiary font-headline-sm text-headline-sm transition-all" data-filter="all">
+<span>All Plugins</span>
+<span class="bg-surface-container-highest text-on-surface font-label-telemetry-sm text-label-telemetry-sm px-space-xs rounded">7 Active</span>
+</button>
+<button class="filter-tab flex items-center gap-space-xs px-space-md py-space-xs rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface font-headline-sm text-headline-sm transition-all" data-filter="video">
+<span class="material-symbols-outlined text-[16px]">video_settings</span>
+<span>Video Inserters &amp; GFX</span>
+<span class="bg-surface-container-highest text-on-surface-variant font-label-telemetry-sm text-label-telemetry-sm px-space-xs rounded">3</span>
+</button>
+<button class="filter-tab flex items-center gap-space-xs px-space-md py-space-xs rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface font-headline-sm text-headline-sm transition-all" data-filter="audio">
+<span class="material-symbols-outlined text-[16px]">graphic_eq</span>
+<span>Audio VST3 Processing</span>
+<span class="bg-surface-container-highest text-on-surface-variant font-label-telemetry-sm text-label-telemetry-sm px-space-xs rounded">2</span>
+</button>
+<button class="filter-tab flex items-center gap-space-xs px-space-md py-space-xs rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface font-headline-sm text-headline-sm transition-all" data-filter="ai">
+<span class="material-symbols-outlined text-[16px]">smart_toy</span>
+<span>AI &amp; Neural Enhancers</span>
+<span class="bg-surface-container-highest text-on-surface-variant font-label-telemetry-sm text-label-telemetry-sm px-space-xs rounded">2</span>
+</button>
+</div>
+<!-- Workspace Grid: Rack & Inspector -->
+<div class="grid grid-cols-1 xl:grid-cols-12 gap-space-md p-space-md w-full">
+<!-- Modular 19" Rack Bay (8 Columns on XL) -->
+<div class="xl:col-span-8 flex flex-col gap-space-xs">
+<!-- Rack Hardware Chassis Header -->
+<div class="flex items-center justify-between px-space-md py-space-xs bg-surface-container-lowest rounded-t shadow-sm">
+<div class="flex items-center gap-space-sm">
+<div class="flex gap-space-xs">
+<span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span>
+<span class="w-1.5 h-1.5 rounded-full bg-outline-variant"></span>
+</div>
+<span class="font-label-telemetry-sm text-label-telemetry-sm uppercase tracking-widest text-on-surface-variant">Rack Unit 01 // M/E-1 Insert Subsystem</span>
+</div>
+<div class="flex items-center gap-space-md">
+<span class="font-label-cap-micro text-label-cap-micro uppercase text-tertiary">Direct DMA Bus Locked</span>
+<span class="material-symbols-outlined text-[14px] text-on-surface-variant">dns</span>
+</div>
+</div>
+<div class="flex flex-col gap-space-xs" id="rackSlotContainer">
+<!-- Slot 1: Singular.live Cloud Overlays -->
+<div class="rack-card relative bg-surface-container-low hover:bg-surface-container p-space-md rounded transition-all cursor-pointer shadow-sm selected-rack group" data-category="video" data-plugin="singular">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-primary-container rounded-l"></div>
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md pl-space-sm">
+<div class="flex items-start md:items-center gap-space-md">
+<div class="w-10 h-10 rounded bg-surface-container-highest flex items-center justify-center shrink-0 shadow-inner">
+<span class="material-symbols-outlined text-primary-container text-[24px]">layers</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm flex-wrap">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-primary uppercase font-bold">Slot 01</span>
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold">Singular.live Cloud Overlays</span>
+<span class="bg-primary-container/20 text-primary-fixed px-space-xs py-space-xs rounded font-label-cap-micro text-label-cap-micro uppercase font-bold tracking-wider">LIVE ON-AIR</span>
+</div>
+<div class="flex items-center gap-space-md text-on-surface-variant font-body-sm text-body-sm mt-0.5 flex-wrap">
+<span>HTML5 Dynamic Lower Thirds &amp; Live Ticker</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span class="text-tertiary font-label-telemetry-sm text-label-telemetry-sm">Routing: Aux 1 Ingest</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span>Latency: 1 frame</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-space-md shrink-0 self-end md:self-center">
+<div class="flex flex-col items-end">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">OFX CPU</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">1.4%</span>
+</div>
+<button class="bypass-toggle px-space-md py-space-xs rounded bg-surface-container-highest hover:bg-surface-bright text-on-surface font-label-telemetry-sm text-label-telemetry-sm uppercase font-semibold">
+                Active
+              </button>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-tertiary text-[20px] transition-colors">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Slot 2: Whisper Real-time AI Subtitling -->
+<div class="rack-card relative bg-surface-container-low hover:bg-surface-container p-space-md rounded transition-all cursor-pointer shadow-sm group" data-category="ai" data-plugin="whisper">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-tertiary rounded-l"></div>
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md pl-space-sm">
+<div class="flex items-start md:items-center gap-space-md">
+<div class="w-10 h-10 rounded bg-surface-container-highest flex items-center justify-center shrink-0 shadow-inner">
+<span class="material-symbols-outlined text-tertiary text-[24px]">closed_caption</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm flex-wrap">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary uppercase font-bold">Slot 02</span>
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold">AI Speech-to-Text &amp; CC Subtitling</span>
+<span class="bg-surface-container-highest text-secondary px-space-xs py-space-xs rounded font-label-cap-micro text-label-cap-micro uppercase font-bold">99.4% Model Acc</span>
+</div>
+<div class="flex items-center gap-space-md text-on-surface-variant font-body-sm text-body-sm mt-0.5 flex-wrap">
+<span>Whisper Broadcast Neural Engine (Multi-lingual)</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span class="text-tertiary font-label-telemetry-sm text-label-telemetry-sm">Output: CC1 / 708</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span>Delay: 420ms</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-space-md shrink-0 self-end md:self-center">
+<div class="flex flex-col items-end">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">NPU Tensor</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">4.2%</span>
+</div>
+<button class="bypass-toggle px-space-md py-space-xs rounded bg-surface-container-highest hover:bg-surface-bright text-on-surface font-label-telemetry-sm text-label-telemetry-sm uppercase font-semibold">
+                Active
+              </button>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-tertiary text-[20px] transition-colors">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Slot 3: FabFilter Pro-Q 3 -->
+<div class="rack-card relative bg-surface-container-low hover:bg-surface-container p-space-md rounded transition-all cursor-pointer shadow-sm group" data-category="audio" data-plugin="proq3">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-secondary rounded-l"></div>
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md pl-space-sm">
+<div class="flex items-start md:items-center gap-space-md">
+<div class="w-10 h-10 rounded bg-surface-container-highest flex items-center justify-center shrink-0 shadow-inner">
+<span class="material-symbols-outlined text-secondary text-[24px]">equalizer</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm flex-wrap">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary uppercase font-bold">Slot 03</span>
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold">FabFilter Pro-Q 3</span>
+<span class="bg-surface-container-highest text-tertiary px-space-xs py-space-xs rounded font-label-cap-micro text-label-cap-micro uppercase">VST3 Master</span>
+</div>
+<div class="flex items-center gap-space-md text-on-surface-variant font-body-sm text-body-sm mt-0.5 flex-wrap">
+<span>24-Band Precision Master Equalizer &amp; Dynamic Notching</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span class="text-tertiary font-label-telemetry-sm text-label-telemetry-sm">Bus: Master L/R</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span>Zero-Latency Linear</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-space-md shrink-0 self-end md:self-center">
+<div class="flex flex-col items-end">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">CPU</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">0.8%</span>
+</div>
+<button class="bypass-toggle px-space-md py-space-xs rounded bg-surface-container-highest hover:bg-surface-bright text-on-surface font-label-telemetry-sm text-label-telemetry-sm uppercase font-semibold">
+                Active
+              </button>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-tertiary text-[20px] transition-colors">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Slot 4: iZotope RX 10 De-Noise -->
+<div class="rack-card relative bg-surface-container-low hover:bg-surface-container p-space-md rounded transition-all cursor-pointer shadow-sm group" data-category="audio" data-plugin="rx10">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-secondary rounded-l"></div>
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md pl-space-sm">
+<div class="flex items-start md:items-center gap-space-md">
+<div class="w-10 h-10 rounded bg-surface-container-highest flex items-center justify-center shrink-0 shadow-inner">
+<span class="material-symbols-outlined text-secondary text-[24px]">graphic_eq</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm flex-wrap">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary uppercase font-bold">Slot 04</span>
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold">iZotope RX 10 Voice De-Noise</span>
+<span class="bg-surface-container-highest text-on-surface px-space-xs py-space-xs rounded font-label-cap-micro text-label-cap-micro uppercase">Speech Isolator</span>
+</div>
+<div class="flex items-center gap-space-md text-on-surface-variant font-body-sm text-body-sm mt-0.5 flex-wrap">
+<span>Neural Background HVAC &amp; Crowd Attenuation</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span class="text-tertiary font-label-telemetry-sm text-label-telemetry-sm">Target: Plenary Mics 1-8</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span>-18dB Suppression</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-space-md shrink-0 self-end md:self-center">
+<div class="flex flex-col items-end">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">CPU</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">2.1%</span>
+</div>
+<button class="bypass-toggle px-space-md py-space-xs rounded bg-surface-container-highest hover:bg-surface-bright text-on-surface font-label-telemetry-sm text-label-telemetry-sm uppercase font-semibold">
+                Active
+              </button>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-tertiary text-[20px] transition-colors">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Slot 5: 3D Virtual Studio & Chromakey Engine -->
+<div class="rack-card relative bg-surface-container-low hover:bg-surface-container p-space-md rounded transition-all cursor-pointer shadow-sm group" data-category="video" data-plugin="unreal">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-tertiary rounded-l"></div>
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md pl-space-sm">
+<div class="flex items-start md:items-center gap-space-md">
+<div class="w-10 h-10 rounded bg-surface-container-highest flex items-center justify-center shrink-0 shadow-inner">
+<span class="material-symbols-outlined text-tertiary text-[24px]">view_in_ar</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm flex-wrap">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary uppercase font-bold">Slot 05</span>
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold">3D Virtual Studio &amp; Chromakey</span>
+<span class="bg-surface-container-highest text-tertiary-fixed-dim px-space-xs py-space-xs rounded font-label-cap-micro text-label-cap-micro uppercase">Unreal 5.4 LiveLink</span>
+</div>
+<div class="flex items-center gap-space-md text-on-surface-variant font-body-sm text-body-sm mt-0.5 flex-wrap">
+<span>Green Stage Spatial Camera Tracking + Matte Fill</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span class="text-tertiary font-label-telemetry-sm text-label-telemetry-sm">NDI 4K Matte Alpha</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span>Sync: Genlock PTP</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-space-md shrink-0 self-end md:self-center">
+<div class="flex flex-col items-end">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">GPU DMA</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">5.8%</span>
+</div>
+<button class="bypass-toggle px-space-md py-space-xs rounded bg-surface-container-highest hover:bg-surface-bright text-on-surface font-label-telemetry-sm text-label-telemetry-sm uppercase font-semibold">
+                Active
+              </button>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-tertiary text-[20px] transition-colors">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Slot 6: LookLabs Broadcast LUT Processor -->
+<div class="rack-card relative bg-surface-container-low hover:bg-surface-container p-space-md rounded transition-all cursor-pointer shadow-sm group" data-category="video" data-plugin="lut">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-outline rounded-l"></div>
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md pl-space-sm">
+<div class="flex items-start md:items-center gap-space-md">
+<div class="w-10 h-10 rounded bg-surface-container-highest flex items-center justify-center shrink-0 shadow-inner">
+<span class="material-symbols-outlined text-outline text-[24px]">palette</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm flex-wrap">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-outline uppercase font-bold">Slot 06</span>
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold">LookLabs 3D LUT Processor</span>
+<span class="bg-surface-container-highest text-on-surface-variant px-space-xs py-space-xs rounded font-label-cap-micro text-label-cap-micro uppercase">Rec.709 → 2383</span>
+</div>
+<div class="flex items-center gap-space-md text-on-surface-variant font-body-sm text-body-sm mt-0.5 flex-wrap">
+<span>Film Emulation: Kodak 2383 Clean Broadcast Pass</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span class="text-tertiary font-label-telemetry-sm text-label-telemetry-sm">Buses: Cam 1 &amp; Cam 2</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span>Tetrahedral 65x</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-space-md shrink-0 self-end md:self-center">
+<div class="flex flex-col items-end">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">GPU</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">0.3%</span>
+</div>
+<button class="bypass-toggle px-space-md py-space-xs rounded bg-surface-container-highest hover:bg-surface-bright text-on-surface font-label-telemetry-sm text-label-telemetry-sm uppercase font-semibold">
+                Active
+              </button>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-tertiary text-[20px] transition-colors">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Slot 7: NDI Screen Router & Teleprompter -->
+<div class="rack-card relative bg-surface-container-low hover:bg-surface-container p-space-md rounded transition-all cursor-pointer shadow-sm group" data-category="video" data-plugin="teleprompter">
+<div class="absolute left-0 top-0 bottom-0 w-1 bg-tertiary rounded-l"></div>
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md pl-space-sm">
+<div class="flex items-start md:items-center gap-space-md">
+<div class="w-10 h-10 rounded bg-surface-container-highest flex items-center justify-center shrink-0 shadow-inner">
+<span class="material-symbols-outlined text-tertiary text-[24px]">screen_share</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm flex-wrap">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary uppercase font-bold">Slot 07</span>
+<span class="font-headline-sm text-headline-sm text-on-surface font-bold">NDI Screen Router &amp; Teleprompter Feed</span>
+<span class="bg-surface-container-highest text-secondary px-space-xs py-space-xs rounded font-label-cap-micro text-label-cap-micro uppercase font-bold">Target Locked</span>
+</div>
+<div class="flex items-center gap-space-md text-on-surface-variant font-body-sm text-body-sm mt-0.5 flex-wrap">
+<span>Stage Floor Confidence Matrix &amp; Speaker Timer Overlay</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span class="text-tertiary font-label-telemetry-sm text-label-telemetry-sm">Out: NDI-Aux-Confidence</span>
+<span class="w-1 h-1 rounded-full bg-surface-container-highest"></span>
+<span>1080p60</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-space-md shrink-0 self-end md:self-center">
+<div class="flex flex-col items-end">
+<span class="font-label-cap-micro text-label-cap-micro text-on-surface-variant uppercase">CPU</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary font-bold">0.2%</span>
+</div>
+<button class="bypass-toggle px-space-md py-space-xs rounded bg-surface-container-highest hover:bg-surface-bright text-on-surface font-label-telemetry-sm text-label-telemetry-sm uppercase font-semibold">
+                Active
+              </button>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-tertiary text-[20px] transition-colors">chevron_right</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Inspector Panel (Right 4 Columns on XL) -->
+<div class="xl:col-span-4 flex flex-col gap-space-md">
+<!-- Primary Inspector Container -->
+<div class="bg-surface-container-low rounded p-space-md shadow-md flex flex-col gap-space-md">
+<!-- Inspector Header -->
+<div class="flex items-center justify-between pb-space-xs">
+<div class="flex items-center gap-space-sm">
+<span class="w-2 h-2 rounded-full bg-primary-container animate-pulse"></span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm uppercase tracking-wider text-tertiary" id="inspectorSlotLabel">Slot 01 Config</span>
+</div>
+<span class="bg-surface-container-highest text-on-surface-variant font-label-cap-micro text-label-cap-micro px-space-xs py-space-xs rounded uppercase font-mono">ID: SINGULAR_OFX_01</span>
+</div>
+<!-- Selected Plugin Visual Summary -->
+<div class="flex items-start gap-space-md bg-surface-container p-space-md rounded">
+<div class="w-12 h-12 rounded bg-surface-container-highest flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-primary-container text-[28px]" id="inspectorIcon">layers</span>
+</div>
+<div class="flex flex-col min-w-0">
+<span class="font-headline-md text-headline-md text-on-surface truncate" id="inspectorTitle">Singular.live Cloud Overlays</span>
+<span class="font-body-sm text-body-sm text-on-surface-variant truncate" id="inspectorSubtitle">HTML5 Realtime Lower Thirds &amp; Ticker</span>
+<div class="flex items-center gap-space-sm mt-space-xs">
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary">Signal OK</span>
+<span class="text-on-surface-variant">•</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface-variant">Host: Master Bus Ingest</span>
+</div>
+</div>
+</div>
+<!-- Live Visual Telemetry (Inline SVG Curve / Audio Scope) -->
+<div class="bg-surface-container-lowest p-space-md rounded flex flex-col gap-space-xs shadow-inner">
+<div class="flex items-center justify-between">
+<span class="font-label-cap-micro text-label-cap-micro uppercase text-on-surface-variant">Realtime Transfer &amp; Response</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary">3840x2160 @ 50fps</span>
+</div>
+<div class="w-full h-24 flex items-center justify-center overflow-hidden">
+<svg class="w-full h-full text-tertiary" preserveaspectratio="none" viewbox="0 0 300 80">
+<defs>
+<lineargradient id="curveGradient" x1="0" x2="0" y1="0" y2="1">
+<stop offset="0%" stop-color="currentColor" stop-opacity="0.35"></stop>
+<stop offset="100%" stop-color="currentColor" stop-opacity="0.0"></stop>
+</lineargradient>
+</defs>
+<path d="M 0 50 Q 50 10, 100 45 T 200 30 T 300 15 L 300 80 L 0 80 Z" fill="url(#curveGradient)"></path>
+<path d="M 0 50 Q 50 10, 100 45 T 200 30 T 300 15" fill="none" stroke="currentColor" stroke-width="2"></path>
+<!-- Grid overlay ticks -->
+<line stroke="currentColor" stroke-dasharray="2 2" stroke-opacity="0.1" x1="50" x2="50" y1="0" y2="80"></line>
+<line stroke="currentColor" stroke-dasharray="2 2" stroke-opacity="0.1" x1="100" x2="100" y1="0" y2="80"></line>
+<line stroke="currentColor" stroke-dasharray="2 2" stroke-opacity="0.1" x1="150" x2="150" y1="0" y2="80"></line>
+<line stroke="currentColor" stroke-dasharray="2 2" stroke-opacity="0.1" x1="200" x2="200" y1="0" y2="80"></line>
+<line stroke="currentColor" stroke-dasharray="2 2" stroke-opacity="0.1" x1="250" x2="250" y1="0" y2="80"></line>
+<line stroke="currentColor" stroke-opacity="0.15" x1="0" x2="300" y1="40" y2="40"></line>
+</svg>
+</div>
+<div class="flex justify-between text-on-surface-variant font-label-cap-micro text-label-cap-micro">
+<span>20 Hz / 0.0s</span>
+<span>1 kHz / -2.5s</span>
+<span>20 kHz / LIVE</span>
+</div>
+</div>
+<!-- Realtime Controls Form -->
+<div class="flex flex-col gap-space-md">
+<!-- Dry / Wet Mix Slider -->
+<div class="flex flex-col gap-space-xs">
+<div class="flex justify-between items-center">
+<label class="font-headline-sm text-headline-sm text-on-surface">Dry / Wet Mix</label>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-tertiary" id="wetDryVal">100% WET</span>
+</div>
+<input class="w-full accent-tertiary bg-surface-container-highest rounded h-1.5 cursor-pointer" id="wetDrySlider" max="100" min="0" type="range" value="100"/>
+</div>
+<!-- Parameter 1: Gain / Alpha Cut -->
+<div class="flex flex-col gap-space-xs">
+<div class="flex justify-between items-center">
+<label class="font-headline-sm text-headline-sm text-on-surface">Alpha Gain / Level</label>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface" id="gainVal">0.0 dB</span>
+</div>
+<input class="w-full accent-secondary bg-surface-container-highest rounded h-1.5 cursor-pointer" id="gainSlider" max="12" min="-24" type="range" value="0"/>
+</div>
+<!-- Discrete Selector Controls -->
+<div class="grid grid-cols-2 gap-space-sm pt-space-xs">
+<div class="flex flex-col gap-space-xs">
+<span class="font-label-cap-micro text-label-cap-micro uppercase text-on-surface-variant">Tally Integration</span>
+<select class="bg-surface-container-high font-label-telemetry-sm text-label-telemetry-sm text-on-surface p-space-xs rounded focus:outline-none cursor-pointer">
+<option>Auto Follow PGM</option>
+<option>Always Active</option>
+<option>Preview Stage Only</option>
+</select>
+</div>
+<div class="flex flex-col gap-space-xs">
+<span class="font-label-cap-micro text-label-cap-micro uppercase text-on-surface-variant">Color Space Tag</span>
+<select class="bg-surface-container-high font-label-telemetry-sm text-label-telemetry-sm text-on-surface p-space-xs rounded focus:outline-none cursor-pointer">
+<option>BT.709 Linear</option>
+<option>BT.2020 HLG</option>
+<option>S-Log3 / S-Gamut3</option>
+</select>
+</div>
+</div>
+<!-- CPU & Performance Telemetry Card -->
+<div class="bg-surface-container p-space-md rounded flex flex-col gap-space-sm">
+<span class="font-label-cap-micro text-label-cap-micro uppercase text-on-surface-variant">Slot Telemetry</span>
+<div class="flex justify-between items-center">
+<span class="font-body-sm text-body-sm text-on-surface-variant">CPU / Memory Allocation:</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-on-surface">1.4% / 340 MB</span>
+</div>
+<div class="w-full bg-surface-container-lowest h-1.5 rounded overflow-hidden">
+<div class="bg-secondary h-full rounded" style="width: 18%;"></div>
+</div>
+<div class="flex justify-between items-center text-on-surface-variant font-body-sm text-body-sm pt-space-xs">
+<span>Dropped Frames: <span class="text-secondary font-label-telemetry-sm text-label-telemetry-sm">0 (0.00%)</span></span>
+<span>Sync Clock: <span class="text-tertiary font-label-telemetry-sm text-label-telemetry-sm">PTP Locked</span></span>
+</div>
+</div>
+<!-- Action Buttons -->
+<div class="flex items-center gap-space-sm pt-space-xs">
+<button class="flex-1 bg-surface-container-highest hover:bg-surface-bright text-on-surface py-space-xs rounded font-headline-sm text-headline-sm transition-all flex items-center justify-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px]">open_in_new</span>
+<span>Open GUI</span>
+</button>
+<button class="bg-surface-container-highest hover:bg-surface-bright text-on-surface p-space-xs rounded transition-all" title="Duplicate Plugin Slot">
+<span class="material-symbols-outlined text-[18px]">content_copy</span>
+</button>
+<button class="bg-error-container hover:bg-error text-on-error-container hover:text-on-error p-space-xs rounded transition-all" title="Remove from Rack">
+<span class="material-symbols-outlined text-[18px]">delete</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Compact Media Asset Preview Banner -->
+<div class="bg-surface-container-low p-space-md rounded shadow-md flex flex-col gap-space-xs">
+<div class="flex items-center justify-between">
+<span class="font-label-cap-micro text-label-cap-micro uppercase text-on-surface-variant">Target Feed Preview</span>
+<span class="font-label-telemetry-sm text-label-telemetry-sm text-secondary">Clean Output Tap</span>
+</div>
+<div class="w-full h-28 rounded bg-surface-container-lowest relative overflow-hidden flex items-center justify-center">
+<img class="w-full h-full object-cover" data-alt="High quality master control room television studio production feed showing clean stage podium and multi-camera broadcast graphics overlay" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBfHmSiJ68WFRX53smKf6yVhBD5W3AosjS-GkIu12zYJfJE9yDbsUr-tDgOVoY1AHasBDqTsSP48PlAk2tjWCGDUV8wF-yCYwQHLLTqqjyPll6gUBXTIfVIy6wQ06EWh-rls8zz5gnJGh_wsOv97czLGRZSXj1GFRUeMeJNGOALERFRBF66q4EFaa5MZ4fx5XELDh8s1_QYSfydUuGU4E0AW4eVY8AkFURZY4tlzzU7Qo2nMqkmoCQ68A"/>
+<div class="absolute bottom-1 left-2 bg-surface-container-lowest/80 backdrop-blur px-space-xs py-0.5 rounded font-label-cap-micro text-label-cap-micro text-on-surface uppercase">
+            DSK 1 Overlay Preview
+          </div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<script>
+  // Filter tabs behavior
+  const filterTabs = document.querySelectorAll('.filter-tab');
+  const rackCards = document.querySelectorAll('.rack-card');
+
+  filterTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      filterTabs.forEach(t => {
+        t.classList.remove('bg-surface-container-high', 'text-tertiary');
+        t.classList.add('text-on-surface-variant');
+      });
+      tab.classList.add('bg-surface-container-high', 'text-tertiary');
+      tab.classList.remove('text-on-surface-variant');
+
+      const filter = tab.getAttribute('data-filter');
+      rackCards.forEach(card => {
+        if (filter === 'all' || card.getAttribute('data-category') === filter) {
+          card.style.display = 'block';
+        } else {
+          card.style.display = 'none';
+        }
+      });
+    });
+  });
+
+  // Rack slot inspection mapping
+  const pluginDetails = {
+    singular: {
+      slot: 'Slot 01 Config',
+      title: 'Singular.live Cloud Overlays',
+      sub: 'HTML5 Realtime Lower Thirds & Live Ticker',
+      icon: 'layers',
+      iconColor: 'text-primary-container'
+    },
+    whisper: {
+      slot: 'Slot 02 Config',
+      title: 'AI Speech-to-Text & Subtitling',
+      sub: 'Whisper Broadcast Neural Engine (Multi-lingual)',
+      icon: 'closed_caption',
+      iconColor: 'text-tertiary'
+    },
+    proq3: {
+      slot: 'Slot 03 Config',
+      title: 'FabFilter Pro-Q 3',
+      sub: '24-Band Precision Master Equalizer & Dynamic Filter',
+      icon: 'equalizer',
+      iconColor: 'text-secondary'
+    },
+    rx10: {
+      slot: 'Slot 04 Config',
+      title: 'iZotope RX 10 Voice De-Noise',
+      sub: 'Neural Background HVAC & Noise Removal Strip',
+      icon: 'graphic_eq',
+      iconColor: 'text-secondary'
+    },
+    unreal: {
+      slot: 'Slot 05 Config',
+      title: '3D Virtual Studio & Chromakey Engine',
+      sub: 'Unreal Engine 5.4 LiveLink Spatial Insertion',
+      icon: 'view_in_ar',
+      iconColor: 'text-tertiary'
+    },
+    lut: {
+      slot: 'Slot 06 Config',
+      title: 'LookLabs 3D LUT Processor',
+      sub: 'Kodak 2383 Film Emulation Print Profile',
+      icon: 'palette',
+      iconColor: 'text-outline'
+    },
+    teleprompter: {
+      slot: 'Slot 07 Config',
+      title: 'NDI Screen Router & Teleprompter Feed',
+      sub: 'Stage Floor Confidence Matrix & Speaker Overlay',
+      icon: 'screen_share',
+      iconColor: 'text-tertiary'
+    }
+  };
+
+  rackCards.forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.bypass-toggle')) return;
+      rackCards.forEach(c => c.classList.remove('bg-surface-container'));
+      card.classList.add('bg-surface-container');
+
+      const pluginKey = card.getAttribute('data-plugin');
+      const details = pluginDetails[pluginKey];
+      if (details) {
+        document.getElementById('inspectorSlotLabel').innerText = details.slot;
+        document.getElementById('inspectorTitle').innerText = details.title;
+        document.getElementById('inspectorSubtitle').innerText = details.sub;
+        const iconEl = document.getElementById('inspectorIcon');
+        iconEl.innerText = details.icon;
+        iconEl.className = 'material-symbols-outlined text-[28px] ' + details.iconColor;
+      }
+    });
+  });
+
+  // Bypass toggle buttons
+  const bypassButtons = document.querySelectorAll('.bypass-toggle');
+  bypassButtons.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isActive = btn.innerText.trim() === 'ACTIVE';
+      if (isActive) {
+        btn.innerText = 'BYPASS';
+        btn.classList.add('text-error', 'bg-error-container/20');
+        btn.classList.remove('text-on-surface', 'bg-surface-container-highest');
+      } else {
+        btn.innerText = 'ACTIVE';
+        btn.classList.remove('text-error', 'bg-error-container/20');
+        btn.classList.add('text-on-surface', 'bg-surface-container-highest');
+      }
+    });
+  });
+
+  // Master bypass toggle
+  const masterBypassBtn = document.getElementById('masterBypassBtn');
+  const masterBypassDot = document.getElementById('masterBypassDot');
+  const masterBypassText = document.getElementById('masterBypassText');
+  let masterBypassed = false;
+
+  masterBypassBtn.addEventListener('click', () => {
+    masterBypassed = !masterBypassed;
+    if (masterBypassed) {
+      masterBypassDot.className = 'w-2.5 h-2.5 rounded-full bg-error shadow-[0_0_8px_rgba(255,180,171,0.6)]';
+      masterBypassText.innerText = 'RACK BYPASSED';
+      masterBypassText.className = 'font-label-telemetry-sm text-label-telemetry-sm uppercase font-bold text-error';
+    } else {
+      masterBypassDot.className = 'w-2.5 h-2.5 rounded-full bg-secondary-container shadow-[0_0_8px_rgba(0,185,84,0.6)]';
+      masterBypassText.innerText = 'MASTER ACTIVE';
+      masterBypassText.className = 'font-label-telemetry-sm text-label-telemetry-sm uppercase font-bold text-on-surface';
+    }
+  });
+
+  // Interactive Sliders
+  const wetDrySlider = document.getElementById('wetDrySlider');
+  const wetDryVal = document.getElementById('wetDryVal');
+  wetDrySlider.addEventListener('input', (e) => {
+    wetDryVal.innerText = e.target.value + '% WET';
+  });
+
+  const gainSlider = document.getElementById('gainSlider');
+  const gainVal = document.getElementById('gainVal');
+  gainSlider.addEventListener('input', (e) => {
+    const val = parseFloat(e.target.value);
+    gainVal.innerText = (val > 0 ? '+' : '') + val.toFixed(1) + ' dB';
+  });
+
+  // Scan button animation simulation
+  const scanBtn = document.getElementById('scanBtn');
+  const scanIcon = document.getElementById('scanIcon');
+  scanBtn.addEventListener('click', () => {
+    scanIcon.classList.add('animate-spin');
+    setTimeout(() => {
+      scanIcon.classList.remove('animate-spin');
+    }, 1200);
+  });
+</script></main></div></body></html>

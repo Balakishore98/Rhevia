@@ -14,6 +14,8 @@ tokio.workspace = true
 tracing.workspace = true
 rml_rtmp = "0.8"
 fdk-aac = "0.8.0"
+srt-tokio = "0.4.4"
+futures-util.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

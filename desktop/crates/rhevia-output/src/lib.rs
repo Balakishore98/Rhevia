@@ -7,9 +7,13 @@
 pub mod aac;
 pub mod flv;
 pub mod h264;
+pub mod mpegts;
 pub mod rtmp;
+pub mod srt;
 
 pub use aac::{AacEncoder, AacError, AacFrame};
 pub use flv::AudioFormat;
 pub use h264::ParameterSets;
+pub use mpegts::TsMuxer;
 pub use rtmp::{RtmpError, RtmpPublisher, RtmpUrl};
+pub use srt::{SrtError, SrtMode, SrtPublisher, SrtUrl};

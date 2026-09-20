@@ -13,11 +13,11 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, RichText, Vec2};
+use eframe::egui::{self, Rect, RichText, Rounding, Stroke, Vec2};
 use rhevia_engine::Frame;
 
 use crate::audio_ui;
-use crate::engine::{Command, EngineHandle, Layout, Snapshot};
+use crate::engine::{self, Command, EngineHandle, Layout, Snapshot};
 use rhevia_engine::Transition;
 use crate::theme;
 
@@ -88,6 +88,19 @@ pub struct StudioApp {
     /// The channel whose DSP is shown on the audio tab.
     selected_channel: usize,
 }
+
+/// Ingest endpoints, so the common cases need no typing.
+///
+/// The address is the part that never changes; the key is the part that is
+/// personal, so only the address is kept here.
+const PRESETS: [(&str, &str); 6] = [
+    ("YouTube", "rtmp://a.rtmp.youtube.com/live2"),
+    ("Twitch", "rtmp://live.twitch.tv/app"),
+    ("Facebook", "rtmps://live-api-s.facebook.com:443/rtmp"),
+    ("Kick", "rtmps://fa723fc1b171.global-contribute.live-video.net"),
+    ("Custom RTMP", "rtmp://"),
+    ("SRT", "srt://127.0.0.1:9000?mode=caller&latency=120"),
+];
 
 /// The categories down the left of the input dialog.
 ///
@@ -201,6 +214,7 @@ impl eframe::App for StudioApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
         self.keyboard(ctx, &snapshot);
+        self.dropped_files(ctx);
         self.menu_bar(ctx);
         self.status_strip(ctx, &snapshot);
         self.tab_bar(ctx);
@@ -449,8 +463,7 @@ impl StudioApp {
                     ui.add_space(10.0);
                     for (tab, label) in Tab::ALL {
                         let active = self.tab == tab;
-                        let width = 7.6 * label.len() as f32 + 24.0;
-                        if theme::chip(ui, label, active, theme::ACCENT, Vec2::new(width, 24.0)).clicked() {
+                        if theme::chip(ui, label, active, theme::ACCENT, theme::chip_size(ui, label, 24.0)).clicked() {
                             self.tab = tab;
                         }
                         ui.add_space(4.0);
@@ -548,8 +561,7 @@ impl StudioApp {
                             (Filter::VideoOnly, "VIDEO ONLY"),
                         ] {
                             let active = self.filter == filter;
-                            let width = 7.0 * label.len() as f32 + 16.0;
-                            if theme::chip(ui, label, active, theme::ACCENT, Vec2::new(width, 20.0)).clicked() {
+                            if theme::chip(ui, label, active, theme::ACCENT, theme::chip_size(ui, label, 20.0)).clicked() {
                                 self.filter = filter;
                             }
                             ui.add_space(3.0);
@@ -924,70 +936,184 @@ impl StudioApp {
         egui::CentralPanel::default()
             .frame(theme::panel(theme::SURFACE))
             .show(ctx, |ui| {
+                egui::ScrollArea::vertical().id_salt("stream-page").show(ui, |ui| {
                 ui.add_space(20.0);
                 ui.horizontal(|ui| {
                     ui.add_space(24.0);
                     ui.vertical(|ui| {
-                        ui.set_max_width(540.0);
-                        ui.label(RichText::new("STREAM DESTINATION").size(12.0).strong().color(theme::TEXT));
+                        ui.set_max_width(560.0);
+                        ui.label(
+                            RichText::new("STREAM DESTINATION").size(12.0).strong().color(theme::TEXT),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "Add as many as the connection will carry. The picture is \
+                                 encoded once and fanned out, so a second destination costs \
+                                 bandwidth, not processing.",
+                            )
+                            .size(10.5)
+                            .color(theme::TEXT_DIM),
+                        );
                         ui.add_space(12.0);
 
-                        ui.label(RichText::new("RTMP URL").size(10.5).color(theme::TEXT_DIM));
-                        ui.add(egui::TextEdit::singleline(&mut self.rtmp_url).desired_width(f32::INFINITY));
+                        ui.horizontal_wrapped(|ui| {
+                            for (label, address) in PRESETS {
+                                let selected = self.rtmp_url == address;
+                                if theme::chip(ui, label, selected, theme::ACCENT, theme::chip_size(ui, label, 24.0))
+                                    .clicked()
+                                {
+                                    self.rtmp_url = address.to_string();
+                                }
+                            }
+                        });
+                        ui.add_space(12.0);
+
+                        let srt = engine::is_srt(&self.rtmp_url);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("ADDRESS").size(10.5).color(theme::TEXT_DIM));
+                            ui.label(
+                                RichText::new(if srt { "SRT" } else { "RTMP" })
+                                    .font(theme::mono(9.5))
+                                    .color(theme::ACCENT),
+                            );
+                        });
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.rtmp_url)
+                                .desired_width(f32::INFINITY),
+                        );
+
                         ui.add_space(10.0);
-                        ui.label(RichText::new("STREAM KEY").size(10.5).color(theme::TEXT_DIM));
+                        ui.label(
+                            RichText::new(if srt { "STREAM ID" } else { "STREAM KEY" })
+                                .size(10.5)
+                                .color(theme::TEXT_DIM),
+                        );
                         ui.add(
                             egui::TextEdit::singleline(&mut self.stream_key)
-                                .password(true)
+                                .password(!srt)
                                 .desired_width(f32::INFINITY),
                         );
                         ui.add_space(6.0);
                         ui.label(
-                            RichText::new(
+                            RichText::new(if srt {
+                                "SRT identifies a stream by id rather than by key. Leave it \
+                                 blank unless the receiver expects one. Latency, mode and \
+                                 passphrase go in the address."
+                            } else {
                                 "The key may also sit inside the URL. Both forms work, because \
-                                 platforms present them differently.",
-                            )
+                                 platforms present them differently."
+                            })
                             .size(10.5)
                             .color(theme::TEXT_FAINT),
                         );
 
-                        ui.add_space(18.0);
-                        if snapshot.streaming {
-                            if theme::button(ui, "STOP STREAM", theme::PROGRAM, Vec2::new(140.0, 34.0)).clicked() {
-                                self.engine.send(Command::StopStream);
+                        ui.add_space(16.0);
+                        ui.horizontal(|ui| {
+                            let label =
+                                if snapshot.destinations.is_empty() { "GO LIVE" } else { "ADD DESTINATION" };
+                            if theme::button(ui, label, theme::PREVIEW, Vec2::new(168.0, 34.0)).clicked()
+                                && !self.rtmp_url.trim().is_empty()
+                            {
+                                self.engine.send(Command::StartStream {
+                                    url: self.rtmp_url.clone(),
+                                    key: self.stream_key.clone(),
+                                });
+                                if snapshot.destinations.is_empty() {
+                                    self.tab = Tab::Switcher;
+                                }
                             }
-                        } else if theme::button(ui, "GO LIVE", theme::PREVIEW, Vec2::new(140.0, 34.0)).clicked() {
-                            self.engine.send(Command::StartStream {
-                                url: self.rtmp_url.clone(),
-                                key: self.stream_key.clone(),
-                            });
-                            self.tab = Tab::Switcher;
+                            if !snapshot.destinations.is_empty() {
+                                ui.add_space(8.0);
+                                if theme::button(ui, "STOP ALL", theme::PROGRAM, Vec2::new(120.0, 34.0))
+                                    .clicked()
+                                {
+                                    self.engine.send(Command::StopStream);
+                                }
+                            }
+                        });
+
+                        // ---- what is live now --------------------------------
+                        if !snapshot.destinations.is_empty() {
+                            ui.add_space(18.0);
+                            ui.label(
+                                RichText::new(format!("ON AIR — {}", snapshot.destinations.len()))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(theme::PROGRAM),
+                            );
+                            ui.add_space(6.0);
+                            for (index, destination) in snapshot.destinations.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(&destination.protocol)
+                                            .font(theme::mono(9.5))
+                                            .color(theme::ACCENT),
+                                    );
+                                    ui.add_space(4.0);
+                                    // Truncated rather than wrapped: a long
+                                    // address would push the readouts off the
+                                    // row, and the full text is on hover.
+                                    let short: String =
+                                        destination.address.chars().take(44).collect();
+                                    ui.label(RichText::new(short).size(10.5).color(theme::TEXT))
+                                        .on_hover_text(&destination.address);
+
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if theme::button(
+                                                ui,
+                                                "STOP",
+                                                theme::PROGRAM,
+                                                Vec2::new(58.0, 22.0),
+                                            )
+                                            .clicked()
+                                            {
+                                                self.engine
+                                                    .send(Command::StopDestination(index));
+                                            }
+                                            ui.add_space(10.0);
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{}   {}",
+                                                    format_duration(destination.uptime_seconds),
+                                                    format_bytes(destination.bytes_sent),
+                                                ))
+                                                .font(theme::mono(9.5))
+                                                .color(theme::TEXT_DIM),
+                                            );
+                                        },
+                                    );
+                                });
+                                ui.add_space(3.0);
+                            }
                         }
 
+                        if let Some(error) = &snapshot.stream_error {
+                            ui.add_space(12.0);
+                            ui.label(RichText::new(error).size(10.5).color(theme::PROGRAM));
+                        }
+
+                        // ---- recording ---------------------------------------
                         ui.add_space(24.0);
                         ui.separator();
                         ui.add_space(14.0);
                         ui.label(RichText::new("RECORDING").size(12.0).strong().color(theme::TEXT));
                         ui.add_space(10.0);
                         ui.label(RichText::new("FILE").size(10.5).color(theme::TEXT_DIM));
-                        ui.add(egui::TextEdit::singleline(&mut self.record_path).desired_width(f32::INFINITY));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.record_path)
+                                .desired_width(f32::INFINITY),
+                        );
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new("Annex-B H.264.   ffmpeg -i rec.h264 -c copy rec.mp4")
                                 .font(theme::mono(10.0))
                                 .color(theme::TEXT_FAINT),
                         );
-
-                        ui.add_space(24.0);
-                        ui.label(
-                            RichText::new(
-                                "⚠ Audio is captured and mixed, but is not yet encoded into the \
-                                 outgoing stream. The stream carries video only.",
-                            )
-                            .size(10.5)
-                            .color(theme::WARN),
-                        );
+                        ui.add_space(20.0);
                     });
+                });
                 });
             });
     }
@@ -1271,8 +1397,7 @@ impl StudioApp {
                     for (index, input) in snapshot.inputs.iter().enumerate() {
                         let selected = self.attach_to == Some(index);
                         let label = format!("{} {}", index + 1, input.name);
-                        let width = 7.0 * label.len() as f32 + 18.0;
-                        if theme::chip(ui, &label, selected, theme::ACCENT, Vec2::new(width, 24.0))
+                        if theme::chip(ui, &label, selected, theme::ACCENT, theme::chip_size(ui, &label, 24.0))
                             .clicked()
                         {
                             self.attach_to = Some(index);
@@ -1317,28 +1442,45 @@ impl StudioApp {
             InputTab::Media => {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.file_path)
-                        .hint_text(r"C:\clips\opener.h264")
+                        .hint_text(r"C:\clips\opener.mp4")
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Annex-B H.264. Convert anything else first:")
+
+                if rhevia_media::available() {
+                    ui.label(
+                        RichText::new(
+                            "Video or audio, any container: MP4, MOV, MKV, WebM, AVI, MP3, \
+                             WAV, FLAC and the rest. Clips loop. Sound arrives on its own \
+                             mixer channel.",
+                        )
                         .size(10.0)
                         .color(theme::TEXT_FAINT),
-                );
-                ui.label(
-                    RichText::new(
-                        "ffmpeg -i in.mp4 -c:v libx264 -bsf:v h264_mp4toannexb -f h264 out.h264",
-                    )
-                    .font(theme::mono(9.5))
-                    .color(theme::TEXT_FAINT),
-                );
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Or drop a file anywhere on the window.")
+                            .size(10.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                } else {
+                    // Said plainly rather than failing later with a confusing
+                    // error when the operator presses the button.
+                    ui.label(
+                        RichText::new(
+                            "ffmpeg is not installed, so media files cannot be played. \
+                             Everything else in Rhevia works without it.",
+                        )
+                        .size(10.5)
+                        .color(theme::WARN),
+                    );
+                }
+
                 ui.add_space(10.0);
                 if ui.button("Add media").clicked() && !self.file_path.trim().is_empty() {
-                    self.engine.send(Command::AddFileSource {
-                        name: self.name_or("Clip"),
-                        path: self.file_path.trim().to_string(),
-                    });
+                    let path = self.file_path.trim().to_string();
+                    let name = self.name_or(&file_stem(&path));
+                    self.engine.send(command_for(name, path));
                     return true;
                 }
                 false
@@ -1617,8 +1759,7 @@ impl StudioApp {
                     for (index, input) in snapshot.inputs.iter().enumerate() {
                         let selected = self.attach_to == Some(index);
                         let label = format!("{} {}", index + 1, input.name);
-                        let width = 7.0 * label.len() as f32 + 18.0;
-                        if theme::chip(ui, &label, selected, theme::ACCENT, Vec2::new(width, 24.0)).clicked() {
+                        if theme::chip(ui, &label, selected, theme::ACCENT, theme::chip_size(ui, &label, 24.0)).clicked() {
                             self.attach_to = Some(index);
                         }
                     }
@@ -1665,6 +1806,62 @@ impl StudioApp {
         }
     }
 
+    /// Accepts files dropped on the window.
+    ///
+    /// Dropping a file is the fastest way to get something on air, so it is
+    /// worth getting right: the file decides what kind of input it becomes,
+    /// rather than the operator having to say.
+    fn dropped_files(&mut self, ctx: &egui::Context) {
+        // What is hovering, so the window can say what will happen before the
+        // operator lets go.
+        let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        if hovering > 0 {
+            self.paint_drop_hint(ctx, hovering);
+        }
+
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect()
+        });
+
+        for path in dropped {
+            let Some(text) = path.to_str() else { continue };
+            let name = file_stem(text);
+
+            self.engine.send(command_for(name, text.to_string()));
+        }
+    }
+
+    /// An overlay saying what dropping will do.
+    fn paint_drop_hint(&self, ctx: &egui::Context, count: usize) {
+        let screen = ctx.screen_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("drop-hint"),
+        ));
+
+        painter.rect_filled(screen, Rounding::ZERO, theme::SURFACE.gamma_multiply(0.82));
+
+        let box_size = Vec2::new(420.0, 120.0);
+        let rect = Rect::from_center_size(screen.center(), box_size);
+        painter.rect_filled(rect, Rounding::same(8.0), theme::SURFACE_CONTAINER);
+        painter.rect_stroke(rect, Rounding::same(8.0), Stroke::new(2.0_f32, theme::ACCENT));
+
+        painter.text(
+            rect.center() - Vec2::new(0.0, 14.0),
+            egui::Align2::CENTER_CENTER,
+            if count == 1 { "Drop to add as an input".to_string() } else { format!("Drop to add {count} inputs") },
+            egui::FontId::proportional(15.0),
+            theme::TEXT,
+        );
+        painter.text(
+            rect.center() + Vec2::new(0.0, 14.0),
+            egui::Align2::CENTER_CENTER,
+            "video · audio · images",
+            egui::FontId::proportional(11.0),
+            theme::TEXT_DIM,
+        );
+    }
+
     fn name_or(&self, fallback: &str) -> String {
         let name = self.new_source_name.trim();
         if name.is_empty() {
@@ -1706,11 +1903,183 @@ fn default_record_path() -> String {
     format!("{dir}\\rhevia-recording.h264")
 }
 
+/// Bytes at the scale a person reads them, which changes as a stream runs.
+///
+/// A show that has sent 4 GB should not be reported in megabytes.
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let value = bytes as f64;
+    if value >= GB {
+        format!("{:.2} GB", value / GB)
+    } else if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else if value >= KB {
+        format!("{:.0} kB", value / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// What kind of input a file should become.
+///
+/// Stills are loaded directly: sending a single picture through the media
+/// decoder would start a process to loop one frame forever.
+///
+/// Everything else goes to the media decoder, which reads far more than any
+/// extension list could enumerate — so a file is never turned away on the
+/// strength of its name. The exception is raw Annex-B with no ffmpeg
+/// installed: that is the one format Rhevia plays natively, and falling back
+/// to it is more useful than reporting that ffmpeg is missing.
+fn command_for(name: String, path: String) -> Command {
+    if is_image(&path) {
+        return Command::AddImageSource { name, path };
+    }
+    let annexb = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("h264") || e.eq_ignore_ascii_case("264"))
+        .unwrap_or(false);
+
+    if annexb && !rhevia_media::available() {
+        Command::AddFileSource { name, path }
+    } else {
+        Command::AddMediaSource { name, path }
+    }
+}
+
+/// The file name without its directory or extension, for naming an input.
+///
+/// "opener" reads better on a tile than "D:\\clips\\opener.mp4", and a tile is
+/// about sixty pixels wide.
+fn file_stem(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Media".to_string())
+}
+
+/// Whether a dropped file is a still rather than something to decode.
+///
+/// Stills are loaded directly: sending them through the media decoder would
+/// start a process to loop a single frame forever.
+fn is_image(path: &str) -> bool {
+    const EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"];
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
 fn format_duration(seconds: u64) -> String {
     let (h, m, s) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
     if h > 0 {
         format!("{h}:{m:02}:{s:02}")
     } else {
         format!("{m:02}:{s:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a dropped file becomes. Getting this wrong is visible and
+    /// annoying: a song that opens as a still picture, or a photo that starts
+    /// a decoder process to loop one frame forever.
+    mod routing {
+        use super::*;
+
+        fn kind(path: &str) -> &'static str {
+            match command_for("x".into(), path.into()) {
+                Command::AddImageSource { .. } => "image",
+                Command::AddMediaSource { .. } => "media",
+                Command::AddFileSource { .. } => "annexb",
+                _ => "other",
+            }
+        }
+
+        #[test]
+        fn stills_are_loaded_directly_rather_than_decoded() {
+            for path in ["slide.png", "logo.PNG", "photo.jpg", "sponsor.webp", "scan.tiff"] {
+                assert_eq!(kind(path), "image", "{path} should be a still");
+            }
+        }
+
+        #[test]
+        fn video_and_audio_go_to_the_media_decoder() {
+            for path in ["opener.mp4", "show.MKV", "walk-in.mp3", "bed.flac", "sting.mov"] {
+                assert_eq!(kind(path), "media", "{path} should be decoded");
+            }
+        }
+
+        #[test]
+        fn an_unknown_extension_is_still_attempted() {
+            // ffmpeg reads far more than any list here could name. Turning a
+            // file away because of its extension would refuse working files.
+            assert_eq!(kind("recording.mxf"), "media");
+            assert_eq!(kind("no-extension"), "media");
+        }
+
+        #[test]
+        fn the_name_and_path_survive_routing() {
+            let command = command_for("Opener".into(), r"D:\clips\opener.mp4".into());
+            match command {
+                Command::AddMediaSource { name, path } => {
+                    assert_eq!(name, "Opener");
+                    assert_eq!(path, r"D:\clips\opener.mp4");
+                }
+                other => panic!("expected media, got {other:?}"),
+            }
+        }
+    }
+
+    mod naming {
+        use super::*;
+
+        #[test]
+        fn an_input_is_named_after_the_file_not_its_path() {
+            // A tile is about sixty pixels wide; a full path is unreadable.
+            assert_eq!(file_stem(r"D:\clips\opener.mp4"), "opener");
+            assert_eq!(file_stem("/home/user/walk-in music.mp3"), "walk-in music");
+            assert_eq!(file_stem("sting.mov"), "sting");
+        }
+
+        #[test]
+        fn something_with_no_usable_name_still_gets_one() {
+            assert_eq!(file_stem(""), "Media");
+            assert_eq!(file_stem("   "), "Media");
+        }
+
+        #[test]
+        fn a_file_with_no_extension_keeps_its_whole_name() {
+            assert_eq!(file_stem("README"), "README");
+        }
+    }
+
+    mod byte_sizes {
+        use super::*;
+
+        #[test]
+        fn a_stream_is_reported_at_a_scale_a_person_reads() {
+            // A show that has sent four gigabytes should not be reported in
+            // megabytes, and a show that has just started should not read as
+            // 0.00 GB.
+            assert_eq!(format_bytes(0), "0 B");
+            assert_eq!(format_bytes(512), "512 B");
+            assert_eq!(format_bytes(2048), "2 kB");
+            assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+            assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.00 GB");
+        }
+
+        #[test]
+        fn the_scale_changes_at_the_boundary_not_past_it() {
+            assert!(format_bytes(1023).ends_with('B'));
+            assert!(format_bytes(1024).ends_with("kB"));
+        }
     }
 }

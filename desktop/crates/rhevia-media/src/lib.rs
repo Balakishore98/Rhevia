@@ -1,0 +1,639 @@
+//! Media file playback.
+//!
+//! A switcher has to play whatever someone drops on it — an MP4 from a phone,
+//! a MOV from an editor, an MKV from a download, an MP3 of walk-in music.
+//! Writing demuxers and decoders for all of that is years of work that has
+//! already been done, so this drives ffmpeg as a decoding subprocess and reads
+//! raw frames and samples back over a pipe.
+//!
+//! The consequence is honest and worth stating plainly: media playback needs
+//! ffmpeg on the machine. Everything else in Rhevia — capture, mixing,
+//! encoding, delivery — is native and needs nothing installed.
+//!
+//! Video and audio are decoded by two separate processes. One process cannot
+//! write two raw streams to one pipe without a container to interleave them,
+//! and demuxing that container again here would be the very work this avoids.
+
+use std::io::Read;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use rhevia_engine::Frame;
+
+/// Sample rate everything downstream runs at.
+pub const SAMPLE_RATE: u32 = 48_000;
+pub const CHANNELS: usize = 2;
+
+#[derive(Debug, thiserror::Error)]
+pub enum MediaError {
+    #[error("ffmpeg is not installed, so media files cannot be played")]
+    NoFfmpeg,
+    #[error("{0} does not exist")]
+    Missing(String),
+    #[error("{0} has neither video nor audio that can be read")]
+    Unreadable(String),
+    #[error("could not start decoding {0}: {1}")]
+    Start(String, String),
+}
+
+/// What a file turned out to contain.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MediaInfo {
+    pub has_video: bool,
+    pub has_audio: bool,
+    pub width: u32,
+    pub height: u32,
+    /// Zero when the file has no duration ffprobe could determine, which is
+    /// normal for a stream.
+    pub duration_seconds: f64,
+    pub video_codec: String,
+    pub audio_codec: String,
+}
+
+impl MediaInfo {
+    /// A one-line description for the input list.
+    pub fn summary(&self) -> String {
+        match (self.has_video, self.has_audio) {
+            (true, true) => format!(
+                "{}x{} {} · {}",
+                self.width, self.height, self.video_codec, self.audio_codec
+            ),
+            (true, false) => format!("{}x{} {} · silent", self.width, self.height, self.video_codec),
+            (false, true) => format!("audio only · {}", self.audio_codec),
+            (false, false) => "empty".to_string(),
+        }
+    }
+}
+
+/// True when ffmpeg can be run.
+pub fn available() -> bool {
+    Command::new("ffmpeg")
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Asks ffprobe what is in a file.
+pub fn probe(path: &str) -> Result<MediaInfo, MediaError> {
+    if !std::path::Path::new(path).exists() {
+        return Err(MediaError::Missing(path.to_string()));
+    }
+
+    let output = Command::new("ffprobe")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name,width,height:format=duration",
+            "-of",
+            "default",
+        ])
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| MediaError::NoFfmpeg)?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_probe(&text))
+}
+
+/// Reads ffprobe's sectioned output into what the rest of this needs.
+///
+/// Parsed a whole `[STREAM]` block at a time rather than field by field.
+/// ffprobe prints `codec_type` before `width`, so reading fields in order and
+/// deciding at `codec_type` sees every stream as having no size — which makes
+/// every video file look like audio.
+///
+/// Separated from running the process so the parsing, which is where the
+/// mistakes are, can be tested without a file.
+pub fn parse_probe(text: &str) -> MediaInfo {
+    let mut info = MediaInfo::default();
+
+    for block in sections(text, "STREAM") {
+        let kind = field(&block, "codec_type").unwrap_or_default();
+        let codec = field(&block, "codec_name").unwrap_or_default();
+        let width: u32 = field(&block, "width").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let height: u32 = field(&block, "height").and_then(|v| v.parse().ok()).unwrap_or(0);
+
+        match kind.as_str() {
+            // An attached cover image is a video stream on paper. Treating an
+            // MP3 with artwork as a video input would put a still picture on
+            // air where sound was wanted, so plain artwork is not counted.
+            "video" if width > 0 && height > 0 && !is_cover_art(&codec) => {
+                info.has_video = true;
+                info.width = width;
+                info.height = height;
+                info.video_codec = codec;
+            }
+            "audio" => {
+                info.has_audio = true;
+                info.audio_codec = codec;
+            }
+            _ => {}
+        }
+    }
+
+    for block in sections(text, "FORMAT") {
+        if let Some(duration) = field(&block, "duration") {
+            info.duration_seconds = duration.parse().unwrap_or(0.0);
+        }
+    }
+
+    info
+}
+
+/// The still-image codecs that appear as a video stream inside an audio file.
+fn is_cover_art(codec: &str) -> bool {
+    matches!(codec, "mjpeg" | "png" | "bmp" | "gif" | "webp")
+}
+
+/// Every `[NAME] … [/NAME]` block in ffprobe's output.
+fn sections(text: &str, name: &str) -> Vec<String> {
+    let open = format!("[{name}]");
+    let close = format!("[/{name}]");
+    let mut blocks = Vec::new();
+    let mut current: Option<String> = None;
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line == open {
+            current = Some(String::new());
+        } else if line == close {
+            if let Some(block) = current.take() {
+                blocks.push(block);
+            }
+        } else if let Some(block) = current.as_mut() {
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    blocks
+}
+
+/// One `key=value` from a block.
+fn field(block: &str, key: &str) -> Option<String> {
+    block.lines().find_map(|line| {
+        line.split_once('=')
+            .filter(|(k, _)| k.trim() == key)
+            .map(|(_, v)| v.trim().to_string())
+    })
+}
+
+/// Whether a path looks like something worth trying to open.
+///
+/// Used to decide what a dropped file is. Deliberately generous: ffmpeg reads
+/// far more than this, and anything not listed is still attempted rather than
+/// refused, so the list is a hint and not a gate.
+pub fn looks_like_media(path: &str) -> bool {
+    const EXTENSIONS: [&str; 24] = [
+        "mp4", "mov", "mkv", "avi", "webm", "flv", "wmv", "mpg", "mpeg", "m4v", "ts", "m2ts",
+        "3gp", "ogv", "mp3", "wav", "flac", "aac", "m4a", "ogg", "opus", "wma", "aiff", "h264",
+    ];
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// A playing media file.
+///
+/// Video frames and audio samples are produced by background threads and
+/// collected without waiting, the same as every other source: a decoder that
+/// stalls costs a repeated frame, not the show.
+pub struct MediaSource {
+    latest: Arc<Mutex<Option<Frame>>>,
+    audio: Arc<Mutex<Vec<f32>>>,
+    running: Arc<AtomicBool>,
+    /// Counts what the audio thread has produced, so a caller can tell a
+    /// silent file from a stalled one.
+    audio_produced: Arc<AtomicU64>,
+    children: Vec<Child>,
+    pub path: String,
+    pub info: MediaInfo,
+}
+
+impl MediaSource {
+    /// Opens `path` and starts playing it on a loop.
+    ///
+    /// `width` and `height` are what the frames are scaled to, which is the
+    /// programme size: scaling in the decoder is far cheaper than scaling
+    /// every frame in the compositor afterwards.
+    pub fn open(path: &str, width: u32, height: u32, fps: f32) -> Result<Self, MediaError> {
+        if !available() {
+            return Err(MediaError::NoFfmpeg);
+        }
+        let info = probe(path)?;
+        if !info.has_video && !info.has_audio {
+            return Err(MediaError::Unreadable(path.to_string()));
+        }
+
+        let latest: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
+        let audio: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let running = Arc::new(AtomicBool::new(true));
+        let audio_produced = Arc::new(AtomicU64::new(0));
+        let mut children = Vec::new();
+
+        if info.has_video {
+            children.push(spawn_video(
+                path,
+                width,
+                height,
+                fps,
+                Arc::clone(&latest),
+                Arc::clone(&running),
+            )?);
+        }
+        if info.has_audio {
+            children.push(spawn_audio(
+                path,
+                Arc::clone(&audio),
+                Arc::clone(&running),
+                Arc::clone(&audio_produced),
+            )?);
+        }
+
+        Ok(Self {
+            latest,
+            audio,
+            running,
+            audio_produced,
+            children,
+            path: path.to_string(),
+            info,
+        })
+    }
+
+    /// The newest picture, if one has arrived since the last call.
+    pub fn take_frame(&self) -> Option<Frame> {
+        self.latest.lock().ok().and_then(|mut slot| slot.take())
+    }
+
+    /// Takes up to `frames` of interleaved stereo audio.
+    ///
+    /// Short reads are padded with silence rather than returning less than
+    /// asked for: the mixer works in fixed blocks, and a short block would
+    /// shift everything after it.
+    pub fn take_audio(&self, frames: usize) -> Vec<f32> {
+        let wanted = frames * CHANNELS;
+        let mut out = Vec::with_capacity(wanted);
+
+        if let Ok(mut buffer) = self.audio.lock() {
+            let take = wanted.min(buffer.len());
+            out.extend(buffer.drain(..take));
+
+            // A decoder that has run far ahead is trimmed back. Left alone it
+            // would grow without limit on a long file and add latency that
+            // never comes back.
+            const MAX_BUFFERED: usize = SAMPLE_RATE as usize * CHANNELS; // one second
+            if buffer.len() > MAX_BUFFERED {
+                let excess = buffer.len() - MAX_BUFFERED;
+                buffer.drain(..excess);
+            }
+        }
+        out.resize(wanted, 0.0);
+        out
+    }
+
+    /// Samples the audio thread has produced since opening.
+    pub fn audio_produced(&self) -> u64 {
+        self.audio_produced.load(Ordering::Relaxed)
+    }
+
+    /// Process ids of the decoders this source started.
+    ///
+    /// Exposed so a test can prove they are gone afterwards. ffmpeg is looping
+    /// the file forever and will never exit by itself, so a source that fails
+    /// to kill its decoders leaks a process for every clip ever opened.
+    pub fn decoder_pids(&self) -> Vec<u32> {
+        self.children.iter().map(|c| c.id()).collect()
+    }
+}
+
+impl Drop for MediaSource {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        // Killed rather than waited on: ffmpeg is looping the file forever and
+        // will never exit on its own.
+        for child in &mut self.children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Decodes video to raw RGBA at the programme size, paced at real time.
+fn spawn_video(
+    path: &str,
+    width: u32,
+    height: u32,
+    fps: f32,
+    latest: Arc<Mutex<Option<Frame>>>,
+    running: Arc<AtomicBool>,
+) -> Result<Child, MediaError> {
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            // Loops the file, which is what a holding clip or a sting wants.
+            "-stream_loop",
+            "-1",
+            // Paced at real time. Without this ffmpeg decodes as fast as it
+            // can and the clip plays at several hundred frames a second.
+            "-re",
+            "-i",
+        ])
+        .arg(path)
+        .args([
+            "-an",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            // Scaled here rather than in the compositor: the decoder does it
+            // with optimised code, once, instead of per composite.
+            "-s",
+            &format!("{width}x{height}"),
+            "-r",
+            &format!("{fps:.3}"),
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| MediaError::Start(path.to_string(), e.to_string()))?;
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| MediaError::Start(path.to_string(), "no output pipe".into()))?;
+
+    let frame_bytes = width as usize * height as usize * 4;
+    std::thread::Builder::new()
+        .name("rhevia-media-video".into())
+        .spawn(move || {
+            let mut buffer = vec![0u8; frame_bytes];
+            while running.load(Ordering::Relaxed) {
+                // read_exact, not read: a pipe hands over whatever is ready,
+                // and a partial frame drawn as a whole one tears diagonally.
+                if stdout.read_exact(&mut buffer).is_err() {
+                    break;
+                }
+                if let Ok(mut slot) = latest.lock() {
+                    *slot = Some(Frame {
+                        width: width as usize,
+                        height: height as usize,
+                        data: buffer.clone(),
+                    });
+                }
+            }
+        })
+        .map_err(|e| MediaError::Start(path.to_string(), e.to_string()))?;
+
+    Ok(child)
+}
+
+/// Decodes audio to raw 48 kHz stereo floats, paced at real time.
+fn spawn_audio(
+    path: &str,
+    audio: Arc<Mutex<Vec<f32>>>,
+    running: Arc<AtomicBool>,
+    produced: Arc<AtomicU64>,
+) -> Result<Child, MediaError> {
+    let mut child = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-stream_loop", "-1", "-re", "-i"])
+        .arg(path)
+        .args([
+            "-vn",
+            "-f",
+            "f32le",
+            "-ar",
+            &SAMPLE_RATE.to_string(),
+            "-ac",
+            &CHANNELS.to_string(),
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| MediaError::Start(path.to_string(), e.to_string()))?;
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| MediaError::Start(path.to_string(), "no output pipe".into()))?;
+
+    std::thread::Builder::new()
+        .name("rhevia-media-audio".into())
+        .spawn(move || {
+            // A tenth of a second at a time: small enough to stay responsive,
+            // large enough not to lock the buffer constantly.
+            const BLOCK: usize = (SAMPLE_RATE as usize / 10) * CHANNELS;
+            let mut raw = vec![0u8; BLOCK * 4];
+
+            while running.load(Ordering::Relaxed) {
+                if stdout.read_exact(&mut raw).is_err() {
+                    break;
+                }
+                let samples: Vec<f32> = raw
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .collect();
+                produced.fetch_add(samples.len() as u64, Ordering::Relaxed);
+
+                if let Ok(mut buffer) = audio.lock() {
+                    buffer.extend_from_slice(&samples);
+                }
+            }
+        })
+        .map_err(|e| MediaError::Start(path.to_string(), e.to_string()))?;
+
+    Ok(child)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_video_file_is_described_from_its_streams() {
+        let text = "[STREAM]\ncodec_name=h264\ncodec_type=video\nwidth=1920\nheight=1080\n[/STREAM]\n\
+                    [STREAM]\ncodec_name=aac\ncodec_type=audio\n[/STREAM]\n\
+                    [FORMAT]\nduration=12.500000\n[/FORMAT]\n";
+        let info = parse_probe(text);
+
+        assert!(info.has_video && info.has_audio);
+        assert_eq!(info.width, 1920);
+        assert_eq!(info.height, 1080);
+        assert_eq!(info.video_codec, "h264");
+        assert_eq!(info.audio_codec, "aac");
+        assert!((info.duration_seconds - 12.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn an_audio_only_file_is_not_mistaken_for_video() {
+        let text = "[STREAM]\ncodec_name=mp3\ncodec_type=audio\n[/STREAM]\n\
+                    [FORMAT]\nduration=185.0\n[/FORMAT]\n";
+        let info = parse_probe(text);
+
+        assert!(info.has_audio);
+        assert!(!info.has_video, "an audio file must not become a video input");
+        assert_eq!(info.summary(), "audio only · mp3");
+    }
+
+    #[test]
+    fn cover_art_does_not_turn_a_song_into_a_video_input() {
+        // An MP3 with artwork reports a video stream. Putting that on air as
+        // a still picture, when the operator asked for music, is the bug this
+        // guards against.
+        let text = "[STREAM]\ncodec_name=mjpeg\ncodec_type=video\nwidth=600\nheight=600\n[/STREAM]\n\
+                    [STREAM]\ncodec_name=mp3\ncodec_type=audio\n[/STREAM]\n\
+                    [FORMAT]\nduration=200.0\n[/FORMAT]\n";
+        let info = parse_probe(text);
+
+        assert!(!info.has_video, "cover art was treated as video");
+        assert!(info.has_audio);
+    }
+
+    #[test]
+    fn a_silent_video_is_described_as_silent() {
+        let text = "[STREAM]\ncodec_name=h264\ncodec_type=video\nwidth=1280\nheight=720\n[/STREAM]\n\
+                    [FORMAT]\nduration=4.0\n[/FORMAT]\n";
+        let info = parse_probe(text);
+
+        assert!(info.has_video && !info.has_audio);
+        assert_eq!(info.summary(), "1280x720 h264 · silent");
+    }
+
+    #[test]
+    fn an_empty_probe_describes_nothing_rather_than_panicking() {
+        let info = parse_probe("");
+        assert!(!info.has_video && !info.has_audio);
+        assert_eq!(info.summary(), "empty");
+    }
+
+    #[test]
+    fn a_stream_with_no_duration_reads_as_zero() {
+        // Live sources have no duration. That is not an error.
+        let text = "[STREAM]\ncodec_name=h264\ncodec_type=video\nwidth=640\nheight=360\n[/STREAM]\n\
+                    [FORMAT]\nduration=N/A\n[/FORMAT]\n";
+        let info = parse_probe(text);
+        assert_eq!(info.duration_seconds, 0.0);
+        assert!(info.has_video);
+    }
+
+    #[test]
+    fn several_streams_keep_their_own_codecs() {
+        // A file with two audio tracks must not attribute one codec to the
+        // other stream.
+        let text = "[STREAM]\ncodec_name=hevc\ncodec_type=video\nwidth=3840\nheight=2160\n[/STREAM]\n\
+                    [STREAM]\ncodec_name=ac3\ncodec_type=audio\n[/STREAM]\n\
+                    [STREAM]\ncodec_name=aac\ncodec_type=audio\n[/STREAM]\n\
+                    [FORMAT]\nduration=60.0\n[/FORMAT]\n";
+        let info = parse_probe(text);
+        assert_eq!(info.video_codec, "hevc");
+        assert_eq!(info.width, 3840);
+        // The last audio stream seen wins, which is what ffmpeg will pick.
+        assert_eq!(info.audio_codec, "aac");
+    }
+
+    #[test]
+    fn common_media_extensions_are_recognised() {
+        for path in [
+            r"C:\clips\opener.mp4",
+            "/home/user/show.MKV",
+            "walk-in.mp3",
+            "sting.mov",
+            "bed.flac",
+        ] {
+            assert!(looks_like_media(path), "{path} should look like media");
+        }
+    }
+
+    #[test]
+    fn things_that_are_not_media_are_not_recognised() {
+        for path in ["notes.txt", "slide.png", "archive.zip", "noextension"] {
+            assert!(!looks_like_media(path), "{path} should not look like media");
+        }
+    }
+
+    #[test]
+    fn opening_a_file_that_is_not_there_says_so() {
+        if !available() {
+            eprintln!("SKIP: ffmpeg not installed");
+            return;
+        }
+        let err = MediaSource::open("no-such-file-12345.mp4", 1280, 720, 30.0);
+        assert!(matches!(err, Err(MediaError::Missing(_))), "expected a missing-file error");
+    }
+
+    #[test]
+    fn taking_audio_before_any_arrives_gives_silence_of_the_right_length() {
+        // The mixer works in fixed blocks; a short one would shift everything
+        // after it. This is the path taken for the first few ticks of every
+        // clip, so it has to be right.
+        let source = MediaSource {
+            latest: Arc::new(Mutex::new(None)),
+            audio: Arc::new(Mutex::new(Vec::new())),
+            running: Arc::new(AtomicBool::new(false)),
+            audio_produced: Arc::new(AtomicU64::new(0)),
+            children: Vec::new(),
+            path: String::new(),
+            info: MediaInfo::default(),
+        };
+
+        let block = source.take_audio(512);
+        assert_eq!(block.len(), 512 * CHANNELS);
+        assert!(block.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn a_partly_filled_buffer_is_padded_rather_than_truncated() {
+        let source = MediaSource {
+            latest: Arc::new(Mutex::new(None)),
+            audio: Arc::new(Mutex::new(vec![0.5; 100])),
+            running: Arc::new(AtomicBool::new(false)),
+            audio_produced: Arc::new(AtomicU64::new(0)),
+            children: Vec::new(),
+            path: String::new(),
+            info: MediaInfo::default(),
+        };
+
+        let block = source.take_audio(512);
+        assert_eq!(block.len(), 512 * CHANNELS);
+        assert_eq!(block[0], 0.5);
+        assert_eq!(block[99], 0.5);
+        assert_eq!(block[100], 0.0, "the rest should be silence");
+    }
+
+    #[test]
+    fn a_decoder_running_ahead_is_trimmed_so_latency_does_not_grow() {
+        // Left alone the buffer grows for the length of the file and every
+        // sample of it is delay the operator cannot get rid of.
+        let source = MediaSource {
+            latest: Arc::new(Mutex::new(None)),
+            audio: Arc::new(Mutex::new(vec![0.25; SAMPLE_RATE as usize * CHANNELS * 5])),
+            running: Arc::new(AtomicBool::new(false)),
+            audio_produced: Arc::new(AtomicU64::new(0)),
+            children: Vec::new(),
+            path: String::new(),
+            info: MediaInfo::default(),
+        };
+
+        source.take_audio(512);
+        let left = source.audio.lock().unwrap().len();
+        assert!(
+            left <= SAMPLE_RATE as usize * CHANNELS,
+            "the buffer kept {left} samples, which is more than a second of latency"
+        );
+    }
+}

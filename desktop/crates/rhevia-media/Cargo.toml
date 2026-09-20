@@ -1,0 +1,12 @@
+[package]
+name = "rhevia-media"
+description = "Media file playback: any format ffmpeg can read"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rhevia-engine = { path = "../rhevia-engine" }
+thiserror.workspace = true
+tracing.workspace = true

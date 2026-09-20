@@ -85,8 +85,12 @@ pub fn mono(size: f32) -> FontId {
 
 /// A primary action button.
 pub fn button(ui: &mut Ui, label: &str, colour: Color32, size: Vec2) -> Response {
+    let font = FontId::proportional((size.y * 0.36).clamp(10.0, 16.0));
+    let needed = text_width(ui, label, &font) + 20.0;
+    let size = Vec2::new(size.x.max(needed), size.y);
+
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let painter = ui.painter();
+    let painter = ui.painter_at(rect);
 
     let fill = if response.is_pointer_button_down_on() {
         colour.gamma_multiply(0.7)
@@ -104,7 +108,7 @@ pub fn button(ui: &mut Ui, label: &str, colour: Color32, size: Vec2) -> Response
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        FontId::proportional((size.y * 0.36).clamp(10.0, 16.0)),
+        font,
         text_colour,
     );
 
@@ -116,8 +120,16 @@ pub fn button(ui: &mut Ui, label: &str, colour: Color32, size: Vec2) -> Response
 
 /// A small outlined button, for dense rows of secondary actions.
 pub fn chip(ui: &mut Ui, label: &str, active: bool, colour: Color32, size: Vec2) -> Response {
+    let font = FontId::proportional((size.y * 0.46).clamp(9.0, 12.0));
+    // The requested size is a minimum, not a promise. A label that does not
+    // fit grows its own box rather than being painted over its neighbour.
+    let needed = text_width(ui, label, &font) + 14.0;
+    let size = Vec2::new(size.x.max(needed), size.y);
+
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let painter = ui.painter();
+    // Clipped as well as grown: belt and braces, so nothing can ever bleed
+    // out of a chip however the text is measured.
+    let painter = ui.painter_at(rect);
 
     let (fill, border, text_colour) = if active {
         (colour, colour, ON_BRIGHT)
@@ -133,7 +145,7 @@ pub fn chip(ui: &mut Ui, label: &str, active: bool, colour: Color32, size: Vec2)
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        FontId::proportional((size.y * 0.46).clamp(9.0, 12.0)),
+        font,
         text_colour,
     );
 
@@ -154,10 +166,64 @@ pub fn readout(ui: &mut Ui, label: &str, value: &str, colour: Color32) {
     ui.add_space(16.0);
 }
 
+/// Width of `text` in `font`, as it will actually be drawn.
+///
+/// Guessing this from the character count is what made buttons overlap: a
+/// painter does not clip to the box it is handed, so a label wider than its
+/// box is drawn straight over whatever sits beside it. Measuring costs
+/// nothing and removes the whole class of bug.
+pub fn text_width(ui: &Ui, text: &str, font: &FontId) -> f32 {
+    ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE).size().x)
+}
+
+/// Shortens `text` with an ellipsis until it fits `max_width`.
+///
+/// For the places where the space is genuinely fixed — a tile header with a
+/// badge at the other end — and growing the box is not an option.
+pub fn elide(ui: &Ui, text: &str, font: &FontId, max_width: f32) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    if text_width(ui, text, font) <= max_width {
+        return text.to_string();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    // Binary search rather than shrinking one character at a time: a long
+    // window title would otherwise cost dozens of layout passes per frame.
+    let (mut low, mut high) = (0usize, chars.len());
+    while low < high {
+        let mid = (low + high + 1) / 2;
+        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+        if text_width(ui, &candidate, font) <= max_width {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    if low == 0 {
+        return String::new();
+    }
+    chars[..low].iter().collect::<String>() + "…"
+}
+
+/// The size a chip needs for `label` at `height`.
+///
+/// Callers used to guess this as a multiple of the character count, which is
+/// wrong for anything but a monospaced font and produced exactly the overlaps
+/// it was meant to avoid.
+pub fn chip_size(ui: &Ui, label: &str, height: f32) -> Vec2 {
+    let font = FontId::proportional((height * 0.46).clamp(9.0, 12.0));
+    Vec2::new(text_width(ui, label, &font) + 18.0, height)
+}
+
 /// A status pill, e.g. LIVE ON-AIR.
 pub fn pill(ui: &mut Ui, label: &str, fill: Color32, size: Vec2) -> Response {
+    let font = FontId::proportional(11.5);
+    let size = Vec2::new(size.x.max(text_width(ui, label, &font) + 18.0), size.y);
+
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let painter = ui.painter();
+    let painter = ui.painter_at(rect);
     painter.rect_filled(rect, Rounding::same(4.0_f32), fill);
 
     let luminance = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
@@ -166,7 +232,7 @@ pub fn pill(ui: &mut Ui, label: &str, fill: Color32, size: Vec2) -> Response {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        FontId::proportional(11.5),
+        font,
         text_colour,
     );
     response
@@ -208,15 +274,26 @@ pub fn monitor(
         // A dot rather than a filled bar: the picture stays the brightest
         // thing, and the colour still reads at a glance.
         painter.circle_filled(header.left_center() + Vec2::new(12.0, 0.0), 4.0, accent);
+        // The badge is measured first, because the title has to fit in what
+        // is left over. Drawing the title at its natural length ran it
+        // straight through the badge on any source with a long name.
+        let badge_font = FontId::proportional(9.0);
+        let badge_width = badge
+            .map(|b| text_width(ui, b, &badge_font) + 14.0)
+            .unwrap_or(0.0);
+
+        let title_font = FontId::proportional(11.5);
+        let title_start = 24.0;
+        let title_room = header.width() - title_start - badge_width - 16.0;
         painter.text(
-            header.left_center() + Vec2::new(24.0, 0.0),
+            header.left_center() + Vec2::new(title_start, 0.0),
             egui::Align2::LEFT_CENTER,
-            format!("{label} — {source_name}"),
-            FontId::proportional(11.5),
+            elide(ui, &format!("{label} — {source_name}"), &title_font, title_room),
+            title_font,
             accent,
         );
         if let Some(badge) = badge {
-            let width = 9.0 * badge.len() as f32 + 14.0;
+            let width = badge_width;
             let chip_rect = Rect::from_min_size(
                 egui::pos2(header.max.x - width - 8.0, header.min.y + 5.0),
                 Vec2::new(width, 14.0),
@@ -226,7 +303,7 @@ pub fn monitor(
                 chip_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 badge,
-                FontId::proportional(9.0),
+                badge_font,
                 ON_BRIGHT,
             );
         }
@@ -261,11 +338,12 @@ pub fn monitor(
             Rounding { nw: 0.0_f32, ne: 0.0_f32, sw: 5.0_f32, se: 5.0_f32 },
             SURFACE_CONTAINER,
         );
+        let footer_font = mono(9.5);
         painter.text(
             foot.left_center() + Vec2::new(12.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            footer,
-            mono(9.5),
+            elide(ui, footer, &footer_font, foot.width() - 20.0),
+            footer_font,
             TEXT_FAINT,
         );
 
@@ -322,18 +400,26 @@ pub fn input_picture(
         FontId::proportional(9.0),
         ON_BRIGHT,
     );
+    // As in the monitor header: the badge is fixed at the right, so the name
+    // gets whatever is left and is shortened to fit rather than running over.
+    let badge_font = FontId::proportional(8.5);
+    let badge_width = text_width(ui, badge, &badge_font);
+    let name_font = FontId::proportional(10.5);
+    let name_start = 22.0;
+    let name_room = header.width() - name_start - badge_width - 12.0;
+
     painter.text(
-        header.left_center() + Vec2::new(22.0, 0.0),
+        header.left_center() + Vec2::new(name_start, 0.0),
         egui::Align2::LEFT_CENTER,
-        name,
-        FontId::proportional(10.5),
+        elide(ui, name, &name_font, name_room),
+        name_font,
         if on_program || on_preview { TEXT } else { TEXT_DIM },
     );
     painter.text(
         header.right_center() - Vec2::new(6.0, 0.0),
         egui::Align2::RIGHT_CENTER,
         badge,
-        FontId::proportional(8.5),
+        badge_font,
         if on_program || on_preview { TEXT } else { TEXT_FAINT },
     );
 
@@ -361,11 +447,12 @@ pub fn input_picture(
     // Format line, as on a real multiview.
     let foot = Rect::from_min_max(egui::pos2(rect.min.x, picture.max.y), rect.max);
     painter.rect_filled(foot, Rounding::ZERO, SURFACE_LOWEST);
+    let detail_font = mono(8.5);
     painter.text(
         foot.left_center() + Vec2::new(5.0, 0.0),
         egui::Align2::LEFT_CENTER,
-        detail,
-        mono(8.5),
+        elide(ui, detail, &detail_font, foot.width() - 9.0),
+        detail_font,
         TEXT_FAINT,
     );
 

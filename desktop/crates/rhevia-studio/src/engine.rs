@@ -55,6 +55,9 @@ pub enum Command {
     AddScreenSource { name: String, target: rhevia_capture::Target },
     /// A webcam or capture card the system exposes as a camera.
     AddCameraSource { name: String, target: rhevia_capture::CameraTarget },
+    /// Any media file — video or audio, any container, any codec ffmpeg reads.
+    /// This is what a dropped file becomes.
+    AddMediaSource { name: String, path: String },
     /// Attaches a capture device to an existing input, so a camera carries
     /// its own sound.
     AttachAudio { input: usize, device: Option<String> },
@@ -83,7 +86,10 @@ pub enum Command {
     ResetInputSettings(usize),
     RemoveSource(usize),
     StartStream { url: String, key: String },
+    /// Stops every destination.
     StopStream,
+    /// Stops one destination, leaving the others live.
+    StopDestination(usize),
     Shutdown,
 }
 
@@ -205,6 +211,8 @@ pub struct Snapshot {
     pub overlay_source: [Option<usize>; 4],
     /// Which overlay slots are currently on air.
     pub overlay_on: [bool; 4],
+    /// Every destination currently being fed, in the order they were added.
+    pub destinations: Vec<DestinationState>,
     pub recording: bool,
     pub recorded_bytes: u64,
     pub recording_path: Option<String>,
@@ -214,6 +222,18 @@ pub struct Snapshot {
     /// Peak level and clip state for each bus, for the matrix header.
     pub bus_levels: Vec<(f32, bool)>,
     pub master: MasterState,
+}
+
+/// One live destination, as the streaming panel needs it.
+#[derive(Clone, Default)]
+pub struct DestinationState {
+    /// The address with any passphrase or key removed — this is displayed,
+    /// and a stream key in a screenshot is a stream key given away.
+    pub address: String,
+    /// RTMP or SRT.
+    pub protocol: String,
+    pub bytes_sent: u64,
+    pub uptime_seconds: u64,
 }
 
 /// One audio channel strip, as the mixer panel needs it.
@@ -331,6 +351,9 @@ enum Source {
     Screen(rhevia_capture::ScreenCapture),
     /// A camera, collected the same way.
     Camera(rhevia_capture::CameraCapture),
+    /// A media file, played on a loop. Carries its own sound, so it feeds the
+    /// mixer directly rather than through a capture device.
+    Media(Box<rhevia_media::MediaSource>),
 }
 
 struct SourceSlot {
@@ -390,8 +413,30 @@ pub fn start() -> EngineHandle {
     }
 }
 
+/// Where the stream is going.
+///
+/// The encoding is identical either way; only the muxing and the socket
+/// differ. RTMP is what the large platforms ingest, SRT is what survives a
+/// path that loses packets — so a real production wants both available, not
+/// one or the other.
+enum Transport {
+    Rtmp(RtmpPublisher),
+    Srt(rhevia_output::SrtPublisher),
+}
+
+impl Transport {
+    fn label(&self) -> &'static str {
+        match self {
+            Transport::Rtmp(_) => "RTMP",
+            Transport::Srt(_) => "SRT",
+        }
+    }
+}
+
 struct Delivery {
-    publisher: RtmpPublisher,
+    transport: Transport,
+    /// The destination as it is safe to show: no stream key, no passphrase.
+    address: String,
     runtime: tokio::runtime::Runtime,
     sets: ParameterSets,
     sent_config: bool,
@@ -465,7 +510,11 @@ fn run(
     let mut preview_input = 1usize;
     let mut transition: Option<f32> = None;
     let mut transition_seconds = 1.0f32;
-    let mut delivery: Option<Delivery> = None;
+    // A list rather than one: a real production sends to a platform and to
+    // an archive or a backup path at the same time. The encoding is done once
+    // and fanned out, so a second destination costs a socket, not a second
+    // encoder.
+    let mut deliveries: Vec<Delivery> = Vec::new();
     let mut stream_error: Option<String> = None;
     let mut layout = Layout::Full;
     let mut overlay_source: [Option<usize>; 4] = [None; 4];
@@ -590,6 +639,28 @@ fn run(
         needs_push: true,
                         });
                         audio.add_channel(name);
+                    }
+                }
+                Command::AddMediaSource { name, path } => {
+                    match rhevia_media::MediaSource::open(
+                        &path,
+                        OUTPUT_WIDTH as u32,
+                        OUTPUT_HEIGHT as u32,
+                        TARGET_FPS,
+                    ) {
+                        Ok(media) => {
+                            if let Ok(input) = mixer.add_input(name.clone()) {
+                                sources.push(SourceSlot {
+                                    source: Source::Media(Box::new(media)),
+                                    mixer_input: input,
+                                    audio: None,
+                                    settings: InputSettings::default(),
+                                    needs_push: true,
+                                });
+                                audio.add_channel(name);
+                            }
+                        }
+                        Err(e) => stream_error = Some(e.to_string()),
                     }
                 }
                 Command::AddCameraSource { name, target } => {
@@ -865,16 +936,25 @@ fn run(
                 Command::StartStream { url, key } => {
                     match open_delivery(&url, &key) {
                         Ok(d) => {
-                            delivery = Some(d);
+                            deliveries.push(d);
                             stream_error = None;
+                            // A destination joining mid-show has nothing to
+                            // decode until a keyframe arrives, so ask for one
+                            // rather than making it wait for the next.
                             mixer.request_keyframe();
                         }
                         Err(e) => stream_error = Some(e.to_string()),
                     }
                 }
                 Command::StopStream => {
-                    if let Some(mut d) = delivery.take() {
-                        d.runtime.block_on(async { d.publisher.close().await.ok() });
+                    for mut d in deliveries.drain(..) {
+                        close_delivery(&mut d);
+                    }
+                }
+                Command::StopDestination(index) => {
+                    if index < deliveries.len() {
+                        let mut d = deliveries.remove(index);
+                        close_delivery(&mut d);
                     }
                 }
             }
@@ -897,7 +977,14 @@ fn run(
 
         let mut captured: Vec<Option<AudioBuffer>> = sources
             .iter()
-            .map(|slot| slot.audio.as_ref().map(|handle| handle.take(audio_frames)))
+            .map(|slot| match &slot.source {
+                // A media file brings its own sound. Taking it here, in step
+                // with the video, is what keeps the two together.
+                Source::Media(media) if media.info.has_audio => {
+                    Some(AudioBuffer::from_samples(media.take_audio(audio_frames)))
+                }
+                _ => slot.audio.as_ref().map(|handle| handle.take(audio_frames)),
+            })
             .collect();
 
         // Processed before the mixer, so the fader and meters see the audio
@@ -943,6 +1030,13 @@ fn run(
                     if slot.needs_push {
                         let _ = mixer.push_frame(slot.mixer_input, rendered.clone());
                         slot.needs_push = false;
+                    }
+                }
+                Source::Media(media) => {
+                    // None means the decoder has produced nothing new, so the
+                    // previous picture stays up rather than flashing black.
+                    if let Some(frame) = media.take_frame() {
+                        let _ = mixer.push_frame(slot.mixer_input, frame);
                     }
                 }
                 Source::Camera(capture) => {
@@ -1068,7 +1162,7 @@ fn run(
         };
 
         let render_start = Instant::now();
-        let needs_encoding = delivery.is_some() || recorder.is_some();
+        let needs_encoding = !deliveries.is_empty() || recorder.is_some();
         let encoded = match transition {
             // Mid-transition: composite both arrangements in full and blend
             // them with the chosen effect, so a transition works between any
@@ -1133,23 +1227,30 @@ fn run(
         }
 
         // ---- deliver -------------------------------------------------------
-        if let Some(d) = delivery.as_mut() {
-            if !encoded.is_empty() {
-                if let Err(e) = publish(d, &encoded, frame_number) {
-                    stream_error = Some(e.to_string());
-                    delivery = None;
-                }
-            }
-        }
         // Audio goes out every tick whether or not the encoder emitted a
         // picture, so a frame the video encoder chose to skip does not take a
         // block of sound with it.
-        if let Some(d) = delivery.as_mut() {
-            let master = audio.output().samples.clone();
-            if let Err(e) = publish_audio(d, &master) {
-                stream_error = Some(format!("audio: {e}"));
-                delivery = None;
+        let master = if deliveries.is_empty() { Vec::new() } else { audio.output().samples.clone() };
+
+        // One destination failing takes only itself off air. Dropping the
+        // whole stream because a backup path died would be the opposite of
+        // what having a backup is for.
+        let mut failed: Vec<usize> = Vec::new();
+        for (index, d) in deliveries.iter_mut().enumerate() {
+            if !encoded.is_empty() {
+                if let Err(e) = publish(d, &encoded, frame_number) {
+                    stream_error = Some(format!("{}: {e}", d.address));
+                    failed.push(index);
+                    continue;
+                }
             }
+            if let Err(e) = publish_audio(d, &master) {
+                stream_error = Some(format!("{} audio: {e}", d.address));
+                failed.push(index);
+            }
+        }
+        for index in failed.into_iter().rev() {
+            deliveries.remove(index);
         }
 
         // ---- advance the transition ----------------------------------------
@@ -1211,6 +1312,9 @@ fn run(
                         if c.target.is_monitor { "Desktop Capture" } else { "Window Capture" }
                     }
                     Source::Camera(_) => "Camera",
+                    Source::Media(m) => {
+                        if m.info.has_video { "Media" } else { "Audio File" }
+                    }
                 },
             })
             .collect();
@@ -1226,7 +1330,16 @@ fn run(
             s.transition = transition;
             s.transition_seconds = transition_seconds;
             s.program = cached_program.clone();
-            s.streaming = delivery.is_some();
+            s.streaming = !deliveries.is_empty();
+            s.destinations = deliveries
+                .iter()
+                .map(|d| DestinationState {
+                    address: d.address.clone(),
+                    protocol: d.transport.label().to_string(),
+                    bytes_sent: d.bytes,
+                    uptime_seconds: d.started.elapsed().as_secs(),
+                })
+                .collect();
             s.stream_error = stream_error.clone();
             s.layout = layout;
             s.overlay_source = overlay_source;
@@ -1282,10 +1395,13 @@ fn run(
                 fps: measured_fps,
                 frames_rendered: mixer_stats.frames_rendered,
                 frames_encoded: mixer_stats.frames_encoded,
-                bytes_sent: delivery.as_ref().map(|d| d.bytes).unwrap_or(0),
-                uptime_seconds: delivery
-                    .as_ref()
+                // Across every destination, which is what the bitrate
+                // readout in the header is describing.
+                bytes_sent: deliveries.iter().map(|d| d.bytes).sum(),
+                uptime_seconds: deliveries
+                    .iter()
                     .map(|d| d.started.elapsed().as_secs())
+                    .max()
                     .unwrap_or(0),
                 render_ms,
             };
@@ -1298,8 +1414,8 @@ fn run(
         }
     }
 
-    if let Some(mut d) = delivery.take() {
-        d.runtime.block_on(async { d.publisher.close().await.ok() });
+    for mut d in deliveries.drain(..) {
+        close_delivery(&mut d);
     }
     if let Some((mut w, _, _)) = recorder.take() {
         use std::io::Write;
@@ -1308,12 +1424,69 @@ fn run(
     Ok(())
 }
 
+/// How long to wait for a destination to answer.
+///
+/// This runs on the engine thread, so it stops the picture while it waits.
+/// A bounded wait costs the operator a few seconds; an unbounded one would
+/// look exactly like a crash.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// True when the address names an SRT destination rather than an RTMP one.
+pub fn is_srt(url: &str) -> bool {
+    url.trim().to_ascii_lowercase().starts_with("srt://")
+}
+
+/// The RTMP address with any stream key stripped off the end.
+///
+/// Platforms present the key either as a separate field or as the last path
+/// segment, and a key that reached the interface this way would end up in
+/// every screenshot of the streaming panel.
+pub fn redact_rtmp(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    // Everything up to and including the application name is safe: it is the
+    // ingest endpoint, which is public. Anything beyond it might be the key.
+    match trimmed.rsplit_once('/') {
+        Some((head, tail)) if head.matches('/').count() >= 3 && !tail.is_empty() => {
+            format!("{head}/***")
+        }
+        _ => trimmed.to_string(),
+    }
+}
+
 fn open_delivery(url: &str, key: &str) -> anyhow::Result<Delivery> {
-    let destination = RtmpUrl::parse_with_key(url, Some(key).filter(|k| !k.is_empty()))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let publisher = runtime.block_on(RtmpPublisher::connect(&destination))?;
+    let address;
+
+    let transport = if is_srt(url) {
+        // A stream key has no meaning in SRT; the equivalent is the stream id,
+        // which rides in the address. Rather than ignore a key the operator
+        // typed, it is used as the stream id when the address has none.
+        let mut destination = rhevia_output::SrtUrl::parse(url.trim())?;
+        if destination.stream_id.is_none() && !key.trim().is_empty() {
+            destination.stream_id = Some(key.trim().to_string());
+        }
+
+        let publisher = runtime.block_on(async {
+            tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                rhevia_output::SrtPublisher::connect(&destination, true),
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("{} did not answer within ten seconds", destination.redacted())
+            })?
+            .map_err(anyhow::Error::from)
+        })?;
+        address = destination.redacted();
+        Transport::Srt(publisher)
+    } else {
+        let destination = RtmpUrl::parse_with_key(url, Some(key).filter(|k| !k.is_empty()))?;
+        address = redact_rtmp(url);
+        let publisher = runtime.block_on(RtmpPublisher::connect(&destination))?;
+        Transport::Rtmp(publisher)
+    };
 
     // A failed audio encoder must not stop the stream: video only is far
     // better than nothing, and the operator is told in the status line.
@@ -1325,8 +1498,11 @@ fn open_delivery(url: &str, key: &str) -> anyhow::Result<Delivery> {
         }
     };
 
+    tracing::info!(transport = transport.label(), "streaming");
+
     Ok(Delivery {
-        publisher,
+        transport,
+        address,
         runtime,
         sets: ParameterSets::default(),
         sent_config: false,
@@ -1338,30 +1514,61 @@ fn open_delivery(url: &str, key: &str) -> anyhow::Result<Delivery> {
     })
 }
 
+/// Ends the stream cleanly.
+///
+/// Closed rather than dropped: a receiver told the stream has ended finishes
+/// its file, where a dropped socket leaves a truncated one that looks exactly
+/// like a fault.
+fn close_delivery(d: &mut Delivery) {
+    d.runtime.block_on(async {
+        match &mut d.transport {
+            Transport::Rtmp(publisher) => {
+                publisher.close().await.ok();
+            }
+            Transport::Srt(publisher) => {
+                publisher.close().await.ok();
+            }
+        }
+    });
+}
+
 /// Encodes a block of master audio and publishes it.
 fn publish_audio(d: &mut Delivery, samples: &[f32]) -> anyhow::Result<()> {
     let Some(encoder) = d.audio.as_mut() else {
         return Ok(());
     };
 
-    // The AudioSpecificConfig has to precede any audio, exactly as the video
-    // decoder configuration precedes any frame.
+    // The AudioSpecificConfig has to precede any audio on RTMP, exactly as
+    // the video decoder configuration precedes any frame. A transport stream
+    // needs no such thing: each ADTS frame describes itself.
     if !d.sent_audio_config {
-        let tag = flv::aac_sequence_header(encoder.config(), Default::default());
-        d.runtime
-            .block_on(async { d.publisher.send_audio(tag, 0).await })?;
+        if let Transport::Rtmp(publisher) = &mut d.transport {
+            let tag = flv::aac_sequence_header(encoder.config(), Default::default());
+            d.runtime.block_on(async { publisher.send_audio(tag, 0).await })?;
+        }
         d.sent_audio_config = true;
     }
 
     let frames = encoder.push(samples)?;
     for frame in frames {
-        let timestamp = (d.audio_samples * 1000 / SAMPLE_RATE as u64) as u32;
+        let samples_before = d.audio_samples;
         d.audio_samples += frame.samples as u64;
         d.bytes += frame.data.len() as u64;
 
-        let tag = flv::aac_frame(&frame.data, Default::default());
-        d.runtime
-            .block_on(async { d.publisher.send_audio(tag, timestamp).await })?;
+        match &mut d.transport {
+            Transport::Rtmp(publisher) => {
+                let timestamp = (samples_before * 1000 / SAMPLE_RATE as u64) as u32;
+                let tag = flv::aac_frame(&frame.data, Default::default());
+                d.runtime.block_on(async { publisher.send_audio(tag, timestamp).await })?;
+            }
+            Transport::Srt(publisher) => {
+                // Transport stream runs at 90 kHz, not milliseconds.
+                let timestamp =
+                    samples_before * rhevia_output::mpegts::CLOCK_HZ / SAMPLE_RATE as u64;
+                let adts = rhevia_output::mpegts::adts_wrap(&frame.data, SAMPLE_RATE, 2);
+                d.runtime.block_on(async { publisher.send_audio(&adts, timestamp).await })?;
+            }
+        }
     }
     Ok(())
 }
@@ -1372,28 +1579,49 @@ fn publish(d: &mut Delivery, annexb: &[u8], frame_number: u64) -> anyhow::Result
         return Ok(());
     }
     d.sets.absorb(&units);
-
-    if !d.sent_config {
-        let Some(config) = d.sets.to_avc_decoder_config() else {
-            return Ok(());
-        };
-        let tag = flv::avc_sequence_header(&config);
-        d.runtime
-            .block_on(async { d.publisher.send_video(tag, 0, false).await })?;
-        d.sent_config = true;
-    }
-
-    let avcc = h264::annexb_to_avcc(&units);
-    if avcc.is_empty() {
-        return Ok(());
-    }
     let keyframe = h264::is_keyframe(&units);
-    let timestamp = (frame_number as f32 * 1000.0 / TARGET_FPS) as u32;
-    d.bytes += avcc.len() as u64;
 
-    let tag = flv::avc_frame(&avcc, keyframe, 0);
-    d.runtime
-        .block_on(async { d.publisher.send_video(tag, timestamp, false).await })?;
+    match &mut d.transport {
+        Transport::Rtmp(publisher) => {
+            // FLV states the parameter sets once, up front, in their own tag.
+            if !d.sent_config {
+                let Some(config) = d.sets.to_avc_decoder_config() else {
+                    return Ok(());
+                };
+                let tag = flv::avc_sequence_header(&config);
+                d.runtime.block_on(async { publisher.send_video(tag, 0, false).await })?;
+                d.sent_config = true;
+            }
+
+            let avcc = h264::annexb_to_avcc(&units);
+            if avcc.is_empty() {
+                return Ok(());
+            }
+            let timestamp = (frame_number as f32 * 1000.0 / TARGET_FPS) as u32;
+            d.bytes += avcc.len() as u64;
+
+            let tag = flv::avc_frame(&avcc, keyframe, 0);
+            d.runtime
+                .block_on(async { publisher.send_video(tag, timestamp, false).await })?;
+        }
+        Transport::Srt(publisher) => {
+            // A transport stream carries the parameter sets inline, repeated
+            // before every keyframe, so a player joining part-way through can
+            // start. There is no separate configuration step.
+            let prepared = rhevia_output::mpegts::prepare_video(&units, &d.sets);
+            if prepared.is_empty() {
+                return Ok(());
+            }
+            let timestamp = frame_number * rhevia_output::mpegts::CLOCK_HZ
+                / TARGET_FPS.max(1.0) as u64;
+            d.bytes += prepared.len() as u64;
+            d.sent_config = true;
+
+            d.runtime.block_on(async {
+                publisher.send_video(&prepared, timestamp, timestamp, keyframe).await
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -1530,6 +1758,73 @@ fn bars(width: usize, height: usize, seconds: f32) -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stream key is a password. It must not reach the streaming panel,
+    /// because the streaming panel is what ends up in screenshots and in
+    /// screen shares.
+    mod redaction {
+        use super::*;
+
+        #[test]
+        fn a_key_on_the_end_of_the_url_is_hidden() {
+            let shown = redact_rtmp("rtmp://a.rtmp.youtube.com/live2/abcd-efgh-ijkl-mnop");
+            assert!(!shown.contains("abcd"), "the key leaked: {shown}");
+            assert_eq!(shown, "rtmp://a.rtmp.youtube.com/live2/***");
+        }
+
+        #[test]
+        fn a_bare_endpoint_is_left_alone() {
+            // There is nothing secret in an ingest endpoint, and blanking part
+            // of it would make the panel useless for telling destinations
+            // apart.
+            for url in [
+                "rtmp://a.rtmp.youtube.com/live2",
+                "rtmp://live.twitch.tv/app",
+                "rtmps://live-api-s.facebook.com:443/rtmp",
+            ] {
+                assert_eq!(redact_rtmp(url), url, "{url} should not have been redacted");
+            }
+        }
+
+        #[test]
+        fn a_trailing_slash_does_not_hide_the_application_name() {
+            assert_eq!(
+                redact_rtmp("rtmp://a.rtmp.youtube.com/live2/"),
+                "rtmp://a.rtmp.youtube.com/live2"
+            );
+        }
+
+        #[test]
+        fn a_deep_path_keeps_only_the_last_segment_hidden() {
+            let shown = redact_rtmp("rtmp://host.example/app/instance/secretkey");
+            assert!(shown.contains("app/instance"));
+            assert!(!shown.contains("secretkey"));
+        }
+
+        #[test]
+        fn nonsense_is_returned_rather_than_panicking() {
+            // The address comes from a text field, so it can be anything.
+            assert_eq!(redact_rtmp(""), "");
+            assert_eq!(redact_rtmp("   "), "");
+            // A scheme with nothing after it loses its slashes and keeps its
+            // shape. It is nonsense either way; what matters is that it comes
+            // back rather than panicking the streaming panel.
+            assert_eq!(redact_rtmp("rtmp://"), "rtmp:");
+        }
+    }
+
+    mod destinations {
+        use super::*;
+
+        #[test]
+        fn an_srt_address_is_told_apart_from_an_rtmp_one() {
+            assert!(is_srt("srt://198.51.100.1:9000"));
+            assert!(is_srt("  SRT://198.51.100.1:9000  "), "scheme is not case sensitive");
+            assert!(!is_srt("rtmp://a.rtmp.youtube.com/live2"));
+            assert!(!is_srt("rtmps://live-api-s.facebook.com:443/rtmp"));
+            assert!(!is_srt(""));
+        }
+    }
 
     #[test]
     fn removing_a_lower_index_shifts_the_ones_above_it_down() {

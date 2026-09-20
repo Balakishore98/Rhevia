@@ -98,13 +98,9 @@ static HOST_VTBL: HostApplicationVtbl = HostApplicationVtbl {
 
 /// A loaded, running plugin.
 pub struct Vst3Instance {
-    /// Kept alive: every pointer below lives inside it.
-    library: libloading::Library,
-    /// Whether `InitDll` was called and so owes an `ExitDll`.
-    ///
-    /// Unloading a module that was initialised and never shut down corrupts
-    /// the heap on the way out, which is a crash long after the mistake.
-    initialised: bool,
+    /// Kept alive: every pointer below lives inside it, and dropping it
+    /// shuts the module down before unloading it.
+    _module: super::Module,
     factory: *mut c_void,
     component: *mut c_void,
     processor: *mut c_void,
@@ -157,20 +153,15 @@ impl Vst3Instance {
         let binary =
             binary_within(module).ok_or_else(|| Vst3Error::NotAModule(display.clone()))?;
 
-        let _guard = super::lock_modules();
-        let library = unsafe { libloading::Library::new(&binary) }
-            .map_err(|e| Vst3Error::Load(display.clone(), e.to_string()))?;
+        // Every failure below simply returns: dropping this shuts the
+        // module down and unloads it, which is the pairing that used to be
+        // missing from each path in turn.
+        let module_handle = super::Module::open(&binary, &display)?;
 
-        let mut initialised = false;
         unsafe {
-            if let Ok(init) = library.get::<unsafe extern "C" fn() -> bool>(abi::ENTRY_INIT) {
-                init();
-                initialised = true;
-            }
-
-            let get_factory = library
-                .get::<unsafe extern "C" fn() -> *mut c_void>(abi::ENTRY_FACTORY)
-                .map_err(|_| Vst3Error::NotAModule(display.clone()))?;
+            let get_factory: unsafe extern "C" fn() -> *mut c_void = module_handle
+                .symbol(abi::ENTRY_FACTORY)
+                .ok_or_else(|| Vst3Error::NotAModule(display.clone()))?;
             let factory = get_factory();
             if factory.is_null() {
                 return Err(Vst3Error::NoFactory(display));
@@ -333,8 +324,7 @@ impl Vst3Instance {
             };
 
             let mut instance = Self {
-                library,
-                initialised,
+                _module: module_handle,
                 factory,
                 component,
                 processor,
@@ -499,9 +489,6 @@ impl Vst3Instance {
 
 impl Drop for Vst3Instance {
     fn drop(&mut self) {
-        // The same lock as loading: shutting a module down while another
-        // thread is starting it is the other half of the same race.
-        let _guard = super::lock_modules();
         unsafe {
             let processor_vtbl = &*(*(self.processor as *mut Object<abi::IAudioProcessorVtbl>)).vtbl;
             let component_vtbl = &*(*(self.component as *mut Object<abi::IComponentVtbl>)).vtbl;
@@ -519,18 +506,9 @@ impl Drop for Vst3Instance {
 
             let factory_vtbl = &*(*(self.factory as *mut Object<abi::IPluginFactoryVtbl>)).vtbl;
             (factory_vtbl.release)(self.factory);
-
-            // Paired with the InitDll above. A module that was started and
-            // never shut down corrupts the heap when it is unloaded, and the
-            // crash lands somewhere else entirely.
-            if self.initialised {
-                if let Ok(exit) =
-                    self.library.get::<unsafe extern "C" fn() -> bool>(abi::ENTRY_EXIT)
-                {
-                    exit();
-                }
-            }
         }
+        // The module is shut down and unloaded when its field drops, after
+        // this body has released everything living inside it.
     }
 }
 
@@ -626,6 +604,27 @@ mod tests {
             instance.process(&mut nothing);
             assert!(nothing.is_empty());
         });
+    }
+
+    #[test]
+    fn a_real_module_asked_for_a_class_it_does_not_have_fails_cleanly() {
+        // This is the case that used to corrupt the heap. The module loads and
+        // starts, the class is refused, and the early return skipped the
+        // shutdown that has to pair with the startup — so the crash landed on
+        // unload, far from the mistake. It has to be a real module: a missing
+        // file never gets far enough to start anything.
+        let modules = crate::vst3::find_modules();
+        let Some(module) = modules.first() else {
+            eprintln!("SKIP: no VST3 modules installed");
+            return;
+        };
+
+        let result = Vst3Instance::open(module, [0u8; 16], "nothing", RATE, BLOCK);
+        assert!(
+            result.is_err(),
+            "a class the module does not have should be refused"
+        );
+        // Reaching here without the process dying is the rest of the result.
     }
 
     #[test]

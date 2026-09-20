@@ -35,6 +35,66 @@ pub(crate) fn lock_modules() -> std::sync::MutexGuard<'static, ()> {
     MODULE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A loaded module, which shuts itself down before unloading.
+///
+/// Every way out of loading a plugin goes through dropping this, which is the
+/// point: `InitDll` has to be paired with `ExitDll`, and a module started and
+/// never stopped corrupts the heap when it is unloaded. There are seven ways
+/// for opening a plugin to fail, and remembering the pairing on each of them
+/// is how one gets missed — as one was, until a plugin that refused to open
+/// took the process down on its way out.
+pub(crate) struct Module {
+    library: libloading::Library,
+    /// Whether `InitDll` was called, and so owes an `ExitDll`.
+    initialised: bool,
+}
+
+impl Module {
+    /// Loads a module and starts it.
+    pub(crate) fn open(binary: &Path, display: &str) -> Result<Self, Vst3Error> {
+        // Held across the load, and taken again across the unload. Two threads
+        // starting the same module at once run its startup twice against
+        // shared state, which is a crash inside somebody else's code.
+        let _guard = lock_modules();
+
+        let library = unsafe { libloading::Library::new(binary) }
+            .map_err(|e| Vst3Error::Load(display.to_string(), e.to_string()))?;
+
+        let mut initialised = false;
+        unsafe {
+            // Optional: plenty of modules do not export it, and that is not
+            // an error. Those that do need it called before anything else.
+            if let Ok(init) = library.get::<unsafe extern "C" fn() -> bool>(abi::ENTRY_INIT) {
+                init();
+                initialised = true;
+            }
+        }
+        Ok(Self { library, initialised })
+    }
+
+    /// Looks up an exported symbol.
+    pub(crate) unsafe fn symbol<T>(&self, name: &[u8]) -> Option<T>
+    where
+        T: Copy,
+    {
+        self.library.get::<T>(name).ok().map(|s| *s)
+    }
+}
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        let _guard = lock_modules();
+        if self.initialised {
+            unsafe {
+                if let Ok(exit) = self.library.get::<unsafe extern "C" fn() -> bool>(abi::ENTRY_EXIT)
+                {
+                    exit();
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Vst3Error {
     #[error("{0} could not be loaded: {1}")]
@@ -170,41 +230,23 @@ pub fn scan_module(module: &Path) -> Result<Vec<Vst3Plugin>, Vst3Error> {
     let display = module.display().to_string();
     let binary = binary_within(module).ok_or_else(|| Vst3Error::NotAModule(display.clone()))?;
 
-    let _guard = lock_modules();
-    let library = unsafe { libloading::Library::new(&binary) }
-        .map_err(|e| Vst3Error::Load(display.clone(), e.to_string()))?;
+    let loaded = Module::open(&binary, &display)?;
 
     unsafe {
-        // Optional: plenty of modules do not export it, and that is not an
-        // error. Those that do need it called before anything else.
-        if let Ok(init) = library.get::<unsafe extern "C" fn() -> bool>(abi::ENTRY_INIT) {
-            init();
-        }
-
-        let get_factory = library
-            .get::<unsafe extern "C" fn() -> *mut c_void>(abi::ENTRY_FACTORY)
-            .map_err(|_| Vst3Error::NotAModule(display.clone()))?;
+        let get_factory: unsafe extern "C" fn() -> *mut c_void = loaded
+            .symbol(abi::ENTRY_FACTORY)
+            .ok_or_else(|| Vst3Error::NotAModule(display.clone()))?;
 
         let raw = get_factory();
         if raw.is_null() {
-            // Shut the module down before unloading it, even on this path:
-            // a module that was started and never stopped corrupts the heap
-            // when it goes.
-            if let Ok(exit) = library.get::<unsafe extern "C" fn() -> bool>(abi::ENTRY_EXIT) {
-                exit();
-            }
             return Err(Vst3Error::NoFactory(display));
         }
 
         let plugins = read_factory(raw, module);
 
-        // Released before the library is unloaded: the object lives inside it.
+        // Released before the module is unloaded: the object lives inside it.
         let object = raw as *mut Object<IPluginFactoryVtbl>;
         ((*(*object).vtbl).release)(raw);
-
-        if let Ok(exit) = library.get::<unsafe extern "C" fn() -> bool>(abi::ENTRY_EXIT) {
-            exit();
-        }
 
         Ok(plugins)
     }

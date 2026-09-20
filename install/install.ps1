@@ -40,7 +40,16 @@ if ($Uninstall) {
     return
 }
 
-$binaries = @("rhevia-studio.exe", "rhevia-relay.exe", "rhevia-stream.exe")
+# rhevia-vst3-validate is not optional. The studio runs it as a separate
+# process to check each plugin before offering it, so that a plugin which
+# faults takes down the validator rather than the show. Without it beside the
+# studio, every plugin reads as "not checked" and none can be used.
+$binaries = @(
+    "rhevia-studio.exe",
+    "rhevia-vst3-validate.exe",
+    "rhevia-relay.exe",
+    "rhevia-stream.exe"
+)
 foreach ($exe in $binaries) {
     if (-not (Test-Path (Join-Path $Source $exe))) {
         throw "$exe not found in $Source. Build first: cargo build --release"
@@ -73,5 +82,36 @@ Write-Host ""
 Write-Host "Rhevia installed to $InstallTo" -ForegroundColor Green
 Write-Host "  Start Menu : $AppName"
 Write-Host "  CLI        : rhevia-relay, rhevia-stream"
+
+# What is present decides which optional inputs work. Reported here rather
+# than discovered later in the middle of setting up a show.
+Write-Host ""
+Write-Host "Optional runtimes:"
+
+$ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
+if ($ffmpeg) {
+    Write-Host "  media files   yes  ($($ffmpeg.Source))" -ForegroundColor Green
+} else {
+    Write-Host "  media files   no   - install ffmpeg to play video and audio files" -ForegroundColor Yellow
+}
+
+$ndiDir = $env:NDI_RUNTIME_DIR_V6
+if (-not $ndiDir) { $ndiDir = $env:NDI_RUNTIME_DIR_V5 }
+if ($ndiDir -and (Test-Path (Join-Path $ndiDir "Processing.NDI.Lib.x64.dll"))) {
+    Write-Host "  NDI           yes  ($ndiDir)" -ForegroundColor Green
+} else {
+    Write-Host "  NDI           no   - install NDI Tools from ndi.video for network video" -ForegroundColor Yellow
+}
+
+$vst3 = Join-Path $env:CommonProgramFiles "VST3"
+if (Test-Path $vst3) {
+    $count = (Get-ChildItem $vst3 -Filter *.vst3 -ErrorAction SilentlyContinue).Count
+    Write-Host "  VST3 plugins  $count found in $vst3" -ForegroundColor Green
+} else {
+    Write-Host "  VST3 plugins  none - nothing installed in $vst3" -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "Everything else - capture, mixing, encoding, RTMP and SRT - needs none of these."
 Write-Host ""
 Write-Host "Uninstall with: .\install.ps1 -Uninstall"

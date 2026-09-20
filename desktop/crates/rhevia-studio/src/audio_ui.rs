@@ -584,6 +584,7 @@ pub fn strip_row(
     snapshot: &Snapshot,
     engine: &EngineHandle,
     show_devices: &mut bool,
+    selected: &mut usize,
 ) {
     egui::TopBottomPanel::bottom("audio-row")
         .exact_height(188.0)
@@ -624,7 +625,12 @@ pub fn strip_row(
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             for (index, channel) in snapshot.audio.iter().enumerate() {
-                                strip(ui, index, channel, engine, false, None);
+                                // Selectable here as well as on the audio tab.
+                                // Without this, every route to the settings
+                                // arrived at whichever channel happened to be
+                                // selected — which made per-channel settings
+                                // look like one shared set.
+                                strip(ui, index, channel, engine, false, Some(selected));
                                 ui.add_space(5.0);
                             }
                         });
@@ -1120,13 +1126,40 @@ pub fn full_view(
                         RichText::new(format!("CHANNEL DSP — {}", channel.name))
                             .size(11.5)
                             .strong()
-                            .color(theme::TEXT),
+                            .color(theme::ACCENT),
                     );
                     ui.label(
                         RichText::new("gate → EQ → compressor → gain → delay")
                             .font(theme::mono(9.5))
                             .color(theme::TEXT_FAINT),
                     );
+                });
+                ui.add_space(5.0);
+
+                // Every channel has its own settings, and which one is being
+                // edited has to be unmistakable. Picking from a row here means
+                // an operator never has to work out which strip was selected.
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(
+                        RichText::new("EDITING").size(9.5).color(theme::TEXT_FAINT),
+                    );
+                    for (index, other) in snapshot.audio.iter().enumerate() {
+                        let name: String = other.name.chars().take(12).collect();
+                        let label = format!("{} {name}", index + 1);
+                        if theme::chip(
+                            ui,
+                            &label,
+                            index == *selected,
+                            theme::ACCENT,
+                            theme::chip_size(ui, &label, 20.0),
+                        )
+                        .on_hover_text("each channel keeps its own EQ, compressor, gate and delay")
+                        .clicked()
+                        {
+                            *selected = index;
+                        }
+                    }
                 });
                 ui.add_space(8.0);
                 dsp_panel(ui, *selected, channel, engine);

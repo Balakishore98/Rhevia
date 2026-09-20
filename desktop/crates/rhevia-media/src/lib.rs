@@ -66,16 +66,46 @@ impl MediaInfo {
     }
 }
 
+/// Whether ffmpeg has been looked for yet, and what was found.
+///
+/// 0 not yet asked, 1 present, 2 absent.
+static FFMPEG: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 /// True when ffmpeg can be run.
+///
+/// The answer is remembered. Finding out costs a whole process, and this is
+/// asked from interface code that runs on every repaint — sixty times a
+/// second, which starts sixty processes a second until Windows refuses to
+/// start any more and reports `0xc0000142` against a program that is
+/// perfectly fine.
 pub fn available() -> bool {
-    Command::new("ffmpeg")
+    use std::sync::atomic::Ordering;
+
+    match FFMPEG.load(Ordering::Relaxed) {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+
+    let found = Command::new("ffmpeg")
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    FFMPEG.store(if found { 1 } else { 2 }, Ordering::Relaxed);
+    found
+}
+
+/// Forgets whether ffmpeg was found, so the next call looks again.
+///
+/// For the case where someone installs it while Rhevia is running and presses
+/// refresh rather than restarting.
+pub fn forget_availability() {
+    FFMPEG.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Asks ffprobe what is in a file.
@@ -564,6 +594,35 @@ mod tests {
         for path in ["notes.txt", "slide.png", "archive.zip", "noextension"] {
             assert!(!looks_like_media(path), "{path} should not look like media");
         }
+    }
+
+    #[test]
+    fn asking_whether_ffmpeg_is_there_costs_one_process_not_one_per_call() {
+        // Called from interface code that repaints sixty times a second. Left
+        // uncached it starts sixty processes a second until Windows refuses,
+        // which surfaces as 0xc0000142 against ffmpeg itself.
+        forget_availability();
+        let first = available();
+
+        let started = std::time::Instant::now();
+        for _ in 0..500 {
+            assert_eq!(available(), first);
+        }
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "500 calls took {elapsed:?}, so they are still starting processes"
+        );
+    }
+
+    #[test]
+    fn forgetting_makes_the_next_call_look_again() {
+        let first = available();
+        forget_availability();
+        // The answer is the same, but it was found afresh rather than read
+        // from the cache.
+        assert_eq!(available(), first);
     }
 
     #[test]

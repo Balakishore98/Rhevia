@@ -94,12 +94,71 @@ pub struct StudioApp {
     /// Set when enumeration failed, so the dialog can say why rather than
     /// showing an empty list that looks like "no devices".
     device_error: Option<String>,
+    /// A device scan running on a worker thread, if one is.
+    device_scan: Option<std::sync::mpsc::Receiver<Devices>>,
     /// Which input a chosen device attaches to; None adds an audio-only input.
     attach_to: Option<usize>,
     /// Which overlay slot the next input click fills, if any.
     assigning_overlay: Option<usize>,
     /// The channel whose DSP is shown on the audio tab.
     selected_channel: usize,
+}
+
+/// Everything the input dialog can offer, gathered in one go.
+///
+/// Collected on a worker thread and sent over as a whole, so the interface
+/// never holds a half-updated list.
+#[derive(Default)]
+struct Devices {
+    cameras: Vec<rhevia_capture::CameraTarget>,
+    monitors: Vec<rhevia_capture::Target>,
+    windows: Vec<rhevia_capture::Target>,
+    audio: Vec<rhevia_audio::AudioDevice>,
+    ndi: Vec<rhevia_ndi::NdiSource>,
+    error: Option<String>,
+}
+
+/// Looks for every kind of input. Slow, and never called on the interface
+/// thread.
+///
+/// Enumerating windows, opening the camera list and waiting on NDI discovery
+/// together take about a second. Doing that while painting freezes the window,
+/// which during a show looks exactly like a crash.
+fn gather_devices() -> Devices {
+    let mut found = Devices::default();
+
+    match rhevia_capture::cameras() {
+        Ok(list) => found.cameras = list,
+        Err(e) => found.error = Some(e.to_string()),
+    }
+    match rhevia_capture::monitors() {
+        Ok(list) => found.monitors = list,
+        Err(e) => {
+            found.error.get_or_insert_with(|| e.to_string());
+        }
+    }
+    match rhevia_capture::windows() {
+        Ok(list) => found.windows = list,
+        Err(e) => {
+            found.error.get_or_insert_with(|| e.to_string());
+        }
+    }
+    found.audio = rhevia_audio::list_input_devices();
+
+    // NDI finds sources by announcement, so a list taken immediately is
+    // usually empty. Most of a second is the shortest wait that reliably sees
+    // a machine that is already publishing — and the single biggest reason
+    // this cannot happen on the interface thread.
+    if rhevia_ndi::available() {
+        match rhevia_ndi::find_sources(std::time::Duration::from_millis(800)) {
+            Ok(sources) => found.ndi = sources,
+            Err(e) => {
+                found.error.get_or_insert_with(|| e.to_string());
+            }
+        }
+    }
+
+    found
 }
 
 /// Ingest endpoints, so the common cases need no typing.
@@ -211,6 +270,7 @@ impl StudioApp {
             plugin_scan: None,
             ndi_output_name: "Rhevia Programme".into(),
             device_error: None,
+            device_scan: None,
             attach_to: None,
             assigning_overlay: None,
             selected_channel: 0,
@@ -257,6 +317,9 @@ impl eframe::App for StudioApp {
         self.tab_bar(ctx);
         self.footer(ctx, &snapshot);
 
+        // Finished scans, collected without waiting for either.
+        self.collect_devices();
+
         // A finished plugin scan, collected without waiting for it.
         if let Some(receiver) = &self.plugin_scan {
             if let Ok(found) = receiver.try_recv() {
@@ -268,7 +331,13 @@ impl eframe::App for StudioApp {
 
         match self.tab {
             Tab::Switcher => {
-                audio_ui::strip_row(ctx, &snapshot, &self.engine, &mut self.show_devices);
+                audio_ui::strip_row(
+                    ctx,
+                    &snapshot,
+                    &self.engine,
+                    &mut self.show_devices,
+                    &mut self.selected_channel,
+                );
                 self.input_matrix(ctx, &snapshot);
                 self.monitors(ctx, &snapshot);
             }
@@ -607,7 +676,10 @@ impl StudioApp {
                         }
                         ui.add_space(6.0);
                         if theme::button(ui, "AUDIO SETTINGS", theme::SURFACE_HIGH, Vec2::new(122.0, 22.0))
-                            .on_hover_text("EQ, compressor, gate and delay")
+                            .on_hover_text(
+                                "EQ, compressor, gate and delay — each channel has its own; \
+                                 click a strip below, or an input's AUD button, to choose one",
+                            )
                             .clicked()
                         {
                             self.tab = Tab::Audio;
@@ -706,6 +778,16 @@ impl StudioApp {
                     .clicked()
                 {
                     self.engine.send(Command::SetPreview(index));
+                }
+                // Straight to this input's own audio settings. Every input
+                // has its own channel, and without a route from the input
+                // itself an operator has to guess which strip to select.
+                if theme::chip(ui, "AUD", false, theme::ACCENT, Vec2::new(44.0, 20.0))
+                    .on_hover_text("this input's own EQ, compressor, gate and delay")
+                    .clicked()
+                {
+                    self.selected_channel = index;
+                    self.tab = Tab::Audio;
                 }
                 let adjusted = !info.settings.is_default();
                 if theme::chip(
@@ -1340,48 +1422,44 @@ impl StudioApp {
         }
     }
 
-    /// Refreshes the device lists the input dialog offers.
+    /// Starts looking for devices, on a worker thread.
     ///
-    /// Called when the dialog opens and from its own refresh button, never per
-    /// frame: enumerating windows and cameras is slow enough to be felt.
+    /// The dialog opens immediately with whatever was found last time and
+    /// fills in when the scan finishes. Doing the work here instead would
+    /// freeze the window for about a second every time the dialog opens,
+    /// which during a show is indistinguishable from a crash.
     fn refresh_devices(&mut self) {
-        self.device_error = None;
+        if self.device_scan.is_some() {
+            return;
+        }
+        // Whether ffmpeg is installed is looked for again too, in case it was
+        // installed since the program started.
+        rhevia_media::forget_availability();
 
-        match rhevia_capture::cameras() {
-            Ok(list) => self.cached_cameras = list,
-            Err(e) => {
-                self.cached_cameras.clear();
-                self.device_error = Some(e.to_string());
-            }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        if std::thread::Builder::new()
+            .name("rhevia-device-scan".into())
+            .spawn(move || {
+                let _ = sender.send(gather_devices());
+            })
+            .is_ok()
+        {
+            self.device_scan = Some(receiver);
         }
-        match rhevia_capture::monitors() {
-            Ok(list) => self.cached_monitors = list,
-            Err(e) => {
-                self.cached_monitors.clear();
-                self.device_error.get_or_insert_with(|| e.to_string());
-            }
-        }
-        match rhevia_capture::windows() {
-            Ok(list) => self.cached_windows = list,
-            Err(e) => {
-                self.cached_windows.clear();
-                self.device_error.get_or_insert_with(|| e.to_string());
-            }
-        }
-        self.cached_audio = rhevia_audio::list_input_devices();
+    }
 
-        // NDI finds sources by announcement, so a list taken immediately is
-        // usually empty. Most of a second is the shortest wait that reliably
-        // sees a machine that is already publishing.
-        if rhevia_ndi::available() {
-            match rhevia_ndi::find_sources(std::time::Duration::from_millis(800)) {
-                Ok(sources) => self.cached_ndi = sources,
-                Err(e) => {
-                    self.cached_ndi.clear();
-                    self.device_error.get_or_insert_with(|| e.to_string());
-                }
-            }
-        }
+    /// Takes the result of a finished scan, without waiting for one.
+    fn collect_devices(&mut self) {
+        let Some(receiver) = &self.device_scan else { return };
+        let Ok(found) = receiver.try_recv() else { return };
+
+        self.cached_cameras = found.cameras;
+        self.cached_monitors = found.monitors;
+        self.cached_windows = found.windows;
+        self.cached_audio = found.audio;
+        self.cached_ndi = found.ndi;
+        self.device_error = found.error;
+        self.device_scan = None;
     }
 
     /// The input dialog: types down the left, the chosen type on the right.
@@ -1429,6 +1507,12 @@ impl StudioApp {
                         ui.add_space(10.0);
                         if ui.button("Refresh devices").clicked() {
                             self.refresh_devices();
+                        }
+                        if self.device_scan.is_some() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("looking…").size(9.5).color(theme::ACCENT),
+                            );
                         }
                         if let Some(error) = &self.device_error {
                             ui.add_space(4.0);

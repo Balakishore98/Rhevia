@@ -720,6 +720,104 @@ mod tests {
         buffer.samples[half..].iter().fold(0.0f32, |a, &s| a.max(s.abs()))
     }
 
+    /// Each channel keeps its own processing.
+    ///
+    /// The mixer holds one chain per channel, so settings cannot bleed between
+    /// them — but that is the sort of claim worth proving rather than
+    /// asserting, because an operator with three microphones notices
+    /// immediately if it is wrong.
+    mod independence {
+        use super::*;
+
+        #[test]
+        fn two_channels_keep_their_own_eq() {
+            let mut first = ChannelDsp::new();
+            let mut second = ChannelDsp::new();
+
+            first.eq.set(EqSettings { enabled: true, bass_db: 12.0, ..Default::default() });
+            second.eq.set(EqSettings { enabled: true, bass_db: -12.0, ..Default::default() });
+
+            let mut lifted = sine(60.0, 8_000, 0.2);
+            let mut cut = sine(60.0, 8_000, 0.2);
+            first.process(&mut lifted);
+            second.process(&mut cut);
+
+            assert!(
+                settled_peak(&lifted) > settled_peak(&cut) * 2.0,
+                "one channel's EQ reached the other: {:.3} against {:.3}",
+                settled_peak(&lifted),
+                settled_peak(&cut)
+            );
+        }
+
+        #[test]
+        fn setting_one_channel_does_not_disturb_another() {
+            // The order matters: a shared chain would show the second
+            // channel's settings applied to the first as well.
+            let mut untouched = ChannelDsp::new();
+            let mut changed = ChannelDsp::new();
+
+            let mut before = sine(1000.0, 8_000, 0.3);
+            untouched.process(&mut before);
+            let quiet_first = settled_peak(&before);
+
+            changed.compressor.set(CompressorSettings {
+                enabled: true,
+                threshold_db: -40.0,
+                ratio: 20.0,
+                ..Default::default()
+            });
+
+            let mut after = sine(1000.0, 8_000, 0.3);
+            untouched.process(&mut after);
+
+            assert!(
+                (settled_peak(&after) - quiet_first).abs() < 1e-4,
+                "the untouched channel changed when another was configured"
+            );
+        }
+
+        #[test]
+        fn three_channels_each_report_their_own_settings() {
+            // What the interface reads back to show which channel is being
+            // edited. One shared set would report the same everywhere.
+            let mut chains: Vec<ChannelDsp> = (0..3).map(|_| ChannelDsp::new()).collect();
+            for (index, chain) in chains.iter_mut().enumerate() {
+                chain.eq.set(EqSettings {
+                    enabled: true,
+                    bass_db: index as f32 * 3.0,
+                    ..Default::default()
+                });
+                chain.delay.set_milliseconds(index as f32 * 10.0);
+            }
+
+            for (index, chain) in chains.iter().enumerate() {
+                assert_eq!(chain.eq.settings().bass_db, index as f32 * 3.0);
+                assert!((chain.delay.milliseconds() - index as f32 * 10.0).abs() < 0.001);
+            }
+        }
+
+        #[test]
+        fn a_gate_closing_on_one_channel_leaves_the_others_open() {
+            // Three microphones, one of them quiet. Only that one should be
+            // gated.
+            let mut quiet = ChannelDsp::new();
+            let mut loud = ChannelDsp::new();
+            let settings =
+                GateSettings { enabled: true, threshold_db: -30.0, ..Default::default() };
+            quiet.gate.set(settings);
+            loud.gate.set(settings);
+
+            let mut whisper = sine(440.0, 16_000, 0.001);
+            let mut speech = sine(440.0, 16_000, 0.4);
+            quiet.process(&mut whisper);
+            loud.process(&mut speech);
+
+            assert!(!quiet.gate.is_open(), "the quiet channel should have gated");
+            assert!(loud.gate.is_open(), "the loud channel was gated by its neighbour");
+        }
+    }
+
     #[test]
     fn a_bypassed_biquad_changes_nothing() {
         let mut b = Biquad::bypass();

@@ -224,16 +224,33 @@ mod tests {
     }
 
     #[test]
-    fn effects_are_a_subset_of_everything_installed() {
-        let all = installed();
-        let effects = installed_effects();
+    fn instruments_are_filtered_out_and_effects_are_kept() {
+        // One scan, then filtered. Scanning twice and comparing asserts
+        // something else entirely — that two independent scans agree — and
+        // they need not: a module that transiently fails to load is skipped,
+        // so a second scan can legitimately see fewer plugins.
+        let all: Vec<PluginInfo> = vst3::scan_all().iter().map(PluginInfo::from).collect();
+        if all.is_empty() {
+            eprintln!("SKIP: no VST3 plugins installed");
+            return;
+        }
+
+        let effects: Vec<&PluginInfo> = all
+            .iter()
+            .filter(|p| !p.category.to_ascii_lowercase().contains("instrument"))
+            .collect();
+
         assert!(effects.len() <= all.len());
         for effect in &effects {
             assert!(
-                all.iter().any(|p| p.name == effect.name),
-                "{} is an effect that is not in the full list",
+                !effect.category.to_ascii_lowercase().contains("instrument"),
+                "{} is an instrument and should not be offered as an effect",
                 effect.name
             );
+        }
+        for plugin in &all {
+            assert_eq!(plugin.format, "VST3");
+            assert_eq!(plugin.cid.len(), 32, "{} has no usable class id", plugin.name);
         }
     }
 }

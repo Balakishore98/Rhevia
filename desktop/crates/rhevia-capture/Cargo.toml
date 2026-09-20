@@ -1,0 +1,15 @@
+[package]
+name = "rhevia-capture"
+description = "Live device capture: screen and camera"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rhevia-engine = { path = "../rhevia-engine" }
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+xcap = "0.9"
+nokhwa = { version = "0.10.11", features = ["input-msmf"] }

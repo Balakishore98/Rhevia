@@ -124,6 +124,30 @@ impl Biquad {
         self.z1 = 0.0;
         self.z2 = 0.0;
     }
+
+    /// Gain in dB that this section applies at `freq`.
+    ///
+    /// This is the transfer function evaluated on the unit circle, which is
+    /// the only honest way to draw an EQ curve: it is computed from the very
+    /// coefficients the audio passes through, so the picture cannot drift
+    /// away from the sound.
+    pub fn magnitude_db(&self, freq: f32) -> f32 {
+        let w = std::f32::consts::TAU * freq / SAMPLE_RATE as f32;
+        let (sin1, cos1) = w.sin_cos();
+        let (sin2, cos2) = (2.0 * w).sin_cos();
+
+        let num_real = self.b0 + self.b1 * cos1 + self.b2 * cos2;
+        let num_imag = self.b1 * sin1 + self.b2 * sin2;
+        let den_real = 1.0 + self.a1 * cos1 + self.a2 * cos2;
+        let den_imag = self.a1 * sin1 + self.a2 * sin2;
+
+        let num = (num_real * num_real + num_imag * num_imag).sqrt();
+        let den = (den_real * den_real + den_imag * den_imag).sqrt();
+        if den <= f32::EPSILON || num <= f32::EPSILON {
+            return 0.0;
+        }
+        20.0 * (num / den).log10()
+    }
 }
 
 /// Four bands, matching the controls people actually reach for.
@@ -138,6 +162,53 @@ pub struct EqSettings {
     pub high_mid_db: f32,
     /// High shelf at 8 kHz — air and sibilance.
     pub presence_db: f32,
+}
+
+impl EqSettings {
+    /// Centre frequency of each band, in the order the filters run, with the
+    /// label the interface uses. The curve and the controls read from here so
+    /// that moving a band cannot leave the drawing behind.
+    pub const BANDS: [(&'static str, f32); 4] =
+        [("BASS", 100.0), ("LOW MID", 400.0), ("HIGH MID", 2500.0), ("PRESENCE", 8000.0)];
+
+    /// Gain of each band, in the same order as [`Self::BANDS`].
+    pub fn gains(&self) -> [f32; 4] {
+        [self.bass_db, self.low_mid_db, self.high_mid_db, self.presence_db]
+    }
+
+    /// Sets the gain of one band by index, for the interface.
+    pub fn set_gain(&mut self, band: usize, db: f32) {
+        match band {
+            0 => self.bass_db = db,
+            1 => self.low_mid_db = db,
+            2 => self.high_mid_db = db,
+            3 => self.presence_db = db,
+            _ => {}
+        }
+    }
+
+    /// The four filter sections these settings describe.
+    ///
+    /// Both the audio path and the displayed curve are built from this, which
+    /// is what keeps them in agreement.
+    pub fn designs(&self) -> [Biquad; 4] {
+        [
+            Biquad::low_shelf(Self::BANDS[0].1, self.bass_db),
+            Biquad::peaking(Self::BANDS[1].1, 0.9, self.low_mid_db),
+            Biquad::peaking(Self::BANDS[2].1, 0.9, self.high_mid_db),
+            Biquad::high_shelf(Self::BANDS[3].1, self.presence_db),
+        ]
+    }
+
+    /// Total gain in dB the EQ applies at `freq`.
+    ///
+    /// Bands are in series, so their dB contributions add.
+    pub fn response_db(&self, freq: f32) -> f32 {
+        if !self.enabled {
+            return 0.0;
+        }
+        self.designs().iter().map(|b| b.magnitude_db(freq)).sum()
+    }
 }
 
 impl Default for EqSettings {
@@ -185,12 +256,7 @@ impl Equaliser {
         }
         self.settings = settings;
 
-        let designs = [
-            Biquad::low_shelf(100.0, settings.bass_db),
-            Biquad::peaking(400.0, 0.9, settings.low_mid_db),
-            Biquad::peaking(2500.0, 0.9, settings.high_mid_db),
-            Biquad::high_shelf(8000.0, settings.presence_db),
-        ];
+        let designs = settings.designs();
         for channel in 0..CHANNELS {
             for (band, design) in designs.iter().enumerate() {
                 // Keep the existing state: recomputing coefficients mid-stream
@@ -517,6 +583,124 @@ fn time_constant(ms: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::mixer::amplitude_to_db;
+
+    /// The curve is only worth drawing if it agrees with what the filters do
+    /// to real audio, so these check the response against the settings and,
+    /// in one case, against a measured tone.
+    mod response {
+        use super::*;
+
+        fn enabled(settings: EqSettings) -> EqSettings {
+            EqSettings { enabled: true, ..settings }
+        }
+
+        #[test]
+        fn a_flat_eq_draws_a_flat_line() {
+            let eq = enabled(EqSettings::default());
+            for freq in [20.0, 100.0, 1000.0, 8000.0, 18_000.0] {
+                assert!(
+                    eq.response_db(freq).abs() < 0.01,
+                    "flat EQ bent by {:.3} dB at {freq} Hz",
+                    eq.response_db(freq)
+                );
+            }
+        }
+
+        #[test]
+        fn a_bypassed_eq_reads_flat_however_the_bands_are_set() {
+            // The curve must show what is happening to the audio, and with the
+            // EQ switched out nothing is.
+            let eq = EqSettings { enabled: false, bass_db: 9.0, presence_db: -9.0, ..Default::default() };
+            assert_eq!(eq.response_db(60.0), 0.0);
+            assert_eq!(eq.response_db(12_000.0), 0.0);
+        }
+
+        #[test]
+        fn a_bass_lift_shows_below_its_corner_and_not_above() {
+            let eq = enabled(EqSettings { bass_db: 6.0, ..Default::default() });
+            let low = eq.response_db(40.0);
+            let high = eq.response_db(10_000.0);
+            assert!((low - 6.0).abs() < 1.0, "expected about +6 dB at 40 Hz, got {low:.2}");
+            assert!(high.abs() < 0.5, "a low shelf should not move 10 kHz, got {high:.2}");
+        }
+
+        #[test]
+        fn a_presence_lift_shows_above_its_corner_and_not_below() {
+            let eq = enabled(EqSettings { presence_db: 6.0, ..Default::default() });
+            let high = eq.response_db(15_000.0);
+            let low = eq.response_db(50.0);
+            assert!((high - 6.0).abs() < 1.0, "expected about +6 dB at 15 kHz, got {high:.2}");
+            assert!(low.abs() < 0.5, "a high shelf should not move 50 Hz, got {low:.2}");
+        }
+
+        #[test]
+        fn a_peaking_band_peaks_at_its_centre() {
+            let eq = enabled(EqSettings { high_mid_db: 8.0, ..Default::default() });
+            let centre = eq.response_db(2500.0);
+            assert!((centre - 8.0).abs() < 0.5, "expected about +8 dB at 2.5 kHz, got {centre:.2}");
+            // And falls away on both sides, which is what makes it a bell.
+            assert!(eq.response_db(250.0) < centre - 4.0);
+            assert!(eq.response_db(18_000.0) < centre - 4.0);
+        }
+
+        #[test]
+        fn a_cut_reads_negative() {
+            let eq = enabled(EqSettings { low_mid_db: -9.0, ..Default::default() });
+            let centre = eq.response_db(400.0);
+            assert!((centre + 9.0).abs() < 0.5, "expected about -9 dB at 400 Hz, got {centre:.2}");
+        }
+
+        #[test]
+        fn bands_in_series_add_up() {
+            let eq = enabled(EqSettings {
+                bass_db: 4.0,
+                presence_db: 4.0,
+                ..Default::default()
+            });
+            // Far apart in frequency, so each shows its own gain where it acts.
+            assert!((eq.response_db(40.0) - 4.0).abs() < 1.0);
+            assert!((eq.response_db(16_000.0) - 4.0).abs() < 1.0);
+        }
+
+        #[test]
+        fn the_drawn_curve_matches_what_the_filter_does_to_a_tone() {
+            // The test that actually matters: push a tone through the real EQ
+            // and confirm the measured change is the one the curve promised.
+            let settings = enabled(EqSettings { high_mid_db: 6.0, ..Default::default() });
+            let mut eq = Equaliser::new();
+            eq.set(settings);
+
+            let mut buffer = sine(2500.0, 24_000, 0.25);
+            eq.process(&mut buffer);
+            // Measured after the filter has settled, against the amplitude the
+            // tone went in at.
+            let measured = amplitude_to_db(settled_peak(&buffer)) - amplitude_to_db(0.25);
+            let predicted = settings.response_db(2500.0);
+
+            assert!(
+                (measured - predicted).abs() < 1.0,
+                "curve says {predicted:.2} dB, filter did {measured:.2} dB"
+            );
+        }
+
+        #[test]
+        fn every_band_has_a_label_and_a_gain() {
+            let eq = EqSettings { bass_db: 1.0, low_mid_db: 2.0, high_mid_db: 3.0, presence_db: 4.0, enabled: true };
+            assert_eq!(eq.gains(), [1.0, 2.0, 3.0, 4.0]);
+            assert_eq!(EqSettings::BANDS.len(), eq.gains().len());
+            assert_eq!(EqSettings::BANDS[0].0, "BASS");
+        }
+
+        #[test]
+        fn setting_a_band_by_index_reaches_the_right_one() {
+            let mut eq = EqSettings::default();
+            eq.set_gain(2, 5.0);
+            assert_eq!(eq.high_mid_db, 5.0);
+            // Out of range is ignored rather than panicking the interface.
+            eq.set_gain(9, 5.0);
+            assert_eq!(eq.gains(), [0.0, 0.0, 5.0, 0.0]);
+        }
+    }
 
     /// A sine at `freq`, useful for checking what a filter does to a band.
     fn sine(freq: f32, frames: usize, amplitude: f32) -> AudioBuffer {

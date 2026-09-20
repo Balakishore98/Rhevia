@@ -69,12 +69,80 @@ pub struct StudioApp {
     settings_name: String,
     show_add_source: bool,
     show_devices: bool,
+    /// Which type of input the select dialog is showing.
+    input_tab: InputTab,
+    /// Devices are listed when the dialog opens and on demand, never per
+    /// repaint: enumerating every window on the desktop sixty times a second
+    /// costs more than the dialog is worth.
+    cached_cameras: Vec<rhevia_capture::CameraTarget>,
+    cached_monitors: Vec<rhevia_capture::Target>,
+    cached_windows: Vec<rhevia_capture::Target>,
+    cached_audio: Vec<rhevia_audio::AudioDevice>,
+    /// Set when enumeration failed, so the dialog can say why rather than
+    /// showing an empty list that looks like "no devices".
+    device_error: Option<String>,
     /// Which input a chosen device attaches to; None adds an audio-only input.
     attach_to: Option<usize>,
     /// Which overlay slot the next input click fills, if any.
     assigning_overlay: Option<usize>,
     /// The channel whose DSP is shown on the audio tab.
     selected_channel: usize,
+}
+
+/// The categories down the left of the input dialog.
+///
+/// Ordered by how often a category is reached for rather than alphabetically:
+/// a camera is the first input on almost every show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputTab {
+    Camera,
+    Display,
+    Window,
+    Audio,
+    Media,
+    Image,
+    Title,
+    Colour,
+}
+
+impl InputTab {
+    const ALL: [InputTab; 8] = [
+        InputTab::Camera,
+        InputTab::Display,
+        InputTab::Window,
+        InputTab::Audio,
+        InputTab::Media,
+        InputTab::Image,
+        InputTab::Title,
+        InputTab::Colour,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            InputTab::Camera => "Camera",
+            InputTab::Display => "Desktop Capture",
+            InputTab::Window => "Window Capture",
+            InputTab::Audio => "Audio Input",
+            InputTab::Media => "Video / Media",
+            InputTab::Image => "Image",
+            InputTab::Title => "Title",
+            InputTab::Colour => "Colour",
+        }
+    }
+
+    /// One line under the heading, saying what this kind of input is for.
+    fn blurb(self) -> &'static str {
+        match self {
+            InputTab::Camera => "A webcam or capture card. Opened at its highest frame rate.",
+            InputTab::Display => "A whole monitor, captured live.",
+            InputTab::Window => "A single application window, captured live.",
+            InputTab::Audio => "A microphone or line input, on its own or attached to a camera.",
+            InputTab::Media => "An H.264 file, played on a loop.",
+            InputTab::Image => "A still: holding slide, sponsor board, stinger graphic.",
+            InputTab::Title => "A lower third, rendered here rather than in another application.",
+            InputTab::Colour => "A flat colour or a bar pattern, for testing and for backgrounds.",
+        }
+    }
 }
 
 impl StudioApp {
@@ -98,6 +166,12 @@ impl StudioApp {
             settings_name: String::new(),
             show_add_source: false,
             show_devices: false,
+            input_tab: InputTab::Camera,
+            cached_cameras: Vec::new(),
+            cached_monitors: Vec::new(),
+            cached_windows: Vec::new(),
+            cached_audio: Vec::new(),
+            device_error: None,
             attach_to: None,
             assigning_overlay: None,
             selected_channel: 0,
@@ -201,6 +275,7 @@ impl StudioApp {
                     ui.menu_button(RichText::new("File").size(11.5), |ui| {
                         if ui.button("Add input…").clicked() {
                             self.show_add_source = true;
+                            self.refresh_devices();
                             ui.close_menu();
                         }
                         ui.separator();
@@ -457,6 +532,7 @@ impl StudioApp {
                         ui.add_space(12.0);
                         if theme::button(ui, "+ ADD INPUT", theme::ACCENT, Vec2::new(104.0, 22.0)).clicked() {
                             self.show_add_source = true;
+                            self.refresh_devices();
                         }
                         ui.add_space(6.0);
                         if theme::button(ui, "AUDIO SETTINGS", theme::SURFACE_HIGH, Vec2::new(122.0, 22.0))
@@ -974,118 +1050,376 @@ impl StudioApp {
         self.title_editor(ctx);
         self.input_settings(ctx, snapshot);
 
-        if self.show_add_source {
-            let mut open = true;
-            egui::Window::new("Add input")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.set_min_width(460.0);
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("NAME").size(10.5).color(theme::TEXT_DIM));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_source_name)
-                            .hint_text("Camera 2")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Colour bars").clicked() {
-                            self.engine.send(Command::AddBarsSource { name: self.name_or("Bars") });
-                            self.show_add_source = false;
+        self.input_select(ctx, snapshot);
+    }
+
+    /// Refreshes the device lists the input dialog offers.
+    ///
+    /// Called when the dialog opens and from its own refresh button, never per
+    /// frame: enumerating windows and cameras is slow enough to be felt.
+    fn refresh_devices(&mut self) {
+        self.device_error = None;
+
+        match rhevia_capture::cameras() {
+            Ok(list) => self.cached_cameras = list,
+            Err(e) => {
+                self.cached_cameras.clear();
+                self.device_error = Some(e.to_string());
+            }
+        }
+        match rhevia_capture::monitors() {
+            Ok(list) => self.cached_monitors = list,
+            Err(e) => {
+                self.cached_monitors.clear();
+                self.device_error.get_or_insert_with(|| e.to_string());
+            }
+        }
+        match rhevia_capture::windows() {
+            Ok(list) => self.cached_windows = list,
+            Err(e) => {
+                self.cached_windows.clear();
+                self.device_error.get_or_insert_with(|| e.to_string());
+            }
+        }
+        self.cached_audio = rhevia_audio::list_input_devices();
+    }
+
+    /// The input dialog: types down the left, the chosen type on the right.
+    ///
+    /// One dialog for every kind of input rather than a menu that opens
+    /// further dialogs, because choosing a source is a single decision and
+    /// should not be spread across three windows.
+    fn input_select(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        if !self.show_add_source {
+            return;
+        }
+
+        let mut open = true;
+        let mut close = false;
+
+        egui::Window::new("Input select")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_size(Vec2::new(760.0, 420.0));
+
+                ui.horizontal_top(|ui| {
+                    // ---- left nav ------------------------------------------
+                    ui.vertical(|ui| {
+                        ui.set_width(168.0);
+                        ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
+                        ui.add_space(2.0);
+                        for tab in InputTab::ALL {
+                            let selected = self.input_tab == tab;
+                            if theme::chip(
+                                ui,
+                                tab.label(),
+                                selected,
+                                theme::ACCENT,
+                                Vec2::new(164.0, 30.0),
+                            )
+                            .clicked()
+                            {
+                                self.input_tab = tab;
+                            }
                         }
-                        if ui.button("Solid colour").clicked() {
-                            self.engine.send(Command::AddColourSource {
-                                name: self.name_or("Colour"),
-                                rgb: [160, 40, 90],
-                            });
-                            self.show_add_source = false;
+
+                        ui.add_space(10.0);
+                        if ui.button("Refresh devices").clicked() {
+                            self.refresh_devices();
                         }
-                        if ui.button("Audio device…").clicked() {
-                            self.show_add_source = false;
-                            self.attach_to = None;
-                            self.show_devices = true;
+                        if let Some(error) = &self.device_error {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(error).size(9.5).color(theme::WARN),
+                            );
                         }
                     });
 
                     ui.add_space(14.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("STILL IMAGE (PNG, JPEG, BMP, GIF)").size(10.5).color(theme::TEXT_DIM));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.image_path)
-                            .hint_text(r"C:\graphics\holding-slide.png")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("Transparency is kept, so a PNG works as an overlay graphic.")
-                            .size(10.0)
-                            .color(theme::TEXT_FAINT),
-                    );
-                    ui.add_space(6.0);
-                    if ui.button("Add image").clicked() && !self.image_path.trim().is_empty() {
-                        self.engine.send(Command::AddImageSource {
-                            name: self.name_or("Image"),
-                            path: self.image_path.trim().to_string(),
-                        });
-                        self.show_add_source = false;
-                    }
-
+                    theme::divider(ui, 396.0);
                     ui.add_space(14.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("TITLE / LOWER THIRD").size(10.5).color(theme::TEXT_DIM));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.title_text)
-                            .hint_text("ALEX CARTER")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(4.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.title_subtitle)
-                            .hint_text("LEAD ANALYST")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(6.0);
-                    if ui.button("Add title").clicked() && !self.title_text.trim().is_empty() {
-                        self.engine.send(Command::AddTitleSource {
-                            name: self.name_or("Title"),
-                            text: self.title_text.trim().to_string(),
-                            subtitle: self.title_subtitle.trim().to_string(),
-                        });
-                        self.show_add_source = false;
-                    }
 
-                    ui.add_space(14.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("H.264 FILE (Annex-B, loops)").size(10.5).color(theme::TEXT_DIM));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.file_path)
-                            .hint_text(r"C:\clips\opener.h264")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("ffmpeg -i in.mp4 -c:v libx264 -bsf:v h264_mp4toannexb -f h264 out.h264")
-                            .font(theme::mono(9.5))
-                            .color(theme::TEXT_FAINT),
-                    );
-                    ui.add_space(10.0);
-                    if ui.button("Add file").clicked() && !self.file_path.trim().is_empty() {
-                        self.engine.send(Command::AddFileSource {
-                            name: self.name_or("Clip"),
-                            path: self.file_path.trim().to_string(),
-                        });
-                        self.show_add_source = false;
-                    }
-                    ui.add_space(4.0);
+                    // ---- the chosen type -----------------------------------
+                    ui.vertical(|ui| {
+                        ui.set_width(540.0);
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(self.input_tab.label()).size(15.0).strong());
+                        ui.label(
+                            RichText::new(self.input_tab.blurb())
+                                .size(10.5)
+                                .color(theme::TEXT_DIM),
+                        );
+                        ui.add_space(10.0);
+
+                        ui.label(RichText::new("NAME").size(10.0).color(theme::TEXT_DIM));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.new_source_name)
+                                .hint_text("left blank, the device names itself")
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(12.0);
+
+                        egui::ScrollArea::vertical()
+                            .max_height(280.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                close = self.input_body(ui, snapshot);
+                            });
+                    });
                 });
-            if !open {
-                self.show_add_source = false;
+                ui.add_space(4.0);
+            });
+
+        if !open || close {
+            self.show_add_source = false;
+        }
+    }
+
+    /// The right-hand pane. Returns true when an input was added.
+    fn input_body(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) -> bool {
+        match self.input_tab {
+            InputTab::Camera => {
+                if self.cached_cameras.is_empty() {
+                    ui.label(
+                        RichText::new("no cameras found — plug one in and press Refresh")
+                            .size(10.5)
+                            .color(theme::TEXT_FAINT),
+                    );
+                    return false;
+                }
+                for target in self.cached_cameras.clone() {
+                    let label = if target.description.is_empty() {
+                        target.name.clone()
+                    } else {
+                        format!("{}   ·   {}", target.name, target.description)
+                    };
+                    if ui.button(label).clicked() {
+                        self.engine.send(Command::AddCameraSource {
+                            name: self.name_or(&target.name),
+                            target,
+                        });
+                        return true;
+                    }
+                }
+                false
+            }
+
+            InputTab::Display => {
+                if self.cached_monitors.is_empty() {
+                    ui.label(
+                        RichText::new("no displays found")
+                            .size(10.5)
+                            .color(theme::TEXT_FAINT),
+                    );
+                    return false;
+                }
+                for target in self.cached_monitors.clone() {
+                    let label = format!("{}   {}x{}", target.name, target.width, target.height);
+                    if ui.button(label).clicked() {
+                        self.engine.send(Command::AddScreenSource {
+                            name: self.name_or(&target.name),
+                            target,
+                        });
+                        return true;
+                    }
+                }
+                false
+            }
+
+            InputTab::Window => {
+                if self.cached_windows.is_empty() {
+                    ui.label(
+                        RichText::new("no capturable windows — press Refresh")
+                            .size(10.5)
+                            .color(theme::TEXT_FAINT),
+                    );
+                    return false;
+                }
+                for target in self.cached_windows.clone() {
+                    // Window titles run long; the list stays readable and the
+                    // full title is on hover.
+                    let short: String = target.name.chars().take(62).collect();
+                    if ui.button(short).on_hover_text(&target.name).clicked() {
+                        self.engine.send(Command::AddScreenSource {
+                            name: self.name_or(&target.name),
+                            target,
+                        });
+                        return true;
+                    }
+                }
+                false
+            }
+
+            InputTab::Audio => {
+                ui.label(RichText::new("ATTACH TO").size(10.0).color(theme::TEXT_DIM));
+                ui.horizontal_wrapped(|ui| {
+                    let standalone = self.attach_to.is_none();
+                    if theme::chip(
+                        ui,
+                        "New audio input",
+                        standalone,
+                        theme::ACCENT,
+                        Vec2::new(134.0, 24.0),
+                    )
+                    .clicked()
+                    {
+                        self.attach_to = None;
+                    }
+                    for (index, input) in snapshot.inputs.iter().enumerate() {
+                        let selected = self.attach_to == Some(index);
+                        let label = format!("{} {}", index + 1, input.name);
+                        let width = 7.0 * label.len() as f32 + 18.0;
+                        if theme::chip(ui, &label, selected, theme::ACCENT, Vec2::new(width, 24.0))
+                            .clicked()
+                        {
+                            self.attach_to = Some(index);
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                ui.label(RichText::new("DEVICE").size(10.0).color(theme::TEXT_DIM));
+                ui.add_space(4.0);
+
+                if self.cached_audio.is_empty() {
+                    ui.label(
+                        RichText::new("no capture devices found")
+                            .size(10.5)
+                            .color(theme::TEXT_FAINT),
+                    );
+                    return false;
+                }
+                for device in self.cached_audio.clone() {
+                    let label = if device.is_default {
+                        format!("{}   (default)", device.name)
+                    } else {
+                        device.name.clone()
+                    };
+                    if ui.button(label).clicked() {
+                        match self.attach_to {
+                            Some(input) => self.engine.send(Command::AttachAudio {
+                                input,
+                                device: Some(device.name.clone()),
+                            }),
+                            None => self.engine.send(Command::AddAudioSource {
+                                name: shorten(&device.name),
+                                device: Some(device.name.clone()),
+                            }),
+                        }
+                        return true;
+                    }
+                }
+                false
+            }
+
+            InputTab::Media => {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.file_path)
+                        .hint_text(r"C:\clips\opener.h264")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("Annex-B H.264. Convert anything else first:")
+                        .size(10.0)
+                        .color(theme::TEXT_FAINT),
+                );
+                ui.label(
+                    RichText::new(
+                        "ffmpeg -i in.mp4 -c:v libx264 -bsf:v h264_mp4toannexb -f h264 out.h264",
+                    )
+                    .font(theme::mono(9.5))
+                    .color(theme::TEXT_FAINT),
+                );
+                ui.add_space(10.0);
+                if ui.button("Add media").clicked() && !self.file_path.trim().is_empty() {
+                    self.engine.send(Command::AddFileSource {
+                        name: self.name_or("Clip"),
+                        path: self.file_path.trim().to_string(),
+                    });
+                    return true;
+                }
+                false
+            }
+
+            InputTab::Image => {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.image_path)
+                        .hint_text(r"C:\graphics\holding-slide.png")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "PNG, JPEG, BMP or GIF. Transparency is kept, so a PNG works as an overlay.",
+                    )
+                    .size(10.0)
+                    .color(theme::TEXT_FAINT),
+                );
+                ui.add_space(10.0);
+                if ui.button("Add image").clicked() && !self.image_path.trim().is_empty() {
+                    self.engine.send(Command::AddImageSource {
+                        name: self.name_or("Image"),
+                        path: self.image_path.trim().to_string(),
+                    });
+                    return true;
+                }
+                false
+            }
+
+            InputTab::Title => {
+                ui.label(RichText::new("HEADLINE").size(10.0).color(theme::TEXT_DIM));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.title_text)
+                        .hint_text("ALEX CARTER")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+                ui.label(RichText::new("SUBTITLE").size(10.0).color(theme::TEXT_DIM));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.title_subtitle)
+                        .hint_text("LEAD ANALYST")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(10.0);
+                if ui.button("Add title").clicked() && !self.title_text.trim().is_empty() {
+                    self.engine.send(Command::AddTitleSource {
+                        name: self.name_or("Title"),
+                        text: self.title_text.trim().to_string(),
+                        subtitle: self.title_subtitle.trim().to_string(),
+                    });
+                    return true;
+                }
+                false
+            }
+
+            InputTab::Colour => {
+                // A handful of useful flats rather than a colour picker: these
+                // are the ones a show actually reaches for.
+                for (label, rgb) in [
+                    ("Colour bars", None),
+                    ("Black", Some([0u8, 0, 0])),
+                    ("White", Some([235u8, 235, 235])),
+                    ("Chroma green", Some([0u8, 177, 64])),
+                    ("Chroma blue", Some([0u8, 71, 187])),
+                    ("Studio magenta", Some([160u8, 40, 90])),
+                ] {
+                    if ui.button(label).clicked() {
+                        match rgb {
+                            None => self
+                                .engine
+                                .send(Command::AddBarsSource { name: self.name_or("Bars") }),
+                            Some(rgb) => self.engine.send(Command::AddColourSource {
+                                name: self.name_or(label),
+                                rgb,
+                            }),
+                        }
+                        return true;
+                    }
+                }
+                false
             }
         }
     }

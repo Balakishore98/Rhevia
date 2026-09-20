@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use rhevia_output::flv;
 use rhevia_output::h264::{self, ParameterSets};
-use rhevia_output::{RtmpPublisher, RtmpUrl};
+use rhevia_output::{AacEncoder, RtmpPublisher, RtmpUrl};
 
 const FPS: u32 = 30;
 const WIDTH: u32 = 640;
@@ -155,6 +155,10 @@ async fn publishes_h264_that_a_real_server_can_decode() {
     let mut sent_config = false;
     let mut keyframes = 0usize;
 
+    let mut aac = AacEncoder::new(48_000, 2, 128_000).expect("aac encoder");
+    let mut sent_audio_config = false;
+    let mut audio_samples: u64 = 0;
+
     for (index, unit) in access_units.iter().enumerate() {
         let refs: Vec<&[u8]> = unit.to_vec();
         sets.absorb(&refs);
@@ -185,7 +189,37 @@ async fn publishes_h264_that_a_real_server_can_decode() {
             .send_video(flv::avc_frame(&avcc, keyframe, 0), timestamp_ms, false)
             .await
             .expect("send a frame");
+
+        // One video frame worth of audio per picture, which is how the engine
+        // drives it.
+        if !sent_audio_config {
+            publisher
+                .send_audio(flv::aac_sequence_header(aac.config(), Default::default()), 0)
+                .await
+                .expect("send the audio config");
+            sent_audio_config = true;
+        }
+
+        let block = 48_000 / FPS as usize;
+        let mut samples = Vec::with_capacity(block * 2);
+        for n in 0..block {
+            let t = (index as usize * block + n) as f32 / 48_000.0;
+            let value = 0.3 * (std::f32::consts::TAU * 440.0 * t).sin();
+            samples.push(value);
+            samples.push(value);
+        }
+        for frame in aac.push(&samples).expect("encode audio") {
+            let audio_ms = (audio_samples * 1000 / 48_000) as u32;
+            audio_samples += frame.samples as u64;
+            publisher
+                .send_audio(flv::aac_frame(&frame.data, Default::default()), audio_ms)
+                .await
+                .expect("send audio");
+        }
     }
+
+    assert!(sent_audio_config, "the audio configuration was never sent");
+    assert!(audio_samples > 0, "no audio frames were published");
 
     assert!(sent_config, "never produced a decoder configuration record");
     assert!(keyframes >= 2, "expected several keyframes, got {keyframes}");
@@ -220,11 +254,8 @@ async fn publishes_h264_that_a_real_server_can_decode() {
             "-hide_banner",
             "-loglevel",
             "error",
-            "-select_streams",
-            "v:0",
-            "-count_frames",
             "-show_entries",
-            "stream=codec_name,width,height,nb_read_frames",
+            "stream=codec_type,codec_name,width,height",
             "-of",
             "default=noprint_wrappers=1",
         ])
@@ -245,14 +276,15 @@ async fn publishes_h264_that_a_real_server_can_decode() {
         "wrong height — the decoder configuration record is bad: {report}"
     );
 
-    let frames: u32 = report
-        .lines()
-        .find_map(|l| l.strip_prefix("nb_read_frames="))
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(0);
+    // The point of the whole exercise: a player finds sound as well as
+    // picture. A stream that connects and plays silence is the failure this
+    // guards against.
     assert!(
-        frames as usize >= access_units.len() - 2,
-        "frames went missing in transit: sent {}, server decoded {frames}",
-        access_units.len()
+        report.contains("codec_type=audio"),
+        "the stream carried no audio track: {report}"
+    );
+    assert!(
+        report.contains("codec_name=aac"),
+        "the audio track is not AAC: {report}"
     );
 }

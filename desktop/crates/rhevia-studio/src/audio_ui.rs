@@ -19,6 +19,13 @@ use crate::theme;
 const METER_MIN_DB: f32 = -60.0;
 const METER_MAX_DB: f32 = 6.0;
 
+/// Height the mixer row reserves on the full view.
+///
+/// Stated rather than inferred: a horizontal scroll area does not report the
+/// height of what it contains, so without this the row measures short and the
+/// routing matrix below is drawn over the channel strips.
+const MIXER_ROW_HEIGHT: f32 = 296.0;
+
 fn position(db: f32) -> f32 {
     ((db - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB)).clamp(0.0, 1.0)
 }
@@ -134,6 +141,178 @@ pub fn fader(ui: &mut Ui, db: f32, size: Vec2) -> (egui::Response, Option<f32>) 
 }
 
 /// A horizontal pan control.
+/// The range the curve is drawn over, which is also the range the bands
+/// allow. Wider would compress the part of the picture that is actually used.
+const EQ_RANGE_DB: f32 = 15.0;
+const EQ_MIN_HZ: f32 = 20.0;
+const EQ_MAX_HZ: f32 = 20_000.0;
+
+/// Position of a frequency across the curve, on a log scale — which is how
+/// hearing works, and the only way 100 Hz and 10 kHz both get usable room.
+fn eq_x(freq: f32) -> f32 {
+    (freq.log10() - EQ_MIN_HZ.log10()) / (EQ_MAX_HZ.log10() - EQ_MIN_HZ.log10())
+}
+
+fn eq_freq_at(fraction: f32) -> f32 {
+    10f32.powf(EQ_MIN_HZ.log10() + fraction * (EQ_MAX_HZ.log10() - EQ_MIN_HZ.log10()))
+}
+
+/// The gain a pointer at `y` is asking for, given the curve's vertical centre
+/// and usable half-height.
+///
+/// Pulled out of the widget so the mapping can be checked: an inverted or
+/// mis-scaled axis here means dragging up cuts, which would be found only by
+/// someone doing it live.
+fn eq_gain_at(pointer_y: f32, centre_y: f32, half_height: f32) -> f32 {
+    if half_height <= 0.0 {
+        return 0.0;
+    }
+    (((centre_y - pointer_y) / half_height) * EQ_RANGE_DB).clamp(-EQ_RANGE_DB, EQ_RANGE_DB)
+}
+
+/// Draws the EQ response and lets the bands be dragged on it.
+///
+/// The curve is the transfer function of the filters themselves rather than a
+/// sketch of the slider positions, so what is drawn is exactly what the audio
+/// is having done to it. Dragging a handle is the fastest way to work: you aim
+/// at the shape you want rather than translating it into four numbers.
+fn eq_curve(
+    ui: &mut Ui,
+    settings: rhevia_audio::EqSettings,
+    size: Vec2,
+) -> (egui::Response, Option<rhevia_audio::EqSettings>) {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+
+    painter.rect_filled(rect, Rounding::same(3.0), theme::SURFACE_LOWEST);
+    painter.rect_stroke(rect, Rounding::same(3.0), Stroke::new(1.0_f32, theme::SURFACE_HIGH));
+
+    let to_y = |db: f32| {
+        let clamped = db.clamp(-EQ_RANGE_DB, EQ_RANGE_DB);
+        rect.center().y - (clamped / EQ_RANGE_DB) * (rect.height() / 2.0 - 4.0)
+    };
+
+    // ---- grid -----------------------------------------------------------
+    for db in [-12.0, -6.0, 6.0, 12.0] {
+        let y = to_y(db);
+        painter.line_segment(
+            [egui::pos2(rect.left() + 1.0, y), egui::pos2(rect.right() - 1.0, y)],
+            Stroke::new(1.0_f32, theme::SURFACE_HIGH.gamma_multiply(0.55)),
+        );
+    }
+    // Unity is drawn brighter: it is the reference the whole curve is read
+    // against.
+    let zero_y = to_y(0.0);
+    painter.line_segment(
+        [egui::pos2(rect.left() + 1.0, zero_y), egui::pos2(rect.right() - 1.0, zero_y)],
+        Stroke::new(1.0_f32, theme::TEXT_FAINT),
+    );
+
+    for (freq, label) in [(100.0, "100"), (1000.0, "1k"), (10_000.0, "10k")] {
+        let x = rect.left() + eq_x(freq) * rect.width();
+        painter.line_segment(
+            [egui::pos2(x, rect.top() + 1.0), egui::pos2(x, rect.bottom() - 1.0)],
+            Stroke::new(1.0_f32, theme::SURFACE_HIGH.gamma_multiply(0.55)),
+        );
+        painter.text(
+            egui::pos2(x + 3.0, rect.bottom() - 2.0),
+            egui::Align2::LEFT_BOTTOM,
+            label,
+            theme::mono(8.5),
+            theme::TEXT_FAINT,
+        );
+    }
+
+    // ---- the curve ------------------------------------------------------
+    let colour = if settings.enabled { theme::ACCENT } else { theme::TEXT_FAINT };
+    let steps = 96;
+    let mut points = Vec::with_capacity(steps + 1);
+    for step in 0..=steps {
+        let fraction = step as f32 / steps as f32;
+        let db = settings.response_db(eq_freq_at(fraction));
+        points.push(egui::pos2(rect.left() + fraction * rect.width(), to_y(db)));
+    }
+
+    // A soft fill under the curve, so a boost and a cut read differently at a
+    // glance, before the shape itself is read.
+    for window in points.windows(2) {
+        let (a, b) = (window[0], window[1]);
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                a,
+                b,
+                egui::pos2(b.x, zero_y),
+                egui::pos2(a.x, zero_y),
+            ],
+            colour.gamma_multiply(0.14),
+            Stroke::NONE,
+        ));
+    }
+    painter.add(egui::Shape::line(points, Stroke::new(1.6_f32, colour)));
+
+    // ---- band handles ---------------------------------------------------
+    let gains = settings.gains();
+    let mut handles = Vec::with_capacity(4);
+    for (band, (_, freq)) in rhevia_audio::EqSettings::BANDS.iter().enumerate() {
+        let centre = egui::pos2(rect.left() + eq_x(*freq) * rect.width(), to_y(gains[band]));
+        handles.push(centre);
+        painter.circle_filled(centre, 4.5, theme::SURFACE_LOWEST);
+        painter.circle_stroke(centre, 4.5, Stroke::new(1.6_f32, colour));
+    }
+
+    // ---- dragging -------------------------------------------------------
+    // The band being dragged is remembered for the length of the drag, so a
+    // steep move past another band frequency does not hand the drag over to
+    // that band halfway through.
+    let held_id = response.id.with("held");
+    let mut changed = None;
+
+    let nearest_to = |pos: egui::Pos2| -> usize {
+        handles
+            .iter()
+            .enumerate()
+            .min_by(|a, b| {
+                a.1.distance(pos)
+                    .partial_cmp(&b.1.distance(pos))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0)
+    };
+
+    if response.drag_started() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let band = nearest_to(pos);
+            ui.data_mut(|d| d.insert_temp(held_id, band));
+        }
+    }
+
+    if response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let band: usize = ui.data(|d| d.get_temp(held_id)).unwrap_or(0);
+            let db = eq_gain_at(pos.y, rect.center().y, rect.height() / 2.0 - 4.0);
+
+            let mut next = settings;
+            next.set_gain(band, db);
+            // Touching the curve means you want to hear it.
+            next.enabled = true;
+            changed = Some(next);
+        }
+    }
+
+    // A double click flattens the band under the pointer, which is the usual
+    // way out of an edit that went wrong.
+    if response.double_clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let mut next = settings;
+            next.set_gain(nearest_to(pos), 0.0);
+            changed = Some(next);
+        }
+    }
+
+    (response, changed)
+}
+
 fn pan_control(ui: &mut Ui, pan: f32, width: f32) -> (egui::Response, Option<f32>) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 13.0), Sense::click_and_drag());
     let painter = ui.painter();
@@ -330,6 +509,72 @@ fn master_strip(ui: &mut Ui, master: &MasterState, engine: &EngineHandle, tall: 
         if theme::chip(ui, "MUTE", master.muted, theme::PROGRAM, Vec2::new(69.0, 19.0)).clicked() {
             engine.send(Command::ToggleMasterMute);
         }
+
+        // Loudness, which is the figure a platform judges the programme by.
+        // Peak says whether it will distort; this says whether it will arrive
+        // at the same level as everything else on the service.
+        if tall {
+            ui.add_space(6.0);
+            loudness_readout(ui, master);
+        }
+    });
+}
+
+/// What most streaming services normalise to, and how far a reading may sit
+/// from it before it is worth calling out. Broadcast practice is tighter than
+/// this; streaming is not.
+const LOUDNESS_TARGET: f32 = -16.0;
+const LOUDNESS_TOLERANCE: f32 = 1.5;
+
+fn loudness_colour(lufs: f32) -> Color32 {
+    if lufs <= -60.0 {
+        theme::TEXT_FAINT
+    } else if (lufs - LOUDNESS_TARGET).abs() <= LOUDNESS_TOLERANCE {
+        theme::PREVIEW
+    } else if lufs > LOUDNESS_TARGET {
+        theme::PROGRAM
+    } else {
+        theme::WARN
+    }
+}
+
+fn loudness_text(lufs: f32) -> String {
+    // Below the gate there is nothing to report, and a figure like -70.0
+    // reads as a measurement rather than as silence.
+    if lufs <= -60.0 {
+        "  --  ".to_string()
+    } else {
+        format!("{lufs:+.1}")
+    }
+}
+
+/// Momentary, short-term and integrated loudness, stacked.
+fn loudness_readout(ui: &mut Ui, master: &MasterState) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
+        ui.label(RichText::new("LOUDNESS  LUFS").size(8.5).color(theme::TEXT_FAINT));
+        for (label, value, hint) in [
+            ("M", master.momentary_lufs, "momentary — the last 400 ms"),
+            ("S", master.short_term_lufs, "short term — the last 3 seconds"),
+            ("I", master.integrated_lufs, "integrated — the whole programme, gated"),
+        ] {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                ui.label(RichText::new(label).font(theme::mono(9.0)).color(theme::TEXT_FAINT));
+                ui.label(
+                    RichText::new(loudness_text(value))
+                        .font(theme::mono(10.0))
+                        .color(loudness_colour(value)),
+                )
+                .on_hover_text(hint);
+            });
+        }
+        ui.label(
+            RichText::new(format!("target {LOUDNESS_TARGET:.0}"))
+                .size(8.0)
+                .color(theme::TEXT_FAINT),
+        )
+        .on_hover_text("most streaming platforms normalise to about -16 LUFS");
     });
 }
 
@@ -423,26 +668,27 @@ fn dsp_panel(ui: &mut Ui, index: usize, channel: &ChannelState, engine: &EngineH
                     engine.send(Command::SetEq { channel: index, settings: s });
                 }
                 ui.label(
-                    RichText::new("100 Hz · 400 Hz · 2.5 kHz · 8 kHz")
+                    RichText::new("drag the curve")
                         .font(theme::mono(9.0))
                         .color(theme::TEXT_FAINT),
                 );
             });
-            ui.add_space(4.0);
-            for (label, value, apply) in [
-                ("BASS", channel.eq.bass_db, 0usize),
-                ("LO-MID", channel.eq.low_mid_db, 1),
-                ("HI-MID", channel.eq.high_mid_db, 2),
-                ("PRESENCE", channel.eq.presence_db, 3),
-            ] {
-                if let Some(db) = control(ui, label, value, -15.0..=15.0, " dB") {
+            ui.add_space(5.0);
+
+            let (curve, dragged) = eq_curve(ui, channel.eq, Vec2::new(300.0, 104.0));
+            curve.on_hover_text("drag a band to shape it, double click to flatten it");
+            if let Some(settings) = dragged {
+                engine.send(Command::SetEq { channel: index, settings });
+            }
+
+            ui.add_space(5.0);
+            // The numbers stay: a curve is faster to shape with, but a show
+            // that has to be matched to another desk needs exact figures.
+            let gains = channel.eq.gains();
+            for (band, (label, _)) in rhevia_audio::EqSettings::BANDS.iter().enumerate() {
+                if let Some(db) = control(ui, label, gains[band], -15.0..=15.0, " dB") {
                     let mut s = channel.eq;
-                    match apply {
-                        0 => s.bass_db = db,
-                        1 => s.low_mid_db = db,
-                        2 => s.high_mid_db = db,
-                        _ => s.presence_db = db,
-                    }
+                    s.set_gain(band, db);
                     s.enabled = true;
                     engine.send(Command::SetEq { channel: index, settings: s });
                 }
@@ -699,17 +945,23 @@ pub fn full_view(
                 return;
             }
 
-            ui.horizontal(|ui| {
+            // Top aligned, not centred: the master strip and the channel
+            // strips are different heights, and centring them puts the faders
+            // on different lines, which is exactly what an operator scans
+            // across.
+            ui.horizontal_top(|ui| {
+                ui.set_min_height(MIXER_ROW_HEIGHT);
                 ui.add_space(20.0);
                 master_strip(ui, &snapshot.master, engine, true);
                 ui.add_space(10.0);
-                theme::divider(ui, 240.0);
+                theme::divider(ui, MIXER_ROW_HEIGHT - 16.0);
                 ui.add_space(10.0);
 
                 egui::ScrollArea::horizontal()
                     .id_salt("audio-full-strips")
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.set_height(MIXER_ROW_HEIGHT);
+                        ui.horizontal_top(|ui| {
                             for (index, channel) in snapshot.audio.iter().enumerate() {
                                 strip(ui, index, channel, engine, true, Some(selected));
                                 ui.add_space(6.0);
@@ -774,4 +1026,136 @@ pub fn full_view(
             ui.add_space(16.0);
             });
         });
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frequency axis. A curve that puts 1 kHz in the wrong place is
+    /// worse than no curve, because it is read rather than measured.
+    mod frequency_axis {
+        use super::*;
+
+        #[test]
+        fn the_ends_of_the_axis_are_the_ends_of_the_range() {
+            assert!((eq_x(EQ_MIN_HZ) - 0.0).abs() < 1e-5);
+            assert!((eq_x(EQ_MAX_HZ) - 1.0).abs() < 1e-5);
+        }
+
+        #[test]
+        fn the_axis_is_logarithmic_not_linear() {
+            // On a log axis the midpoint of 20 Hz to 20 kHz is about 630 Hz.
+            // On a linear one it would be 10 kHz, which would leave every
+            // useful band crushed into the left edge.
+            let middle = eq_freq_at(0.5);
+            assert!(
+                (middle - 632.0).abs() < 20.0,
+                "expected about 632 Hz at the midpoint, got {middle:.0}"
+            );
+        }
+
+        #[test]
+        fn position_and_frequency_round_trip() {
+            for freq in [20.0, 100.0, 440.0, 2500.0, 8000.0, 20_000.0] {
+                let back = eq_freq_at(eq_x(freq));
+                assert!(
+                    (back / freq - 1.0).abs() < 0.001,
+                    "{freq} Hz came back as {back}"
+                );
+            }
+        }
+
+        #[test]
+        fn every_band_falls_inside_the_drawn_range() {
+            // A band whose handle sits off the edge could never be dragged.
+            for (label, freq) in rhevia_audio::EqSettings::BANDS {
+                let x = eq_x(freq);
+                assert!(x > 0.0 && x < 1.0, "{label} at {freq} Hz sits at {x}");
+            }
+        }
+    }
+
+    /// What a drag lands on.
+    mod drag_mapping {
+        use super::*;
+
+        // A curve 104 px tall, as the panel draws it.
+        const CENTRE: f32 = 100.0;
+        const HALF: f32 = 48.0;
+
+        #[test]
+        fn the_centre_line_is_unity() {
+            assert!(eq_gain_at(CENTRE, CENTRE, HALF).abs() < 1e-5);
+        }
+
+        #[test]
+        fn dragging_up_boosts_and_dragging_down_cuts() {
+            // Screen y grows downward, so this is the sign error that would
+            // otherwise make the control work backwards.
+            assert!(eq_gain_at(CENTRE - 24.0, CENTRE, HALF) > 0.0, "up should boost");
+            assert!(eq_gain_at(CENTRE + 24.0, CENTRE, HALF) < 0.0, "down should cut");
+        }
+
+        #[test]
+        fn the_top_and_bottom_are_the_ends_of_the_range() {
+            assert!((eq_gain_at(CENTRE - HALF, CENTRE, HALF) - EQ_RANGE_DB).abs() < 1e-4);
+            assert!((eq_gain_at(CENTRE + HALF, CENTRE, HALF) + EQ_RANGE_DB).abs() < 1e-4);
+        }
+
+        #[test]
+        fn dragging_past_the_edge_is_clamped_not_extrapolated() {
+            assert_eq!(eq_gain_at(-500.0, CENTRE, HALF), EQ_RANGE_DB);
+            assert_eq!(eq_gain_at(5000.0, CENTRE, HALF), -EQ_RANGE_DB);
+        }
+
+        #[test]
+        fn halfway_up_is_half_the_range() {
+            let db = eq_gain_at(CENTRE - HALF / 2.0, CENTRE, HALF);
+            assert!((db - EQ_RANGE_DB / 2.0).abs() < 1e-4, "got {db}");
+        }
+
+        #[test]
+        fn a_collapsed_curve_does_not_divide_by_zero() {
+            // The panel can be laid out with no height for a frame while the
+            // window is being resized.
+            assert_eq!(eq_gain_at(50.0, 100.0, 0.0), 0.0);
+        }
+    }
+
+    /// The loudness readout.
+    mod loudness {
+        use super::*;
+
+        #[test]
+        fn a_reading_at_target_is_shown_as_good() {
+            assert_eq!(loudness_colour(LOUDNESS_TARGET), theme::PREVIEW);
+        }
+
+        #[test]
+        fn too_loud_and_too_quiet_are_told_apart() {
+            // Over target risks being turned down by the platform; under it
+            // means the show arrives quieter than everything around it. They
+            // are different problems and must not look the same.
+            assert_eq!(loudness_colour(LOUDNESS_TARGET + 6.0), theme::PROGRAM);
+            assert_eq!(loudness_colour(LOUDNESS_TARGET - 6.0), theme::WARN);
+            assert_ne!(
+                loudness_colour(LOUDNESS_TARGET + 6.0),
+                loudness_colour(LOUDNESS_TARGET - 6.0)
+            );
+        }
+
+        #[test]
+        fn silence_is_shown_as_nothing_rather_than_as_a_number() {
+            assert_eq!(loudness_text(-70.0).trim(), "--");
+            assert_eq!(loudness_colour(-70.0), theme::TEXT_FAINT);
+        }
+
+        #[test]
+        fn a_real_reading_carries_its_sign() {
+            assert_eq!(loudness_text(-16.0), "-16.0");
+            assert_eq!(loudness_text(-23.4), "-23.4");
+        }
+    }
 }

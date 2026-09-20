@@ -51,6 +51,10 @@ pub enum Command {
     AddColourSource { name: String, rgb: [u8; 3] },
     /// An audio-only input from a capture device.
     AddAudioSource { name: String, device: Option<String> },
+    /// A monitor or an application window, captured live.
+    AddScreenSource { name: String, target: rhevia_capture::Target },
+    /// A webcam or capture card the system exposes as a camera.
+    AddCameraSource { name: String, target: rhevia_capture::CameraTarget },
     /// Attaches a capture device to an existing input, so a camera carries
     /// its own sound.
     AttachAudio { input: usize, device: Option<String> },
@@ -245,6 +249,12 @@ pub struct MasterState {
     pub peak_db: f32,
     pub rms_db: f32,
     pub clipped: bool,
+    /// Loudness to ITU-R BS.1770, which is what a platform measures the
+    /// programme against. Peak tells you about clipping; this tells you
+    /// whether the show will arrive at the level everything else is at.
+    pub momentary_lufs: f32,
+    pub short_term_lufs: f32,
+    pub integrated_lufs: f32,
 }
 
 #[derive(Clone, Default)]
@@ -316,6 +326,11 @@ enum Source {
     Still(Frame),
     /// A title. Re-rendered only when its text changes.
     Title { style: TitleStyle, rendered: Frame },
+    /// A monitor or window. The capture runs on its own thread and this
+    /// only collects whatever it has most recently produced.
+    Screen(rhevia_capture::ScreenCapture),
+    /// A camera, collected the same way.
+    Camera(rhevia_capture::CameraCapture),
 }
 
 struct SourceSlot {
@@ -382,6 +397,13 @@ struct Delivery {
     sent_config: bool,
     started: Instant,
     bytes: u64,
+    /// The stream carries sound as AAC, which is what every platform wants.
+    audio: Option<rhevia_output::AacEncoder>,
+    sent_audio_config: bool,
+    /// Samples sent so far, which is what audio timestamps are derived from.
+    /// Counting samples rather than reading a clock keeps audio and video
+    /// locked together however the frame rate actually behaves.
+    audio_samples: u64,
 }
 
 fn run(
@@ -398,6 +420,9 @@ fn run(
     };
     let mut mixer = Mixer::new(settings)?;
     let mut audio = AudioMixer::new();
+    // Fed from the master bus every tick, so the integrated figure covers the
+    // whole session rather than only the part that was streamed.
+    let mut loudness = rhevia_audio::LoudnessMeter::new();
     let mut sources: Vec<SourceSlot> = Vec::new();
 
     // Two sources up front so the window is never an empty grid.
@@ -565,6 +590,40 @@ fn run(
         needs_push: true,
                         });
                         audio.add_channel(name);
+                    }
+                }
+                Command::AddCameraSource { name, target } => {
+                    match rhevia_capture::CameraCapture::start(target) {
+                        Ok(capture) => {
+                            if let Ok(input) = mixer.add_input(name.clone()) {
+                                sources.push(SourceSlot {
+                                    source: Source::Camera(capture),
+                                    mixer_input: input,
+                                    audio: None,
+                                    settings: InputSettings::default(),
+                                    needs_push: true,
+                                });
+                                audio.add_channel(name);
+                            }
+                        }
+                        Err(e) => stream_error = Some(format!("camera: {e}")),
+                    }
+                }
+                Command::AddScreenSource { name, target } => {
+                    match rhevia_capture::ScreenCapture::start(target, TARGET_FPS) {
+                        Ok(capture) => {
+                            if let Ok(input) = mixer.add_input(name.clone()) {
+                                sources.push(SourceSlot {
+                                    source: Source::Screen(capture),
+                                    mixer_input: input,
+                                    audio: None,
+                                    settings: InputSettings::default(),
+                                    needs_push: true,
+                                });
+                                audio.add_channel(name);
+                            }
+                        }
+                        Err(e) => stream_error = Some(format!("screen capture: {e}")),
                     }
                 }
                 Command::AddAudioSource { name, device } => {
@@ -854,6 +913,9 @@ fn run(
             let refs: Vec<Option<&AudioBuffer>> = captured.iter().map(|c| c.as_ref()).collect();
             audio.mix(&refs, &on_air, audio_frames);
         }
+        // Measured post-fader, on exactly what goes out, which is the only
+        // point where the figure means anything.
+        loudness.measure(audio.output());
 
         // ---- sources -------------------------------------------------------
         let seconds = start.elapsed().as_secs_f32();
@@ -881,6 +943,30 @@ fn run(
                     if slot.needs_push {
                         let _ = mixer.push_frame(slot.mixer_input, rendered.clone());
                         slot.needs_push = false;
+                    }
+                }
+                Source::Camera(capture) => {
+                    // None means the capture thread has produced nothing new,
+                    // so the previous picture stays up rather than flashing
+                    // black between grabs.
+                    if let Some(frame) = capture.take() {
+                        let _ = mixer.push_frame(slot.mixer_input, frame);
+                    }
+                    // A camera that has been unplugged mid-show has to say so:
+                    // silently holding the last picture would let a dead feed
+                    // sit on air unnoticed.
+                    if let Some(reason) = capture.failure() {
+                        if stream_error.is_none() {
+                            stream_error = Some(format!("camera: {reason}"));
+                        }
+                    }
+                }
+                Source::Screen(capture) => {
+                    // None means the capture thread has produced nothing new,
+                    // so the previous picture stays up rather than flashing
+                    // black between grabs.
+                    if let Some(frame) = capture.take() {
+                        let _ = mixer.push_frame(slot.mixer_input, frame);
                     }
                 }
                 Source::AudioOnly => {
@@ -1055,6 +1141,16 @@ fn run(
                 }
             }
         }
+        // Audio goes out every tick whether or not the encoder emitted a
+        // picture, so a frame the video encoder chose to skip does not take a
+        // block of sound with it.
+        if let Some(d) = delivery.as_mut() {
+            let master = audio.output().samples.clone();
+            if let Err(e) = publish_audio(d, &master) {
+                stream_error = Some(format!("audio: {e}"));
+                delivery = None;
+            }
+        }
 
         // ---- advance the transition ----------------------------------------
         if let Some(progress) = transition {
@@ -1111,6 +1207,10 @@ fn run(
                     Source::AudioOnly => "Audio Input",
                     Source::Still(_) => "Image",
                     Source::Title { .. } => "Title",
+                    Source::Screen(c) => {
+                        if c.target.is_monitor { "Desktop Capture" } else { "Window Capture" }
+                    }
+                    Source::Camera(_) => "Camera",
                 },
             })
             .collect();
@@ -1174,6 +1274,9 @@ fn run(
                 peak_db: audio.master_meter.peak_db(),
                 rms_db: audio.master_meter.rms_db(),
                 clipped: audio.master_meter.clipped(),
+                momentary_lufs: loudness.momentary_lufs() as f32,
+                short_term_lufs: loudness.short_term_lufs() as f32,
+                integrated_lufs: loudness.integrated_lufs() as f32,
             };
             s.stats = Stats {
                 fps: measured_fps,
@@ -1211,6 +1314,17 @@ fn open_delivery(url: &str, key: &str) -> anyhow::Result<Delivery> {
         .enable_all()
         .build()?;
     let publisher = runtime.block_on(RtmpPublisher::connect(&destination))?;
+
+    // A failed audio encoder must not stop the stream: video only is far
+    // better than nothing, and the operator is told in the status line.
+    let audio = match rhevia_output::AacEncoder::new(SAMPLE_RATE, 2, 128_000) {
+        Ok(encoder) => Some(encoder),
+        Err(e) => {
+            tracing::warn!(error = %e, "streaming without audio");
+            None
+        }
+    };
+
     Ok(Delivery {
         publisher,
         runtime,
@@ -1218,7 +1332,38 @@ fn open_delivery(url: &str, key: &str) -> anyhow::Result<Delivery> {
         sent_config: false,
         started: Instant::now(),
         bytes: 0,
+        audio,
+        sent_audio_config: false,
+        audio_samples: 0,
     })
+}
+
+/// Encodes a block of master audio and publishes it.
+fn publish_audio(d: &mut Delivery, samples: &[f32]) -> anyhow::Result<()> {
+    let Some(encoder) = d.audio.as_mut() else {
+        return Ok(());
+    };
+
+    // The AudioSpecificConfig has to precede any audio, exactly as the video
+    // decoder configuration precedes any frame.
+    if !d.sent_audio_config {
+        let tag = flv::aac_sequence_header(encoder.config(), Default::default());
+        d.runtime
+            .block_on(async { d.publisher.send_audio(tag, 0).await })?;
+        d.sent_audio_config = true;
+    }
+
+    let frames = encoder.push(samples)?;
+    for frame in frames {
+        let timestamp = (d.audio_samples * 1000 / SAMPLE_RATE as u64) as u32;
+        d.audio_samples += frame.samples as u64;
+        d.bytes += frame.data.len() as u64;
+
+        let tag = flv::aac_frame(&frame.data, Default::default());
+        d.runtime
+            .block_on(async { d.publisher.send_audio(tag, timestamp).await })?;
+    }
+    Ok(())
 }
 
 fn publish(d: &mut Delivery, annexb: &[u8], frame_number: u64) -> anyhow::Result<()> {

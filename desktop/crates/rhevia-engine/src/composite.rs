@@ -248,6 +248,62 @@ fn draw(dest: &mut Frame, source: &Frame, rect: Rect, opacity: f32, colour: Colo
         return;
     }
 
+    // Fast path for a layer that lands 1:1 on the canvas, which is what a
+    // full-screen source does every single frame. Bilinear sampling it costs
+    // about twenty operations a pixel to reproduce the pixel that was already
+    // there; at 1280x720 that alone was most of the frame budget.
+    let one_to_one = (rect.width - source.width as f32).abs() < 0.01
+        && (rect.height - source.height as f32).abs() < 0.01
+        && (rect.x - rect.x.round()).abs() < 0.01
+        && (rect.y - rect.y.round()).abs() < 0.01;
+
+    if one_to_one && opacity >= 1.0 && colour.is_neutral() {
+        let offset_x = rect.x.round() as i64;
+        let offset_y = rect.y.round() as i64;
+        for y in y0..y1 {
+            let source_y = y as i64 - offset_y;
+            if source_y < 0 || source_y >= source.height as i64 {
+                continue;
+            }
+            for x in x0..x1 {
+                let source_x = x as i64 - offset_x;
+                if source_x < 0 || source_x >= source.width as i64 {
+                    continue;
+                }
+                let s = (source_y as usize * source.width + source_x as usize) * 4;
+                // Opaque pixels are copied outright; anything with alpha still
+                // has to blend, so a graphic with transparency is unaffected.
+                if source.data[s + 3] == 255 {
+                    let d = (y * dest.width + x) * 4;
+                    dest.data[d..d + 4].copy_from_slice(&source.data[s..s + 4]);
+                } else {
+                    let src = [
+                        source.data[s],
+                        source.data[s + 1],
+                        source.data[s + 2],
+                        source.data[s + 3],
+                    ];
+                    let alpha = src[3] as f32 / 255.0;
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    let Some(dst) = dest.pixel(x, y) else { continue };
+                    dest.set_pixel(
+                        x,
+                        y,
+                        [
+                            blend(src[0], dst[0], alpha),
+                            blend(src[1], dst[1], alpha),
+                            blend(src[2], dst[2], alpha),
+                            ((dst[3] as f32 / 255.0 + alpha).min(1.0) * 255.0) as u8,
+                        ],
+                    );
+                }
+            }
+        }
+        return;
+    }
+
     for y in y0..y1 {
         // Sample at pixel centres, so a 1:1 copy lands exactly on source
         // pixels instead of drifting half a pixel and blurring.
@@ -426,6 +482,63 @@ mod tests {
         let out = c.render(&scene, &[Some(&source)]);
         let px = out.pixel(4, 4).unwrap();
         assert_eq!(px[0], px[1], "the adjustment should have desaturated it");
+    }
+
+    #[test]
+    fn the_one_to_one_fast_path_matches_the_sampled_result() {
+        // The shortcut must be invisible: same pixels, less work.
+        let mut source = Frame::new(16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                source.set_pixel(x, y, [(x * 16) as u8, (y * 16) as u8, 90, 255]);
+            }
+        }
+
+        let mut c = Compositor::new(16, 16);
+        let mut scene = Scene::new();
+        scene.push(Layer {
+            preserve_aspect: false,
+            ..Layer::new(0, Rect::full(16, 16))
+        });
+        let fast = c.render(&scene, &[Some(&source)]).clone();
+
+        // Force the sampled path with an adjustment that is a no-op visually.
+        let mut c2 = Compositor::new(16, 16);
+        let mut scene2 = Scene::new();
+        scene2.push(Layer {
+            preserve_aspect: false,
+            opacity: 0.999,
+            ..Layer::new(0, Rect::full(16, 16))
+        });
+        let sampled = c2.render(&scene2, &[Some(&source)]).clone();
+
+        for i in (0..fast.data.len()).step_by(4) {
+            for c in 0..3 {
+                let difference = fast.data[i + c] as i32 - sampled.data[i + c] as i32;
+                assert!(
+                    difference.abs() <= 2,
+                    "fast path differs at byte {i}: {} vs {}",
+                    fast.data[i + c],
+                    sampled.data[i + c]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_fast_path_still_honours_transparency() {
+        let mut source = Frame::new(4, 4);
+        source.set_pixel(1, 1, [255, 0, 0, 128]);
+        let mut c = Compositor::new(4, 4);
+        let mut scene = Scene::new();
+        scene.background = [0, 0, 255];
+        scene.push(Layer {
+            preserve_aspect: false,
+            ..Layer::new(0, Rect::full(4, 4))
+        });
+        let out = c.render(&scene, &[Some(&source)]);
+        let px = out.pixel(1, 1).unwrap();
+        assert!(px[0] > 80 && px[2] > 80, "half-alpha red over blue should mix: {px:?}");
     }
 
     #[test]

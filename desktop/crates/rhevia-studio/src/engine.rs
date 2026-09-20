@@ -324,6 +324,12 @@ struct SourceSlot {
     /// Audio for this input, when a device is attached.
     audio: Option<CaptureHandle>,
     settings: InputSettings,
+    /// Set when a still source needs handing to the mixer again.
+    ///
+    /// A colour, a still or a title never changes between ticks, so pushing it
+    /// every frame meant allocating and filling a full-size frame thirty times
+    /// a second for a picture nobody had touched.
+    needs_push: bool,
 }
 
 const OUTPUT_WIDTH: usize = 1280;
@@ -400,6 +406,7 @@ fn run(
         mixer_input: 0,
         audio: None,
         settings: InputSettings::default(),
+        needs_push: true,
     });
     mixer.set_input_name(0, "Colour Bars");
     audio.add_channel("Colour Bars");
@@ -408,6 +415,7 @@ fn run(
         mixer_input: 1,
         audio: None,
         settings: InputSettings::default(),
+        needs_push: true,
     });
     mixer.set_input_name(1, "Blue");
     audio.add_channel("Blue");
@@ -422,6 +430,7 @@ fn run(
                 mixer_input: input,
                 audio: None,
                 settings: InputSettings::default(),
+        needs_push: true,
             });
             audio.add_channel(name);
         }
@@ -553,6 +562,7 @@ fn run(
                             mixer_input: input,
                             audio: None,
                             settings: InputSettings::default(),
+        needs_push: true,
                         });
                         audio.add_channel(name);
                     }
@@ -566,6 +576,7 @@ fn run(
                                     mixer_input: input,
                                     audio: Some(handle),
                                     settings: InputSettings::default(),
+        needs_push: true,
                                 });
                                 let channel = audio.add_channel(name);
                                 // Sound with no picture is almost always a
@@ -644,6 +655,7 @@ fn run(
                             mixer_input: input,
                             audio: None,
                             settings: InputSettings::default(),
+        needs_push: true,
                         });
                         audio.add_channel(name);
                     }
@@ -657,6 +669,7 @@ fn run(
                                     mixer_input: input,
                                     audio: None,
                                     settings: InputSettings::default(),
+        needs_push: true,
                                 });
                                 audio.add_channel(name);
                             }
@@ -675,6 +688,7 @@ fn run(
                                 mixer_input: input,
                                 audio: None,
                                 settings: InputSettings::default(),
+        needs_push: true,
                             });
                             audio.add_channel(name);
                         }
@@ -722,6 +736,7 @@ fn run(
                                 OUTPUT_WIDTH,
                                 OUTPUT_HEIGHT,
                             );
+                            slot.needs_push = true;
                         }
                     }
                 }
@@ -733,6 +748,7 @@ fn run(
                                 mixer_input: input,
                                 audio: None,
                                 settings: InputSettings::default(),
+        needs_push: true,
                             });
                             audio.add_channel(name);
                         }
@@ -844,19 +860,28 @@ fn run(
         for slot in &mut sources {
             match &mut slot.source {
                 Source::Colour(rgb) => {
-                    let _ = mixer.push_frame(
-                        slot.mixer_input,
-                        Frame::filled(OUTPUT_WIDTH, OUTPUT_HEIGHT, *rgb),
-                    );
+                    if slot.needs_push {
+                        let _ = mixer.push_frame(
+                            slot.mixer_input,
+                            Frame::filled(OUTPUT_WIDTH, OUTPUT_HEIGHT, *rgb),
+                        );
+                        slot.needs_push = false;
+                    }
                 }
                 Source::Bars => {
                     let _ = mixer.push_frame(slot.mixer_input, bars(OUTPUT_WIDTH, OUTPUT_HEIGHT, seconds));
                 }
                 Source::Still(frame) => {
-                    let _ = mixer.push_frame(slot.mixer_input, frame.clone());
+                    if slot.needs_push {
+                        let _ = mixer.push_frame(slot.mixer_input, frame.clone());
+                        slot.needs_push = false;
+                    }
                 }
                 Source::Title { rendered, .. } => {
-                    let _ = mixer.push_frame(slot.mixer_input, rendered.clone());
+                    if slot.needs_push {
+                        let _ = mixer.push_frame(slot.mixer_input, rendered.clone());
+                        slot.needs_push = false;
+                    }
                 }
                 Source::AudioOnly => {
                     let level = audio
@@ -1328,18 +1353,30 @@ fn bars(width: usize, height: usize, seconds: f32) -> Frame {
     let bar_width = width / COLOURS.len();
     let sweep = ((seconds * 0.25).fract() * width as f32) as usize;
 
+    // Two rows are built once and then copied, rather than writing every pixel
+    // through a bounds-checked setter: the picture only has two distinct row
+    // shapes, and the sweep is patched in afterwards.
+    let mut bar_row = vec![0u8; width * 4];
+    let mut ramp_row = vec![0u8; width * 4];
+    for x in 0..width {
+        let rgb = COLOURS[(x / bar_width.max(1)).min(COLOURS.len() - 1)];
+        let level = (x * 255 / width.max(1)) as u8;
+        bar_row[x * 4..x * 4 + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        ramp_row[x * 4..x * 4 + 4].copy_from_slice(&[level, level, level, 255]);
+    }
+
+    let ramp_from = height * 3 / 4;
     for y in 0..height {
-        for x in 0..width {
-            let mut rgb = COLOURS[(x / bar_width.max(1)).min(COLOURS.len() - 1)];
-            // Lower quarter is a greyscale ramp, as on a real test card.
-            if y > height * 3 / 4 {
-                let level = (x * 255 / width.max(1)) as u8;
-                rgb = [level, level, level];
-            }
-            if x.abs_diff(sweep) < 3 {
-                rgb = [255, 255, 255];
-            }
-            frame.set_pixel(x, y, [rgb[0], rgb[1], rgb[2], 255]);
+        let source = if y > ramp_from { &ramp_row } else { &bar_row };
+        let base = y * width * 4;
+        frame.data[base..base + width * 4].copy_from_slice(source);
+    }
+
+    // The sweep proves the picture is live rather than frozen.
+    for y in 0..height {
+        let base = y * width * 4;
+        for x in sweep.saturating_sub(2)..(sweep + 3).min(width) {
+            frame.data[base + x * 4..base + x * 4 + 4].copy_from_slice(&[255, 255, 255, 255]);
         }
     }
     frame

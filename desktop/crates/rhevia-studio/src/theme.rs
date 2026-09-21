@@ -465,33 +465,83 @@ pub fn input_picture(
 }
 
 /// The T-bar, travelling downward as the transition completes.
-pub fn vertical_t_bar(ui: &mut Ui, progress: f32, size: Vec2) {
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let painter = ui.painter();
+pub fn vertical_t_bar(ui: &mut Ui, progress: f32, size: Vec2) -> TBar {
+    // Dragged, not watched. A T-bar is how a director takes a transition at
+    // the speed the moment needs, and one that only reports progress is a
+    // progress bar wearing the wrong name.
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
 
-    let track = Rect::from_center_size(rect.center(), Vec2::new(28.0, rect.height()));
-    painter.rect_filled(track, Rounding::same(4.0_f32), SURFACE_LOWEST);
-    painter.rect_stroke(track, Rounding::same(4.0_f32), Stroke::new(1.0_f32, SURFACE_HIGHEST));
+    let track = Rect::from_center_size(rect.center(), Vec2::new(44.0, rect.height()));
+    painter.rect_filled(track, Rounding::same(5.0_f32), SURFACE_LOWEST);
+    painter.rect_stroke(track, Rounding::same(5.0_f32), Stroke::new(1.0_f32, SURFACE_HIGHEST));
 
-    let p = progress.clamp(0.0, 1.0);
-    if p > 0.0 {
-        let filled = Rect::from_min_size(track.min, Vec2::new(track.width(), track.height() * p));
-        painter.rect_filled(filled, Rounding::same(4.0_f32), ACCENT_DIM);
+    // Where the handle would be for a given pointer position, and back again.
+    let travel = (track.height() - HANDLE_HEIGHT).max(1.0);
+    let top = track.min.y + HANDLE_HEIGHT / 2.0;
+
+    let mut dragged = None;
+    if response.dragged() || response.is_pointer_button_down_on() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            dragged = Some(((pointer.y - top) / travel).clamp(0.0, 1.0));
+        }
     }
 
+    let p = dragged.unwrap_or(progress).clamp(0.0, 1.0);
+
+    if p > 0.0 {
+        let filled = Rect::from_min_size(track.min, Vec2::new(track.width(), travel * p + HANDLE_HEIGHT / 2.0));
+        painter.rect_filled(filled, Rounding::same(5.0_f32), ACCENT_DIM);
+    }
+
+    // Marks at the quarters, so a manual take can be judged by eye.
     for step in 1..4 {
-        let y = track.min.y + track.height() * (step as f32 / 4.0);
+        let y = top + travel * (step as f32 / 4.0);
         painter.line_segment(
-            [egui::pos2(track.min.x + 4.0, y), egui::pos2(track.max.x - 4.0, y)],
+            [egui::pos2(track.min.x + 6.0, y), egui::pos2(track.max.x - 6.0, y)],
             Stroke::new(1.0_f32, SURFACE_HIGHEST),
         );
     }
 
     let handle = Rect::from_center_size(
-        egui::pos2(track.center().x, track.min.y + track.height() * p),
-        Vec2::new(track.width() + 8.0, 9.0),
+        egui::pos2(track.center().x, top + travel * p),
+        Vec2::new(track.width() + 10.0, HANDLE_HEIGHT),
     );
-    painter.rect_filled(handle, Rounding::same(2.0_f32), if p > 0.0 { ACCENT } else { TEXT_DIM });
+    let live = p > 0.0;
+    painter.rect_filled(handle, Rounding::same(3.0_f32), if live { ACCENT } else { SURFACE_HIGHEST });
+    painter.rect_stroke(
+        handle,
+        Rounding::same(3.0_f32),
+        Stroke::new(1.0_f32, if live { ACCENT } else { TEXT_FAINT }),
+    );
+    // A grip, so it reads as something to take hold of rather than a bar.
+    for offset in [-3.0_f32, 0.0, 3.0] {
+        painter.line_segment(
+            [
+                egui::pos2(handle.min.x + 7.0, handle.center().y + offset),
+                egui::pos2(handle.max.x - 7.0, handle.center().y + offset),
+            ],
+            Stroke::new(1.0_f32, if live { ON_BRIGHT } else { TEXT_FAINT }),
+        );
+    }
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+
+    TBar { dragged, released: response.drag_stopped() }
+}
+
+/// How tall the handle is, and therefore how much of the track it cannot
+/// reach at either end.
+const HANDLE_HEIGHT: f32 = 22.0;
+
+/// What the operator did to the T-bar this frame.
+pub struct TBar {
+    /// Where they have dragged it to, while they are holding it.
+    pub dragged: Option<f32>,
+    /// True on the frame they let go.
+    pub released: bool,
 }
 
 /// Largest 16:9 rectangle centred inside `area`.

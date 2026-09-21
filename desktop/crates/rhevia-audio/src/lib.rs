@@ -8,6 +8,7 @@ pub mod dsp;
 pub mod loopback;
 pub mod loudness;
 pub mod mixer;
+pub mod monitor;
 
 pub use capture::{
     list_input_devices, system_audio_endpoint, system_audio_name, AudioDevice, CaptureHandle,
@@ -19,6 +20,7 @@ pub use dsp::{
 };
 pub use loopback::{list_output_devices, LoopbackCapture, OutputDevice};
 pub use loudness::LoudnessMeter;
+pub use monitor::{list_output_devices as monitor_devices, AudioMonitor, MonitorDevice};
 pub use mixer::{
     amplitude_to_db, db_to_amplitude, AudioBuffer, AudioMixer, ChannelStrip, Meter, BUS_COUNT,
     BUS_NAMES, CHANNELS, SAMPLE_RATE, SILENCE_DB,

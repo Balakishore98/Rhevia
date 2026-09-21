@@ -26,7 +26,7 @@ const METER_MAX_DB: f32 = 6.0;
 /// so the master and the channels sat at different heights and the taller of
 /// them ran off the bottom of the panel. Stated here so the panel and its
 /// contents cannot disagree.
-const COMPACT_STRIP_HEIGHT: f32 = 132.0;
+const COMPACT_STRIP_HEIGHT: f32 = 162.0;
 const COMPACT_ROW_HEIGHT: f32 = COMPACT_STRIP_HEIGHT + 56.0;
 
 /// Height the mixer row reserves on the full view.
@@ -34,7 +34,7 @@ const COMPACT_ROW_HEIGHT: f32 = COMPACT_STRIP_HEIGHT + 56.0;
 /// Stated rather than inferred: a horizontal scroll area does not report the
 /// height of what it contains, so without this the row measures short and the
 /// routing matrix below is drawn over the channel strips.
-const MIXER_ROW_HEIGHT: f32 = 296.0;
+const MIXER_ROW_HEIGHT: f32 = 372.0;
 
 fn position(db: f32) -> f32 {
     ((db - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB)).clamp(0.0, 1.0)
@@ -478,7 +478,14 @@ fn strip(
     });
 }
 
-fn master_strip(ui: &mut Ui, master: &MasterState, engine: &EngineHandle, tall: bool) {
+fn master_strip(
+    ui: &mut Ui,
+    master: &MasterState,
+    engine: &EngineHandle,
+    tall: bool,
+    snapshot_monitor: Option<&str>,
+    master_monitor_db: f32,
+) {
     let fader_height = if tall { 160.0 } else { 74.0 };
 
     ui.vertical(|ui| {
@@ -526,6 +533,40 @@ fn master_strip(ui: &mut Ui, master: &MasterState, engine: &EngineHandle, tall: 
 
         if theme::chip(ui, "MUTE", master.muted, theme::PROGRAM, Vec2::new(69.0, 19.0)).clicked() {
             engine.send(Command::ToggleMasterMute);
+        }
+
+        // Listening to the programme. Under the master fader because that is
+        // where an operator looks for it, and separate from it because
+        // turning the monitor down must not turn the stream down.
+        ui.add_space(4.0);
+        let listening = snapshot_monitor.is_some();
+        if theme::chip(
+            ui,
+            if listening { "LISTENING" } else { "LISTEN" },
+            listening,
+            theme::PREVIEW,
+            Vec2::new(69.0, 19.0),
+        )
+        .on_hover_text(match snapshot_monitor {
+            Some(device) => format!("hearing the programme on {device} — click to stop"),
+            None => "hear the programme through your speakers or headphones".to_string(),
+        })
+        .clicked()
+        {
+            engine.send(Command::SetMonitor { device: None, on: !listening });
+        }
+
+        // The listening level, which is not the master fader. Only on the
+        // full view: the compact row has no room and the chip above is enough
+        // to turn it on.
+        if tall {
+            ui.add_space(6.0);
+            ui.label(RichText::new("MONITOR").size(8.5).color(theme::TEXT_FAINT));
+            let (response, changed) = fader(ui, master_monitor_db, Vec2::new(28.0, 54.0));
+            if let Some(db) = changed {
+                engine.send(Command::SetMonitorGain(db));
+            }
+            response.on_hover_text("how loud you hear it — the stream is unaffected");
         }
 
         // Loudness, which is the figure a platform judges the programme by.
@@ -637,7 +678,7 @@ pub fn strip_row(
             ui.horizontal_top(|ui| {
                 ui.set_min_height(COMPACT_STRIP_HEIGHT);
                 ui.add_space(12.0);
-                master_strip(ui, &snapshot.master, engine, false);
+                master_strip(ui, &snapshot.master, engine, false, snapshot.monitor.as_deref(), snapshot.monitor_gain_db);
                 ui.add_space(6.0);
                 theme::divider(ui, COMPACT_STRIP_HEIGHT - 8.0);
                 ui.add_space(6.0);
@@ -1112,7 +1153,7 @@ pub fn full_view(
             ui.horizontal_top(|ui| {
                 ui.set_min_height(MIXER_ROW_HEIGHT);
                 ui.add_space(20.0);
-                master_strip(ui, &snapshot.master, engine, true);
+                master_strip(ui, &snapshot.master, engine, true, snapshot.monitor.as_deref(), snapshot.monitor_gain_db);
                 ui.add_space(10.0);
                 theme::divider(ui, MIXER_ROW_HEIGHT - 16.0);
                 ui.add_space(10.0);

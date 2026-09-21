@@ -27,6 +27,16 @@ pub enum Command {
     /// Dissolve Preview into Program over the configured duration.
     Auto,
     SetTransitionSeconds(f32),
+    /// Drives the transition by hand, from the T-bar.
+    ///
+    /// A T-bar is not a progress indicator. It is how a director takes a
+    /// transition at the speed the moment needs — slow under a speech, quick
+    /// out of a song — and it has to be the same control that shows where the
+    /// transition has got to.
+    SetTransitionProgress(f32),
+    /// Lets go of the T-bar. A transition taken all the way completes; one
+    /// left short is abandoned and Program stays where it was.
+    ReleaseTransition,
     /// Duration in milliseconds, which is how every switcher labels it.
     SetTransitionMs(f32),
     /// Chooses the effect the AUTO button and the T-bar use.
@@ -80,6 +90,13 @@ pub enum Command {
     /// Routes a channel to a bus, or stops routing it there.
     SetChannelBus { channel: usize, bus: usize, on: bool },
     SetMasterGain(f32),
+    /// Starts or stops listening to the programme, on a chosen device.
+    ///
+    /// Nothing to do with the master fader: turning the monitor down must not
+    /// turn the stream down, and muting the stream must not leave the
+    /// operator deaf.
+    SetMonitor { device: Option<String>, on: bool },
+    SetMonitorGain(f32),
     ToggleMasterMute,
     ClearClip(usize),
     AddBarsSource { name: String },
@@ -213,7 +230,10 @@ pub struct Snapshot {
     pub preview_input: usize,
     pub transition: Option<f32>,
     pub transition_seconds: f32,
-    pub program: Option<Frame>,
+    /// Shared rather than owned: the interface clones the whole snapshot on
+    /// every repaint, and a full-size picture copied each time would cost
+    /// more than compositing it did.
+    pub program: Option<Arc<Frame>>,
     pub streaming: bool,
     pub stream_error: Option<String>,
     pub stats: Stats,
@@ -226,6 +246,10 @@ pub struct Snapshot {
     pub destinations: Vec<DestinationState>,
     /// The name the programme is being published under over NDI, if it is.
     pub ndi_output: Option<String>,
+    /// The device the programme is being listened on, if any.
+    pub monitor: Option<String>,
+    /// Listening level in dB, which is not the master fader.
+    pub monitor_gain_db: f32,
     /// How many inputs are still opening.
     ///
     /// A camera can take seconds to answer. Saying so is the difference
@@ -300,7 +324,7 @@ pub struct MasterState {
 #[derive(Clone, Default)]
 pub struct InputInfo {
     pub name: String,
-    pub thumbnail: Option<Frame>,
+    pub thumbnail: Option<Arc<Frame>>,
     /// Current text, when this input is a title. Lets the UI offer an edit
     /// without keeping its own copy of what the engine holds.
     pub title: Option<(String, String)>,
@@ -400,8 +424,15 @@ const THUMBNAIL_HEIGHT: usize = 180;
 /// The program picture sent to the UI. Smaller than the canvas because it is
 /// displayed scaled anyway, and every pixel here is paid for on the render
 /// thread.
-const PREVIEW_WIDTH: usize = 640;
-const PREVIEW_HEIGHT: usize = 360;
+/// The programme and preview pictures the interface draws.
+///
+/// Full programme size. These were half that, which cost nothing to send but
+/// showed the operator a soft picture and made them doubt the stream — the
+/// stream was always full quality; only the monitor on screen was not. The
+/// frames are shared rather than copied into each snapshot, so the larger
+/// size costs a reference count rather than four megabytes a tick.
+const PREVIEW_WIDTH: usize = OUTPUT_WIDTH;
+const PREVIEW_HEIGHT: usize = OUTPUT_HEIGHT;
 /// Thumbnails are regenerated every Nth frame. The eye cannot read a
 /// multiview faster than this, and doing it every frame cost more than the
 /// compositing it was illustrating.
@@ -512,6 +543,13 @@ fn run(
     // of streaming: a production often sends NDI to a recorder or a second
     // switcher while streaming to a platform.
     let mut ndi_output: Option<rhevia_ndi::NdiSender> = None;
+    // Hearing the programme. Off until asked for, because a machine with the
+    // speakers next to the microphone would howl the moment it started.
+    let mut monitor: Option<rhevia_audio::AudioMonitor> = None;
+    let mut monitor_gain_db: f32 = 0.0;
+    // True while the operator has hold of the T-bar, so the automatic advance
+    // does not fight them for it.
+    let mut dragging_transition = false;
     let mut sources: Vec<SourceSlot> = Vec::new();
 
     // Two sources up front so the window is never an empty grid.
@@ -591,7 +629,7 @@ fn run(
     // Held between regenerations so the UI still has pictures on the frames
     // where none are made.
     let mut cached_inputs: Vec<InputInfo> = Vec::new();
-    let mut cached_program: Option<Frame> = None;
+    let mut cached_program: Option<Arc<Frame>> = None;
 
     while running.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -623,6 +661,33 @@ fn run(
                     }
                 }
                 Command::SetTransitionSeconds(s) => transition_seconds = s.clamp(0.1, 10.0),
+                Command::SetTransitionProgress(p) => {
+                    let p = p.clamp(0.0, 1.0);
+                    if program_input == preview_input {
+                        // Nothing to transition to; dragging would dissolve
+                        // the programme into itself.
+                    } else if p >= 1.0 {
+                        // All the way is the same as having finished.
+                        transition = None;
+                        std::mem::swap(&mut program_input, &mut preview_input);
+                        mixer.request_keyframe();
+                        dragging_transition = false;
+                    } else {
+                        transition = Some(p);
+                        // Held, so the automatic advance below leaves it
+                        // alone while the operator has hold of it.
+                        dragging_transition = true;
+                    }
+                }
+                Command::ReleaseTransition => {
+                    dragging_transition = false;
+                    // Let go short of the end: the transition is abandoned
+                    // rather than completed, which is what a director expects
+                    // when they change their mind halfway.
+                    if transition.is_some() {
+                        transition = None;
+                    }
+                }
                 Command::SetTransitionMs(ms) => transition_seconds = (ms / 1000.0).clamp(0.1, 10.0),
                 Command::SetTransition(kind) => transition_kind = kind,
                 Command::SetEq { channel, settings } => {
@@ -848,6 +913,25 @@ fn run(
                 Command::SetChannelBus { channel, bus, on } => {
                     if let Some(strip) = audio.channel_mut(channel) {
                         strip.set_bus(bus, on);
+                    }
+                }
+                Command::SetMonitor { device, on } => {
+                    if !on {
+                        monitor = None;
+                    } else {
+                        match rhevia_audio::AudioMonitor::open(device.as_deref()) {
+                            Ok(opened) => {
+                                opened.set_gain_db(monitor_gain_db);
+                                monitor = Some(opened);
+                            }
+                            Err(e) => stream_error = Some(format!("monitor: {e}")),
+                        }
+                    }
+                }
+                Command::SetMonitorGain(db) => {
+                    monitor_gain_db = db.clamp(rhevia_audio::SILENCE_DB, 12.0);
+                    if let Some(monitor) = &monitor {
+                        monitor.set_gain_db(monitor_gain_db);
                     }
                 }
                 Command::SetMasterGain(db) => {
@@ -1374,6 +1458,13 @@ fn run(
             }
         }
 
+        // ---- let the operator hear it --------------------------------------
+        // Fed every tick from the master bus, whether or not anything is being
+        // streamed: hearing the show is how a fader gets ridden.
+        if let Some(monitor) = &monitor {
+            monitor.play(&audio.output().samples);
+        }
+
         // ---- publish over the network --------------------------------------
         // Sent before encoding, from the composited picture, so an NDI
         // receiver gets the full-quality frame rather than one that has been
@@ -1413,7 +1504,7 @@ fn run(
         }
 
         // ---- advance the transition ----------------------------------------
-        if let Some(progress) = transition {
+        if let (Some(progress), false) = (transition, dragging_transition) {
             let step = frame_budget.as_secs_f32() / transition_seconds.max(0.001);
             let next = progress + step;
             if next >= 1.0 {
@@ -1449,7 +1540,7 @@ fn run(
                     .unwrap_or("Input")
                     .to_string(),
                 thumbnail: if redraw_thumbnails {
-                    mixer.input_frame(slot.mixer_input).map(thumbnail)
+                    mixer.input_frame(slot.mixer_input).map(|f| Arc::new(thumbnail(f)))
                 } else {
                     cached_inputs.get(index).and_then(|i| i.thumbnail.clone())
                 },
@@ -1480,7 +1571,7 @@ fn run(
             .collect();
         if redraw_thumbnails {
             cached_inputs = infos.clone();
-            cached_program = Some(downscale(mixer.program(), PREVIEW_WIDTH, PREVIEW_HEIGHT));
+            cached_program = Some(Arc::new(downscale(mixer.program(), PREVIEW_WIDTH, PREVIEW_HEIGHT)));
         }
 
         if let Ok(mut s) = snapshot.lock() {
@@ -1493,6 +1584,8 @@ fn run(
             s.streaming = !deliveries.is_empty();
             s.ndi_output = ndi_output.as_ref().map(|s| s.name.clone());
             s.opening = opening;
+            s.monitor = monitor.as_ref().map(|m| m.device_name.clone());
+            s.monitor_gain_db = monitor_gain_db;
             s.destinations = deliveries
                 .iter()
                 .map(|d| DestinationState {

@@ -129,6 +129,13 @@ struct Devices {
 fn gather_devices() -> Devices {
     let mut found = Devices::default();
 
+    // Asked here rather than while painting. It costs a whole process, and
+    // the media tab used to pay for it on the interface thread every time the
+    // dialog was opened — which is a visible stall on the one tab where the
+    // operator is already waiting.
+    rhevia_media::forget_availability();
+    let _ = rhevia_media::available();
+
     match rhevia_capture::cameras() {
         Ok(list) => found.cameras = list,
         Err(e) => found.error = Some(e.to_string()),
@@ -905,7 +912,11 @@ impl StudioApp {
                 );
 
                 ui.add_space(gap);
-                ui.horizontal(|ui| {
+                // Top aligned: the transition bus between the two pictures is
+                // taller than they are, and a centring layout slides Program
+                // down relative to Preview — the two things an operator most
+                // needs level with each other.
+                ui.horizontal_top(|ui| {
                     ui.add_space(gap);
 
                     let preview_frame = snapshot
@@ -1066,8 +1077,23 @@ impl StudioApp {
                 }
             });
 
-            ui.add_space(4.0);
-            theme::vertical_t_bar(ui, snapshot.transition.unwrap_or(0.0), Vec2::new(width, 84.0));
+            ui.add_space(6.0);
+            ui.label(RichText::new("T-BAR").size(8.5).color(theme::TEXT_FAINT));
+            ui.add_space(2.0);
+            let bar = theme::vertical_t_bar(
+                ui,
+                snapshot.transition.unwrap_or(0.0),
+                                // Sized to leave room for fade to black underneath. That is
+                // the control that has to work when everything else has gone
+                // wrong, so it does not get pushed off the bottom.
+                Vec2::new(width, 112.0),
+            );
+            if let Some(progress) = bar.dragged {
+                self.engine.send(Command::SetTransitionProgress(progress));
+            }
+            if bar.released {
+                self.engine.send(Command::ReleaseTransition);
+            }
 
             ui.label(
                 RichText::new(format!("{:.0} ms", snapshot.transition_seconds * 1000.0))
@@ -1493,10 +1519,6 @@ impl StudioApp {
         if self.device_scan.is_some() {
             return;
         }
-        // Whether ffmpeg is installed is looked for again too, in case it was
-        // installed since the program started.
-        rhevia_media::forget_availability();
-
         let (sender, receiver) = std::sync::mpsc::channel();
         if std::thread::Builder::new()
             .name("rhevia-device-scan".into())

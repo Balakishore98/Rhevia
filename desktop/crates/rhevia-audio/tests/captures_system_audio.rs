@@ -23,6 +23,20 @@ fn peak(samples: &[f32]) -> f32 {
     samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
 }
 
+/// Only one test may drive the speakers at a time.
+///
+/// These tests share one output device and one loopback capture of it. Two
+/// tones playing together sum into something that is no longer a clean 440 Hz
+/// sine, and the test that counts zero crossings then measures the pair
+/// rather than its own tone.
+static SPEAKERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn take_speakers() -> std::sync::MutexGuard<'static, ()> {
+    // Poisoning only means an earlier test panicked; the speakers are still
+    // usable and every later test should still run.
+    SPEAKERS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Plays a 440 Hz tone on the default output until the returned stream is
 /// dropped.
 ///
@@ -63,6 +77,7 @@ fn play_tone() -> Option<cpal::Stream> {
 
 #[test]
 fn a_tone_played_on_the_speakers_comes_back_through_loopback() {
+    let _speakers = take_speakers();
     // Playback starts first. A render endpoint that nothing is using goes
     // idle, and an idle endpoint delivers no loopback packets at all. It is
     // also the order an operator uses: the music is already playing when they
@@ -118,6 +133,7 @@ fn a_tone_played_on_the_speakers_comes_back_through_loopback() {
 
 #[test]
 fn what_is_captured_is_the_tone_and_not_noise() {
+    let _speakers = take_speakers();
     // A format read wrongly still produces loud samples — it produces a
     // buzz. This checks the captured audio is actually a smooth 440 Hz tone,
     // by counting how often it crosses zero.

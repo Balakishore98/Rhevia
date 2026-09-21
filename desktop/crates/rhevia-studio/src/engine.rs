@@ -1884,6 +1884,256 @@ fn bars(width: usize, height: usize, seconds: f32) -> Frame {
 mod tests {
     use super::*;
 
+    /// Driving the real engine, the way the interface does.
+    ///
+    /// Everything else tests a piece: that ffmpeg decodes a file, that the
+    /// mixer sums channels, that the compositor draws a layer. None of that
+    /// answers the only question an operator has — put a file in, does it
+    /// come out on the programme with its sound on a fader. This sends the
+    /// same commands the buttons send and reads the same snapshot the
+    /// interface draws.
+    mod through_the_engine {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        fn have_ffmpeg() -> bool {
+            rhevia_media::available()
+        }
+
+        /// Builds a clip with picture and a tone.
+        fn fixture(name: &str, extra: &[&str]) -> std::path::PathBuf {
+            let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/engine-media-tests");
+            std::fs::create_dir_all(&dir).ok();
+            let path = dir.join(name);
+
+            let mut command = std::process::Command::new("ffmpeg");
+            command.args(["-hide_banner", "-loglevel", "error", "-y"]);
+            command.args(extra);
+            let status = command.arg(&path).status().expect("ffmpeg should run");
+            assert!(status.success(), "could not build {name}");
+            path
+        }
+
+        /// Waits for the snapshot to satisfy `ready`, or gives up.
+        fn wait_for(
+            engine: &EngineHandle,
+            within: Duration,
+            ready: impl Fn(&Snapshot) -> bool,
+        ) -> Option<Snapshot> {
+            let deadline = Instant::now() + within;
+            while Instant::now() < deadline {
+                let snapshot = engine.snapshot();
+                if ready(&snapshot) {
+                    return Some(snapshot);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            None
+        }
+
+        #[test]
+        fn a_video_file_becomes_an_input_that_reaches_the_programme() {
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            let clip = fixture(
+                "engine-clip.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                    "-t", "4",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                ],
+            );
+
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Clip".into(),
+                path: clip.to_str().unwrap().to_string(),
+            });
+
+            // ---- it appears as an input ---------------------------------
+            let snapshot = wait_for(&engine, Duration::from_secs(20), |s| {
+                s.inputs.iter().any(|i| i.name == "Clip")
+            })
+            .expect("the clip never became an input");
+
+            let index = snapshot.inputs.iter().position(|i| i.name == "Clip").unwrap();
+            assert_eq!(
+                snapshot.inputs[index].kind, "Media",
+                "a video file should be listed as Media"
+            );
+
+            // ---- it produces a picture -----------------------------------
+            let snapshot = wait_for(&engine, Duration::from_secs(20), |s| {
+                s.inputs
+                    .get(index)
+                    .and_then(|i| i.thumbnail.as_ref())
+                    .map(|t| !t.is_empty())
+                    .unwrap_or(false)
+            })
+            .expect("the clip produced no picture");
+
+            let thumbnail = snapshot.inputs[index].thumbnail.as_ref().unwrap();
+            let first = thumbnail.data.first().copied().unwrap_or(0);
+            assert!(
+                thumbnail.data.iter().any(|&b| b != first),
+                "the clip's picture is a flat colour, so nothing was decoded into it"
+            );
+
+            // ---- it can be put on air ------------------------------------
+            engine.send(Command::CutTo(index));
+            let snapshot = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.program_input == index && s.program.as_ref().map(|f| !f.is_empty()).unwrap_or(false)
+            })
+            .expect("the clip never reached the programme");
+
+            let programme = snapshot.program.as_ref().unwrap();
+            let first = programme.data.first().copied().unwrap_or(0);
+            assert!(
+                programme.data.iter().any(|&b| b != first),
+                "the programme is a flat colour with the clip on air"
+            );
+
+            // ---- its sound reaches a fader -------------------------------
+            // The channel is the one named after the input, and it has to
+            // show level: a clip that plays silently is the failure that
+            // looks most like success.
+            let heard = wait_for(&engine, Duration::from_secs(20), |s| {
+                s.audio
+                    .iter()
+                    .find(|c| c.name == "Clip")
+                    .map(|c| c.peak_db > -40.0)
+                    .unwrap_or(false)
+            });
+            let heard = heard.expect("the clip's audio never reached its channel");
+            let channel = heard.audio.iter().find(|c| c.name == "Clip").unwrap();
+            eprintln!("  clip on air, its channel at {:.1} dB", channel.peak_db);
+
+            // ---- and it reaches the master -------------------------------
+            assert!(
+                heard.master.peak_db > -40.0,
+                "the clip's sound reached its own channel but not the master: {:.1} dB",
+                heard.master.peak_db
+            );
+        }
+
+        #[test]
+        fn an_audio_file_becomes_a_channel_with_no_picture() {
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            let song = fixture(
+                "engine-song.mp3",
+                &["-f", "lavfi", "-i", "sine=frequency=330:sample_rate=44100", "-t", "4"],
+            );
+
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Walk-in".into(),
+                path: song.to_str().unwrap().to_string(),
+            });
+
+            let snapshot = wait_for(&engine, Duration::from_secs(20), |s| {
+                s.inputs.iter().any(|i| i.name == "Walk-in")
+            })
+            .expect("the song never became an input");
+
+            let index = snapshot.inputs.iter().position(|i| i.name == "Walk-in").unwrap();
+            assert_eq!(
+                snapshot.inputs[index].kind, "Audio File",
+                "a file with no picture should say so rather than claiming to be video"
+            );
+
+            let heard = wait_for(&engine, Duration::from_secs(20), |s| {
+                s.audio
+                    .iter()
+                    .find(|c| c.name == "Walk-in")
+                    .map(|c| c.peak_db > -40.0)
+                    .unwrap_or(false)
+            })
+            .expect("the song never made a sound");
+
+            let channel = heard.audio.iter().find(|c| c.name == "Walk-in").unwrap();
+            eprintln!("  song playing at {:.1} dB", channel.peak_db);
+        }
+
+        #[test]
+        fn several_media_inputs_run_at_once_each_on_its_own_channel() {
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            // What an actual show looks like: a clip and a music bed, each
+            // with its own fader.
+            let clip = fixture(
+                "engine-two-a.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                    "-t", "4",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                ],
+            );
+            let bed = fixture(
+                "engine-two-b.mp3",
+                &["-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000", "-t", "4"],
+            );
+
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Clip".into(),
+                path: clip.to_str().unwrap().to_string(),
+            });
+            engine.send(Command::AddMediaSource {
+                name: "Bed".into(),
+                path: bed.to_str().unwrap().to_string(),
+            });
+
+            let heard = wait_for(&engine, Duration::from_secs(25), |s| {
+                let clip = s.audio.iter().find(|c| c.name == "Clip");
+                let bed = s.audio.iter().find(|c| c.name == "Bed");
+                matches!((clip, bed), (Some(a), Some(b)) if a.peak_db > -40.0 && b.peak_db > -40.0)
+            })
+            .expect("the two files did not both reach their own channels");
+
+            // Separate channels, which is what makes them mixable.
+            let clip = heard.audio.iter().find(|c| c.name == "Clip").unwrap();
+            let bed = heard.audio.iter().find(|c| c.name == "Bed").unwrap();
+            eprintln!("  clip {:.1} dB, bed {:.1} dB", clip.peak_db, bed.peak_db);
+            assert_eq!(heard.audio.iter().filter(|c| c.name == "Clip").count(), 1);
+            assert_eq!(heard.audio.iter().filter(|c| c.name == "Bed").count(), 1);
+        }
+
+        #[test]
+        fn a_file_that_does_not_exist_is_reported_rather_than_added() {
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Missing".into(),
+                path: "no-such-file-98765.mp4".into(),
+            });
+
+            let snapshot = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.stream_error.is_some()
+            })
+            .expect("adding a file that is not there said nothing");
+
+            assert!(
+                !snapshot.inputs.iter().any(|i| i.name == "Missing"),
+                "a file that could not be opened was added anyway"
+            );
+            eprintln!("  reported: {}", snapshot.stream_error.unwrap());
+        }
+    }
+
     /// A stream key is a password. It must not reach the streaming panel,
     /// because the streaming panel is what ends up in screenshots and in
     /// screen shares.

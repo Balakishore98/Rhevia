@@ -84,6 +84,8 @@ pub struct StudioApp {
     /// Whether a scan has been attempted, so an empty result is not retried
     /// on every frame.
     plugins_scanned: bool,
+    /// The mark in the menu bar, uploaded once.
+    mark: Option<egui::TextureHandle>,
     /// The scan running in the background, if one is.
     ///
     /// Scanning loads every module and starts a process per plugin, which is
@@ -267,6 +269,7 @@ impl StudioApp {
             cached_ndi: Vec::new(),
             cached_plugins: Vec::new(),
             plugins_scanned: false,
+            mark: None,
             plugin_scan: None,
             ndi_output_name: "Rhevia Programme".into(),
             device_error: None,
@@ -409,7 +412,17 @@ impl StudioApp {
             .frame(theme::panel(theme::SURFACE_LOWEST))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(10.0);
+                    ui.add_space(9.0);
+                    if let Some(mark) = self.mark(ui.ctx()) {
+                        // Sized to the bar rather than to the image: the
+                        // source is 128 across and would otherwise push the
+                        // menus off the screen.
+                        ui.add(
+                            egui::Image::new((mark.id(), Vec2::splat(17.0)))
+                                .fit_to_exact_size(Vec2::splat(17.0)),
+                        );
+                        ui.add_space(6.0);
+                    }
                     ui.label(RichText::new("RHEVIA").size(12.0).strong().color(theme::ACCENT));
                     ui.add_space(12.0);
 
@@ -1402,6 +1415,22 @@ impl StudioApp {
         self.input_settings(ctx, snapshot);
 
         self.input_select(ctx, snapshot);
+    }
+
+    /// The mark, uploaded to the graphics card the first time it is asked
+    /// for and kept afterwards.
+    ///
+    /// Decoding and uploading it on every repaint would cost more than the
+    /// rest of the interface put together.
+    fn mark(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+        if self.mark.is_none() {
+            let png = include_bytes!("../../../assets/mark-128.png");
+            let decoded = image::load_from_memory(png).ok()?.into_rgba8();
+            let size = [decoded.width() as usize, decoded.height() as usize];
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, decoded.as_raw());
+            self.mark = Some(ctx.load_texture("rhevia-mark", image, egui::TextureOptions::LINEAR));
+        }
+        self.mark.as_ref()
     }
 
     /// Starts a plugin scan on its own thread.

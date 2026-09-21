@@ -21,7 +21,59 @@ fn window_icon() -> Option<eframe::egui::IconData> {
     Some(eframe::egui::IconData { rgba: image.into_raw(), width, height })
 }
 
+/// Where a crash is written down.
+///
+/// A live production tool that disappears mid-show leaves an operator with
+/// nothing to report and nothing to fix. This costs nothing when all is well
+/// and is the difference between a bug that can be found and one that can
+/// only be guessed at.
+fn crash_log_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var("LOCALAPPDATA").ok()?;
+    let directory = std::path::PathBuf::from(base).join("Rhevia");
+    std::fs::create_dir_all(&directory).ok()?;
+    Some(directory.join("crash.log"))
+}
+
+/// Writes any panic to a file before the program goes.
+fn record_crashes() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = crash_log_path() {
+            use std::io::Write;
+
+            let when = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let where_ = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "unknown".into());
+
+            // Appended rather than replaced: a crash that happens twice is
+            // worth more than either one alone.
+            if let Ok(mut file) =
+                std::fs::OpenOptions::new().create(true).append(true).open(&path)
+            {
+                let _ = writeln!(
+                    file,
+                    "
+--- Rhevia {} crashed at unix {when} ---
+{where_}
+{info}
+{}",
+                    env!("CARGO_PKG_VERSION"),
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
+        }
+        previous(info);
+    }));
+}
+
 fn main() -> eframe::Result<()> {
+    record_crashes();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

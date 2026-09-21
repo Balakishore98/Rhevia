@@ -2184,6 +2184,67 @@ mod tests {
         }
 
         #[test]
+        fn a_desktop_capture_becomes_an_input_and_keeps_running() {
+            // Adding a desktop capture from the interface took the whole
+            // program down, so this drives the same command and then keeps
+            // rendering for a while: a source that is a different size from
+            // the programme goes through a different path in the compositor.
+            let Ok(monitors) = rhevia_capture::monitors() else {
+                eprintln!("SKIP: no monitors");
+                return;
+            };
+            let Some(target) = monitors.into_iter().next() else {
+                eprintln!("SKIP: no monitors");
+                return;
+            };
+            eprintln!("  capturing {} at {}x{}", target.name, target.width, target.height);
+
+            let engine = start();
+            engine.send(Command::AddScreenSource { name: "Desktop".into(), target });
+
+            let snapshot = wait_for(&engine, Duration::from_secs(20), |s| {
+                s.inputs.iter().any(|i| i.name == "Desktop")
+            })
+            .expect("the desktop never became an input");
+
+            let index = snapshot.inputs.iter().position(|i| i.name == "Desktop").unwrap();
+
+            // On air, so it goes through the compositor and the encoder rather
+            // than only the thumbnail path.
+            engine.send(Command::CutTo(index));
+            let on_air = wait_for(&engine, Duration::from_secs(20), |s| {
+                s.program_input == index
+                    && s.program.as_ref().map(|f| !f.is_empty()).unwrap_or(false)
+            })
+            .expect("the desktop never reached the programme");
+
+            // The snapshot carries a reduced copy for the interface to draw,
+            // so what matters is that it is a real picture of the right shape
+            // rather than that it is the full programme size.
+            let programme = on_air.program.as_ref().unwrap();
+            assert!(programme.width > 0 && programme.height > 0);
+            let aspect = programme.width as f32 / programme.height as f32;
+            assert!(
+                (aspect - 16.0 / 9.0).abs() < 0.01,
+                "the programme came back {}x{}, which is not 16:9",
+                programme.width,
+                programme.height
+            );
+
+            // Kept running: a crash showed up a moment after the input
+            // appeared, not at the moment it was added.
+            std::thread::sleep(Duration::from_secs(4));
+            assert!(engine.is_running(), "the engine stopped with a desktop capture on air");
+
+            let later = engine.snapshot();
+            assert!(
+                later.stats.frames_rendered > on_air.stats.frames_rendered,
+                "rendering stopped with a desktop capture on air"
+            );
+            eprintln!("  still rendering: {} frames", later.stats.frames_rendered);
+        }
+
+        #[test]
         fn a_file_that_does_not_exist_is_reported_rather_than_added() {
             let engine = start();
             engine.send(Command::AddMediaSource {

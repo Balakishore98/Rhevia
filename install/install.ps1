@@ -56,6 +56,21 @@ foreach ($exe in $binaries) {
     }
 }
 
+# A running copy holds its own file open, and the copy below then fails
+# halfway through — leaving some binaries updated and others not, which is
+# worse than not installing at all.
+$running = Get-Process -Name "rhevia-studio","rhevia-relay","rhevia-stream" -ErrorAction SilentlyContinue
+if ($running) {
+    Write-Host "  stopping $($running.Count) running instance(s) first" -ForegroundColor Yellow
+    $running | ForEach-Object {
+        $_.CloseMainWindow() | Out-Null
+    }
+    Start-Sleep -Seconds 2
+    Get-Process -Name "rhevia-studio","rhevia-relay","rhevia-stream" -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+}
+
 New-Item -ItemType Directory -Force -Path $InstallTo | Out-Null
 foreach ($exe in $binaries) {
     Copy-Item (Join-Path $Source $exe) $InstallTo -Force

@@ -1361,10 +1361,21 @@ impl StudioApp {
                         ui.label(RichText::new("RECORDING").size(12.0).strong().color(theme::TEXT));
                         ui.add_space(10.0);
                         ui.label(RichText::new("FILE").size(10.5).color(theme::TEXT_DIM));
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.record_path)
-                                .desired_width(f32::INFINITY),
-                        );
+                        ui.horizontal(|ui| {
+                            if ui.button("Browse…").clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_title("Where to record")
+                                    .add_filter("H.264", &["h264"])
+                                    .save_file()
+                                {
+                                    self.record_path = path.display().to_string();
+                                }
+                            }
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.record_path)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new("Annex-B H.264.   ffmpeg -i rec.h264 -c copy rec.mp4")
@@ -1847,11 +1858,32 @@ impl StudioApp {
             }
 
             InputTab::Media => {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.file_path)
-                        .hint_text(r"C:\clips\opener.mp4")
-                        .desired_width(f32::INFINITY),
-                );
+                ui.horizontal(|ui| {
+                    if ui.button("Browse…").clicked() {
+                        if let Some(path) = pick_file(
+                            "Choose a video or audio file",
+                            &[
+                                (
+                                    "Media",
+                                    &[
+                                        "mp4", "mov", "mkv", "webm", "avi", "flv", "wmv", "m4v",
+                                        "mpg", "mpeg", "ts", "m2ts", "3gp", "ogv", "mp3", "wav",
+                                        "flac", "aac", "m4a", "ogg", "opus", "wma", "aiff",
+                                        "h264",
+                                    ],
+                                ),
+                                ("Every file", &["*"]),
+                            ],
+                        ) {
+                            self.file_path = path;
+                        }
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.file_path)
+                            .hint_text(r"or type a path")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
                 ui.add_space(6.0);
 
                 if rhevia_media::available() {
@@ -1894,11 +1926,24 @@ impl StudioApp {
             }
 
             InputTab::Image => {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.image_path)
-                        .hint_text(r"C:\graphics\holding-slide.png")
-                        .desired_width(f32::INFINITY),
-                );
+                ui.horizontal(|ui| {
+                    if ui.button("Browse…").clicked() {
+                        if let Some(path) = pick_file(
+                            "Choose an image",
+                            &[
+                                ("Images", &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"]),
+                                ("Every file", &["*"]),
+                            ],
+                        ) {
+                            self.image_path = path;
+                        }
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.image_path)
+                            .hint_text(r"or type a path")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new(
@@ -2294,6 +2339,21 @@ fn short_ndi_name(full: &str) -> String {
         (Some(open), Some(close)) if close > open + 1 => full[open + 1..close].to_string(),
         _ => full.to_string(),
     }
+}
+
+/// Asks for a file with the system's own picker.
+///
+/// Typing a full path into a text field is not a reasonable way to add a
+/// clip. It is also how a path gets a typo in it, and the error that follows
+/// says the file does not exist, which is true and unhelpful.
+///
+/// Returns None when the dialog was cancelled.
+fn pick_file(title: &str, filters: &[(&str, &[&str])]) -> Option<String> {
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    for (name, extensions) in filters {
+        dialog = dialog.add_filter(*name, extensions);
+    }
+    dialog.pick_file().map(|path| path.display().to_string())
 }
 
 /// The file name without its directory or extension, for naming an input.

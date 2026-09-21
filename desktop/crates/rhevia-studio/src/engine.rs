@@ -226,6 +226,11 @@ pub struct Snapshot {
     pub destinations: Vec<DestinationState>,
     /// The name the programme is being published under over NDI, if it is.
     pub ndi_output: Option<String>,
+    /// How many inputs are still opening.
+    ///
+    /// A camera can take seconds to answer. Saying so is the difference
+    /// between waiting and thinking the program has stopped responding.
+    pub opening: usize,
     pub recording: bool,
     pub recorded_bytes: u64,
     pub recording_path: Option<String>,
@@ -468,6 +473,24 @@ struct Delivery {
     audio_samples: u64,
 }
 
+/// A device that has finished opening on a worker thread.
+///
+/// Opening a device is slow — a camera can take seconds to answer, NDI waits
+/// for a connection, a media file starts two decoders — and the engine loop
+/// is what renders and encodes the programme. Doing it there stops the
+/// picture until it finishes, which is what makes adding an input look like
+/// the program has hung. The work happens elsewhere and arrives here ready.
+enum Opened {
+    /// A new input, with its sound if it brought any.
+    Source { name: String, source: Source, audio: Option<CaptureHandle>, follow_program: bool },
+    /// Sound for an input that already exists.
+    Attach { input: usize, audio: CaptureHandle },
+    /// A plugin for one channel's chain.
+    Plugin { channel: usize, instance: Box<rhevia_plugin::vst3::Vst3Instance> },
+    /// It could not be opened, and this is what to tell the operator.
+    Failed(String),
+}
+
 fn run(
     commands: std::sync::mpsc::Receiver<Command>,
     snapshot: Arc<Mutex<Snapshot>>,
@@ -550,6 +573,13 @@ fn run(
     // One chain of plugins per channel, run after the built-in processing so
     // that a plugin sees audio the way the operator has already shaped it.
     let mut plugins: Vec<Vec<rhevia_plugin::vst3::Vst3Instance>> = Vec::new();
+
+    // Devices being opened elsewhere arrive here. Unbounded on purpose: an
+    // operator cannot click fast enough for the queue to matter, and a bound
+    // would mean dropping something they asked for.
+    let (opened_tx, opened_rx) = std::sync::mpsc::channel::<Opened>();
+    // How many are still opening, so the interface can say so.
+    let mut opening: usize = 0;
     let mut recorder: Option<(std::io::BufWriter<std::fs::File>, String, u64)> = None;
 
     let frame_budget = Duration::from_secs_f32(1.0 / TARGET_FPS);
@@ -611,25 +641,24 @@ fn run(
                     }
                 }
                 Command::AddPlugin { channel, path, cid, name } => {
-                    match rhevia_plugin::parse_cid(&cid) {
-                        Some(cid) => {
-                            match rhevia_plugin::vst3::Vst3Instance::open(
-                                std::path::Path::new(&path),
-                                cid,
-                                &name,
-                                SAMPLE_RATE as f64,
-                                PLUGIN_BLOCK,
-                            ) {
-                                Ok(instance) => {
-                                    if let Some(chain) = plugins.get_mut(channel) {
-                                        chain.push(instance);
-                                    }
-                                }
-                                Err(e) => stream_error = Some(format!("{name}: {e}")),
+                    opening += 1;
+                    open_elsewhere(&opened_tx, move || {
+                        let Some(cid) = rhevia_plugin::parse_cid(&cid) else {
+                            return Opened::Failed(format!("{name}: bad plugin identifier"));
+                        };
+                        match rhevia_plugin::vst3::Vst3Instance::open(
+                            std::path::Path::new(&path),
+                            cid,
+                            &name,
+                            SAMPLE_RATE as f64,
+                            PLUGIN_BLOCK,
+                        ) {
+                            Ok(instance) => {
+                                Opened::Plugin { channel, instance: Box::new(instance) }
                             }
+                            Err(e) => Opened::Failed(format!("{name}: {e}")),
                         }
-                        None => stream_error = Some(format!("{name}: bad plugin identifier")),
-                    }
+                    });
                 }
                 Command::RemovePlugin { channel, index } => {
                     if let Some(chain) = plugins.get_mut(channel) {
@@ -694,21 +723,17 @@ fn run(
                     }
                 }
                 Command::AddNdiSource { name, source } => {
-                    match rhevia_ndi::NdiReceiver::connect(source) {
-                        Ok(receiver) => {
-                            if let Ok(input) = mixer.add_input(name.clone()) {
-                                sources.push(SourceSlot {
-                                    source: Source::Ndi(Box::new(receiver)),
-                                    mixer_input: input,
-                                    audio: None,
-                                    settings: InputSettings::default(),
-                                    needs_push: true,
-                                });
-                                audio.add_channel(name);
-                            }
-                        }
-                        Err(e) => stream_error = Some(e.to_string()),
-                    }
+                    opening += 1;
+                    open_elsewhere(&opened_tx, move || match rhevia_ndi::NdiReceiver::connect(source)
+                    {
+                        Ok(receiver) => Opened::Source {
+                            name,
+                            source: Source::Ndi(Box::new(receiver)),
+                            audio: None,
+                            follow_program: true,
+                        },
+                        Err(e) => Opened::Failed(e.to_string()),
+                    });
                 }
                 Command::StartNdiOutput { name } => {
                     match rhevia_ndi::NdiSender::create(&name) {
@@ -721,98 +746,79 @@ fn run(
                 }
                 Command::StopNdiOutput => ndi_output = None,
                 Command::AddMediaSource { name, path } => {
-                    match rhevia_media::MediaSource::open(
-                        &path,
-                        OUTPUT_WIDTH as u32,
-                        OUTPUT_HEIGHT as u32,
-                        TARGET_FPS,
-                    ) {
-                        Ok(media) => {
-                            if let Ok(input) = mixer.add_input(name.clone()) {
-                                sources.push(SourceSlot {
-                                    source: Source::Media(Box::new(media)),
-                                    mixer_input: input,
-                                    audio: None,
-                                    settings: InputSettings::default(),
-                                    needs_push: true,
-                                });
-                                audio.add_channel(name);
-                            }
+                    opening += 1;
+                    open_elsewhere(&opened_tx, move || {
+                        match rhevia_media::MediaSource::open(
+                            &path,
+                            OUTPUT_WIDTH as u32,
+                            OUTPUT_HEIGHT as u32,
+                            TARGET_FPS,
+                        ) {
+                            Ok(media) => Opened::Source {
+                                name,
+                                source: Source::Media(Box::new(media)),
+                                audio: None,
+                                // A clip's own sound belongs to the clip, not
+                                // to whether it happens to be on air.
+                                follow_program: false,
+                            },
+                            Err(e) => Opened::Failed(e.to_string()),
                         }
-                        Err(e) => stream_error = Some(e.to_string()),
-                    }
+                    });
                 }
                 Command::AddCameraSource { name, target } => {
-                    match rhevia_capture::CameraCapture::start(target) {
-                        Ok(capture) => {
-                            if let Ok(input) = mixer.add_input(name.clone()) {
-                                sources.push(SourceSlot {
-                                    source: Source::Camera(capture),
-                                    mixer_input: input,
-                                    audio: None,
-                                    settings: InputSettings::default(),
-                                    needs_push: true,
-                                });
-                                audio.add_channel(name);
-                            }
+                    opening += 1;
+                    open_elsewhere(&opened_tx, move || {
+                        match rhevia_capture::CameraCapture::start(target) {
+                            Ok(capture) => Opened::Source {
+                                name,
+                                source: Source::Camera(capture),
+                                audio: None,
+                                follow_program: true,
+                            },
+                            Err(e) => Opened::Failed(format!("camera: {e}")),
                         }
-                        Err(e) => stream_error = Some(format!("camera: {e}")),
-                    }
+                    });
                 }
                 Command::AddScreenSource { name, target } => {
-                    match rhevia_capture::ScreenCapture::start(target, TARGET_FPS) {
-                        Ok(capture) => {
-                            if let Ok(input) = mixer.add_input(name.clone()) {
-                                sources.push(SourceSlot {
-                                    source: Source::Screen(capture),
-                                    mixer_input: input,
-                                    audio: None,
-                                    settings: InputSettings::default(),
-                                    needs_push: true,
-                                });
-                                audio.add_channel(name);
-                            }
+                    opening += 1;
+                    open_elsewhere(&opened_tx, move || {
+                        match rhevia_capture::ScreenCapture::start(target, TARGET_FPS) {
+                            Ok(capture) => Opened::Source {
+                                name,
+                                source: Source::Screen(capture),
+                                audio: None,
+                                follow_program: true,
+                            },
+                            Err(e) => Opened::Failed(format!("screen capture: {e}")),
                         }
-                        Err(e) => stream_error = Some(format!("screen capture: {e}")),
-                    }
+                    });
                 }
                 Command::AddAudioSource { name, device } => {
-                    match CaptureHandle::open(device.as_deref()) {
-                        Ok(handle) => {
-                            if let Ok(input) = mixer.add_input(name.clone()) {
-                                sources.push(SourceSlot {
-                                    source: Source::AudioOnly,
-                                    mixer_input: input,
-                                    audio: Some(handle),
-                                    settings: InputSettings::default(),
-        needs_push: true,
-                                });
-                                let channel = audio.add_channel(name);
+                    opening += 1;
+                    open_elsewhere(&opened_tx, move || {
+                        match CaptureHandle::open(device.as_deref()) {
+                            Ok(handle) => Opened::Source {
+                                name,
+                                source: Source::AudioOnly,
+                                audio: Some(handle),
                                 // Sound with no picture is almost always a
                                 // microphone, and a microphone must stay live
-                                // when the camera it sits next to goes off air.
-                                if let Some(strip) = audio.channel_mut(channel) {
-                                    strip.follow_program = false;
-                                }
-                            }
+                                // when the camera beside it goes off air.
+                                follow_program: false,
+                            },
+                            Err(e) => Opened::Failed(format!("audio device: {e}")),
                         }
-                        Err(e) => stream_error = Some(format!("audio device: {e}")),
-                    }
+                    });
                 }
                 Command::AttachAudio { input, device } => {
-                    match CaptureHandle::open(device.as_deref()) {
-                        Ok(handle) => {
-                            if let Some(slot) = sources.get_mut(input) {
-                                slot.audio = Some(handle);
-                                // Sound belonging to a camera should come up
-                                // with that camera, so this follows Program.
-                                if let Some(strip) = audio.channel_mut(input) {
-                                    strip.follow_program = true;
-                                }
-                            }
+                    opening += 1;
+                    open_elsewhere(&opened_tx, move || {
+                        match CaptureHandle::open(device.as_deref()) {
+                            Ok(handle) => Opened::Attach { input, audio: handle },
+                            Err(e) => Opened::Failed(format!("audio device: {e}")),
                         }
-                        Err(e) => stream_error = Some(format!("audio device: {e}")),
-                    }
+                    });
                 }
                 Command::SetChannelGain { channel, db } => {
                     if let Some(strip) = audio.channel_mut(channel) {
@@ -1098,6 +1104,46 @@ fn run(
         // Measured post-fader, on exactly what goes out, which is the only
         // point where the figure means anything.
         loudness.measure(audio.output());
+
+        // ---- devices that finished opening ---------------------------------
+        // Drained rather than waited on: whatever is ready joins the show, and
+        // anything still opening arrives on a later tick.
+        while let Ok(finished) = opened_rx.try_recv() {
+            opening = opening.saturating_sub(1);
+            match finished {
+                Opened::Source { name, source, audio: capture, follow_program } => {
+                    if let Ok(input) = mixer.add_input(name.clone()) {
+                        sources.push(SourceSlot {
+                            source,
+                            mixer_input: input,
+                            audio: capture,
+                            settings: InputSettings::default(),
+                            needs_push: true,
+                        });
+                        let channel = audio.add_channel(name);
+                        if let Some(strip) = audio.channel_mut(channel) {
+                            strip.follow_program = follow_program;
+                        }
+                    }
+                }
+                Opened::Attach { input, audio: capture } => {
+                    if let Some(slot) = sources.get_mut(input) {
+                        slot.audio = Some(capture);
+                        // Sound belonging to a camera should come up with that
+                        // camera, so this follows Program.
+                        if let Some(strip) = audio.channel_mut(input) {
+                            strip.follow_program = true;
+                        }
+                    }
+                }
+                Opened::Plugin { channel, instance } => {
+                    if let Some(chain) = plugins.get_mut(channel) {
+                        chain.push(*instance);
+                    }
+                }
+                Opened::Failed(reason) => stream_error = Some(reason),
+            }
+        }
 
         // ---- sources -------------------------------------------------------
         let seconds = start.elapsed().as_secs_f32();
@@ -1446,6 +1492,7 @@ fn run(
             s.program = cached_program.clone();
             s.streaming = !deliveries.is_empty();
             s.ndi_output = ndi_output.as_ref().map(|s| s.name.clone());
+            s.opening = opening;
             s.destinations = deliveries
                 .iter()
                 .map(|d| DestinationState {
@@ -1637,6 +1684,29 @@ fn open_delivery(url: &str, key: &str) -> anyhow::Result<Delivery> {
         sent_audio_config: false,
         audio_samples: 0,
     })
+}
+
+/// Runs a slow device open on its own thread and posts the result back.
+///
+/// Named for what it is for: everything it is handed would otherwise run on
+/// the thread that renders and encodes, and stop the picture while it waited.
+fn open_elsewhere(
+    ready: &std::sync::mpsc::Sender<Opened>,
+    work: impl FnOnce() -> Opened + Send + 'static,
+) {
+    let sender = ready.clone();
+    if std::thread::Builder::new()
+        .name("rhevia-open-device".into())
+        .spawn(move || {
+            let _ = sender.send(work());
+        })
+        .is_err()
+    {
+        // The thread could not be started, so nothing will ever report back.
+        // Said here, or the interface waits forever for an input that is not
+        // coming.
+        let _ = ready.send(Opened::Failed("could not start opening the device".into()));
+    }
 }
 
 /// Ends the stream cleanly.

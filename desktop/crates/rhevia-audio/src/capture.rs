@@ -4,7 +4,9 @@
 //! never block. It therefore does the minimum — convert, push, return — and
 //! everything else happens when the engine drains the buffer.
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -104,12 +106,27 @@ pub fn list_input_devices() -> Vec<AudioDevice> {
 ///
 /// Held as one type so everything downstream — the mixer, the DSP chain, the
 /// meters — sees a channel rather than a kind of device.
-// Neither field is ever read: they are held so that dropping the handle drops
-// the stream, which is what stops the capture.
-#[allow(dead_code)]
+/// What is keeping a capture running.
+///
+/// A cpal stream is deliberately not `Send`: it belongs to the thread that
+/// built it. So it stays there, on a thread of its own, and this holds only
+/// the flag that stops it. That is what lets a whole capture handle be opened
+/// away from the engine and handed over ready — without it, opening a device
+/// has to happen on the thread that renders the programme, and the picture
+/// stops while it waits.
 enum Backend {
-    Device(cpal::Stream),
-    System(crate::loopback::LoopbackCapture),
+    /// The stream lives on its own thread; clearing this ends it.
+    Device(Arc<AtomicBool>),
+    /// Held only to keep it alive: dropping it stops the capture.
+    System(#[allow(dead_code)] crate::loopback::LoopbackCapture),
+}
+
+impl Drop for Backend {
+    fn drop(&mut self) {
+        if let Backend::Device(running) = self {
+            running.store(false, Ordering::Relaxed);
+        }
+    }
 }
 
 /// A running capture. Dropping it stops the stream.
@@ -132,82 +149,132 @@ impl CaptureHandle {
             return Self::open_system_audio(endpoint);
         }
 
-        let host = cpal::default_host();
-
-        let device = match device_name {
-            Some(wanted) => host
-                .input_devices()
-                .map_err(|e| CaptureError::Open(e.to_string()))?
-                .find(|d| d.name().map(|n| n == wanted).unwrap_or(false))
-                .ok_or_else(|| CaptureError::NoSuchDevice(wanted.to_string()))?,
-            None => host
-                .default_input_device()
-                .ok_or_else(|| CaptureError::NoSuchDevice("default".into()))?,
-        };
-
-        let name = device.name().unwrap_or_else(|_| "unknown".into());
-        let config = device
-            .default_input_config()
-            .map_err(|e| CaptureError::NoConfig(e.to_string()))?;
-        let source_rate = config.sample_rate().0;
-        let source_channels = config.channels();
-
+        // Everything below happens on a thread of its own, because a cpal
+        // stream cannot be moved off the thread that built it. The outcome
+        // comes back here, so a device that will not open still says so
+        // rather than appearing to work and producing silence.
         let shared: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::with_capacity(
             SAMPLE_RATE as usize * CHANNELS,
         )));
+        let running = Arc::new(AtomicBool::new(true));
+
         let sink = Arc::clone(&shared);
+        let alive = Arc::clone(&running);
+        let wanted = device_name.map(|s| s.to_string());
+        let (opened, opened_rx) = mpsc::channel::<Result<(String, u32, u16), String>>();
 
-        let on_error = |e| tracing::warn!(error = %e, "audio capture error");
+        std::thread::Builder::new()
+            .name("rhevia-audio-capture".into())
+            .spawn(move || {
+                let host = cpal::default_host();
 
-        // Convert to interleaved stereo at the engine's rate inside the
-        // callback, so the engine only ever sees one format.
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _| push(&sink, data, source_channels, source_rate),
-                on_error,
-                None,
-            ),
-            cpal::SampleFormat::I16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _| {
-                    let floats: Vec<f32> =
-                        data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
-                    push(&sink, &floats, source_channels, source_rate);
-                },
-                on_error,
-                None,
-            ),
-            cpal::SampleFormat::U16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[u16], _| {
-                    let floats: Vec<f32> = data
-                        .iter()
-                        .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0)
-                        .collect();
-                    push(&sink, &floats, source_channels, source_rate);
-                },
-                on_error,
-                None,
-            ),
-            other => {
-                return Err(CaptureError::NoConfig(format!(
-                    "unsupported sample format {other:?}"
-                )))
+                let device = match wanted.as_deref() {
+                    Some(name) => host
+                        .input_devices()
+                        .ok()
+                        .and_then(|mut d| d.find(|d| d.name().map(|n| n == name).unwrap_or(false))),
+                    None => host.default_input_device(),
+                };
+                let Some(device) = device else {
+                    let _ = opened.send(Err(format!(
+                        "no audio device named {}",
+                        wanted.unwrap_or_else(|| "default".into())
+                    )));
+                    return;
+                };
+
+                let name = device.name().unwrap_or_else(|_| "unknown".into());
+                let config = match device.default_input_config() {
+                    Ok(config) => config,
+                    Err(e) => {
+                        let _ = opened.send(Err(format!("{name}: {e}")));
+                        return;
+                    }
+                };
+                let source_rate = config.sample_rate().0;
+                let source_channels = config.channels();
+
+                let on_error = |e| tracing::warn!(error = %e, "audio capture error");
+
+                // Converted to interleaved stereo at the engine's rate inside
+                // the callback, so the engine only ever sees one format.
+                let built = match config.sample_format() {
+                    cpal::SampleFormat::F32 => device.build_input_stream(
+                        &config.into(),
+                        move |data: &[f32], _| push(&sink, data, source_channels, source_rate),
+                        on_error,
+                        None,
+                    ),
+                    cpal::SampleFormat::I16 => device.build_input_stream(
+                        &config.into(),
+                        move |data: &[i16], _| {
+                            let floats: Vec<f32> =
+                                data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                            push(&sink, &floats, source_channels, source_rate);
+                        },
+                        on_error,
+                        None,
+                    ),
+                    cpal::SampleFormat::U16 => device.build_input_stream(
+                        &config.into(),
+                        move |data: &[u16], _| {
+                            let floats: Vec<f32> = data
+                                .iter()
+                                .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0)
+                                .collect();
+                            push(&sink, &floats, source_channels, source_rate);
+                        },
+                        on_error,
+                        None,
+                    ),
+                    other => {
+                        let _ = opened
+                            .send(Err(format!("{name}: unsupported sample format {other:?}")));
+                        return;
+                    }
+                };
+
+                let stream = match built {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        let _ = opened.send(Err(format!("{name}: {e}")));
+                        return;
+                    }
+                };
+                if let Err(e) = stream.play() {
+                    let _ = opened.send(Err(format!("{name}: {e}")));
+                    return;
+                }
+
+                let _ = opened.send(Ok((name, source_rate, source_channels)));
+
+                // The stream is dropped when this returns, which is what stops
+                // the capture. Held here rather than returned because it
+                // cannot leave this thread.
+                while alive.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            })
+            .map_err(|e| CaptureError::Start(e.to_string()))?;
+
+        match opened_rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok((device_name, source_rate, source_channels))) => Ok(Self {
+                _backend: Backend::Device(running),
+                shared,
+                device_name,
+                source_rate,
+                source_channels,
+                kind: DeviceKind::Input,
+            }),
+            Ok(Err(e)) => {
+                running.store(false, Ordering::Relaxed);
+                Err(CaptureError::Open(e))
+            }
+            Err(_) => {
+                running.store(false, Ordering::Relaxed);
+                Err(CaptureError::Open("the device did not respond".into()))
             }
         }
-        .map_err(|e| CaptureError::Open(e.to_string()))?;
-
-        stream.play().map_err(|e| CaptureError::Start(e.to_string()))?;
-
-        Ok(Self {
-            _backend: Backend::Device(stream),
-            shared,
-            device_name: name,
-            source_rate,
-            source_channels,
-            kind: DeviceKind::Input,
-        })
     }
 
     /// Opens a playback endpoint in loopback mode.

@@ -19,6 +19,16 @@ use crate::theme;
 const METER_MIN_DB: f32 = -60.0;
 const METER_MAX_DB: f32 = 6.0;
 
+/// Height the compact row along the bottom of the switcher reserves for its
+/// strips, and the panel height that follows from it.
+///
+/// The strips were being clipped: a horizontal layout centres its children,
+/// so the master and the channels sat at different heights and the taller of
+/// them ran off the bottom of the panel. Stated here so the panel and its
+/// contents cannot disagree.
+const COMPACT_STRIP_HEIGHT: f32 = 132.0;
+const COMPACT_ROW_HEIGHT: f32 = COMPACT_STRIP_HEIGHT + 56.0;
+
 /// Height the mixer row reserves on the full view.
 ///
 /// Stated rather than inferred: a horizontal scroll area does not report the
@@ -475,7 +485,15 @@ fn master_strip(ui: &mut Ui, master: &MasterState, engine: &EngineHandle, tall: 
         ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
         ui.set_width(72.0);
 
-        ui.label(RichText::new("MASTER L/R").size(9.5).strong().color(theme::ACCENT));
+        // Given the same height as a channel's name, which is a chip rather
+        // than a label. Without this the master sits six pixels higher than
+        // the channels beside it and every fader is on a different line — the
+        // one thing an operator scans straight across.
+        ui.allocate_ui(Vec2::new(69.0, 18.0), |ui| {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("MASTER L/R").size(9.5).strong().color(theme::ACCENT));
+            });
+        });
         ui.label(
             RichText::new(format!("{:+.1} dB", master.gain_db))
                 .font(theme::mono(9.5))
@@ -587,7 +605,7 @@ pub fn strip_row(
     selected: &mut usize,
 ) {
     egui::TopBottomPanel::bottom("audio-row")
-        .exact_height(188.0)
+        .exact_height(COMPACT_ROW_HEIGHT)
         .frame(theme::panel(theme::SURFACE_CONTAINER))
         .show(ctx, |ui| {
             ui.add_space(7.0);
@@ -613,17 +631,22 @@ pub fn strip_row(
             });
             ui.add_space(5.0);
 
-            ui.horizontal(|ui| {
+            // Top aligned, as on the full view: centring puts the master
+            // fader and the channel faders on different lines, which is
+            // exactly what an operator scans across.
+            ui.horizontal_top(|ui| {
+                ui.set_min_height(COMPACT_STRIP_HEIGHT);
                 ui.add_space(12.0);
                 master_strip(ui, &snapshot.master, engine, false);
                 ui.add_space(6.0);
-                theme::divider(ui, 140.0);
+                theme::divider(ui, COMPACT_STRIP_HEIGHT - 8.0);
                 ui.add_space(6.0);
 
                 egui::ScrollArea::horizontal()
                     .id_salt("audio-row-strips")
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.set_height(COMPACT_STRIP_HEIGHT);
+                        ui.horizontal_top(|ui| {
                             for (index, channel) in snapshot.audio.iter().enumerate() {
                                 // Selectable here as well as on the audio tab.
                                 // Without this, every route to the settings

@@ -163,6 +163,14 @@ fn gather_devices() -> Devices {
     found
 }
 
+/// How wide an input tile is, picture and controls alike.
+///
+/// One number for both, because they have to agree: the controls are laid out
+/// under the picture and a row wider than the picture runs beneath the next
+/// tile along, which makes the whole matrix look misaligned. Sized to hold
+/// the five controls at their natural widths rather than the other way round.
+const TILE_WIDTH: f32 = 206.0;
+
 /// Ingest endpoints, so the common cases need no typing.
 ///
 /// The address is the part that never changes; the key is the part that is
@@ -683,6 +691,18 @@ impl StudioApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
+                        if snapshot.opening > 0 {
+                            ui.label(
+                                RichText::new(if snapshot.opening == 1 {
+                                    "opening…".to_string()
+                                } else {
+                                    format!("opening {}…", snapshot.opening)
+                                })
+                                .size(10.0)
+                                .color(theme::ACCENT),
+                            );
+                            ui.add_space(8.0);
+                        }
                         if theme::button(ui, "+ ADD INPUT", theme::ACCENT, Vec2::new(104.0, 22.0)).clicked() {
                             self.show_add_source = true;
                             self.refresh_devices();
@@ -768,7 +788,7 @@ impl StudioApp {
                 texture,
                 on_program,
                 on_preview,
-                Vec2::new(186.0, 110.0),
+                Vec2::new(TILE_WIDTH, 116.0),
             );
             if picture.clicked() {
                 if let Some(slot) = self.assigning_overlay.take() {
@@ -780,13 +800,14 @@ impl StudioApp {
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
-                if theme::chip(ui, "CUT", false, theme::PROGRAM, Vec2::new(50.0, 20.0))
+                ui.set_width(TILE_WIDTH);
+                if theme::chip(ui, "CUT", false, theme::PROGRAM, Vec2::new(38.0, 20.0))
                     .on_hover_text("cut this input straight to air")
                     .clicked()
                 {
                     self.engine.send(Command::CutTo(index));
                 }
-                if theme::chip(ui, "PVW", on_preview, theme::PREVIEW, Vec2::new(50.0, 20.0))
+                if theme::chip(ui, "PVW", on_preview, theme::PREVIEW, Vec2::new(38.0, 20.0))
                     .on_hover_text("arm this input in Preview")
                     .clicked()
                 {
@@ -795,7 +816,7 @@ impl StudioApp {
                 // Straight to this input's own audio settings. Every input
                 // has its own channel, and without a route from the input
                 // itself an operator has to guess which strip to select.
-                if theme::chip(ui, "AUD", false, theme::ACCENT, Vec2::new(44.0, 20.0))
+                if theme::chip(ui, "AUD", false, theme::ACCENT, Vec2::new(38.0, 20.0))
                     .on_hover_text("this input's own EQ, compressor, gate and delay")
                     .clicked()
                 {
@@ -808,7 +829,7 @@ impl StudioApp {
                     if adjusted { "SET *" } else { "SET" },
                     adjusted,
                     theme::ACCENT,
-                    Vec2::new(58.0, 20.0),
+                    Vec2::new(38.0, 20.0),
                 )
                 .on_hover_text(if adjusted {
                     "name, position, zoom and colour — this input has been adjusted"
@@ -1590,6 +1611,7 @@ impl StudioApp {
             self.show_add_source = false;
         }
     }
+
 
     /// The right-hand pane. Returns true when an input was added.
     fn input_body(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) -> bool {

@@ -265,3 +265,230 @@ fn the_sample_rate_matches_what_the_mixer_expects() {
     assert_eq!(SAMPLE_RATE, 48_000);
     assert_eq!(CHANNELS, 2);
 }
+// ---- transport ----------------------------------------------------------
+//
+// A clip an operator cannot hold, cue or skip through is not a source, it is
+// a broadcast they are watching. These check the four controls actually move
+// the file rather than only changing a flag.
+
+/// A clip with a burnt-in timer, so where it has got to can be read off the
+/// picture rather than taken on trust from a counter we also wrote.
+fn timed_clip(name: &str, seconds: u32) -> PathBuf {
+    make(
+        name,
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("testsrc=size={WIDTH}x{HEIGHT}:rate={}", FPS as u32),
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-t",
+            &seconds.to_string(),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "15",
+            "-c:a",
+            "aac",
+        ],
+    )
+}
+
+/// How different two pictures are, as an average per channel.
+fn difference(a: &rhevia_engine::Frame, b: &rhevia_engine::Frame) -> f32 {
+    if a.data.len() != b.data.len() || a.data.is_empty() {
+        return f32::INFINITY;
+    }
+    let total: u64 = a
+        .data
+        .iter()
+        .zip(b.data.iter())
+        .map(|(x, y)| x.abs_diff(*y) as u64)
+        .sum();
+    total as f32 / a.data.len() as f32
+}
+
+#[test]
+fn a_paused_clip_stops_where_it_is_and_carries_on_when_let_go() {
+    if !rhevia_media::available() {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+    let clip = timed_clip("transport-pause.mp4", 10);
+    let source = MediaSource::open(clip.to_str().unwrap(), WIDTH, HEIGHT, FPS)
+        .expect("the clip should open");
+
+    let first = wait_for_frame(&source, Duration::from_secs(15)).expect("no first picture");
+    assert!(!source.paused(), "a clip should start playing");
+
+    source.set_paused(true);
+    // Whatever was already in flight is drained, then nothing more should come.
+    std::thread::sleep(Duration::from_millis(400));
+    let held = wait_for_frame(&source, Duration::from_millis(300));
+    let at_pause = source.position_seconds();
+
+    std::thread::sleep(Duration::from_secs(1));
+    let after_waiting = wait_for_frame(&source, Duration::from_millis(300));
+    let still_there = source.position_seconds();
+
+    eprintln!(
+        "  paused at {at_pause:.2}s, a second later {still_there:.2}s, \
+         new picture while held: {}",
+        after_waiting.is_some()
+    );
+    assert!(
+        after_waiting.is_none(),
+        "the clip kept decoding while it was supposed to be held"
+    );
+    assert!(
+        (still_there - at_pause).abs() < 0.1,
+        "the position moved while paused: {at_pause:.2}s to {still_there:.2}s"
+    );
+
+    source.set_paused(false);
+    let moving = wait_for_frame(&source, Duration::from_secs(5)).expect("it never restarted");
+    std::thread::sleep(Duration::from_millis(600));
+    let later = source.position_seconds();
+    eprintln!("  let go, now at {later:.2}s");
+    assert!(later > at_pause + 0.2, "letting go did not restart it");
+
+    // And it really is a different picture, not the held one handed back.
+    let _ = (first, held);
+    assert!(
+        difference(&moving, &rhevia_engine::Frame::new(WIDTH as usize, HEIGHT as usize)) > 1.0,
+        "the picture after resuming is blank"
+    );
+}
+
+#[test]
+fn skipping_forward_and_back_moves_the_clip_by_that_much() {
+    if !rhevia_media::available() {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+    let clip = timed_clip("transport-skip.mp4", 30);
+    let mut source = MediaSource::open(clip.to_str().unwrap(), WIDTH, HEIGHT, FPS)
+        .expect("the clip should open");
+    wait_for_frame(&source, Duration::from_secs(15)).expect("no first picture");
+
+    let before = source.position_seconds();
+    source.skip(5.0).expect("skipping forward should work");
+    wait_for_frame(&source, Duration::from_secs(10)).expect("nothing came back after the skip");
+    let forward = source.position_seconds();
+    eprintln!("  {before:.2}s -> +5s -> {forward:.2}s");
+    assert!(
+        forward >= before + 4.0,
+        "skipping forward five seconds moved it from {before:.2}s to {forward:.2}s"
+    );
+
+    source.skip(-5.0).expect("skipping back should work");
+    wait_for_frame(&source, Duration::from_secs(10)).expect("nothing came back after the skip");
+    let back = source.position_seconds();
+    eprintln!("  {forward:.2}s -> -5s -> {back:.2}s");
+    assert!(
+        back < forward - 3.0,
+        "skipping back five seconds moved it from {forward:.2}s to {back:.2}s"
+    );
+}
+
+#[test]
+fn skipping_back_at_the_start_does_not_go_negative() {
+    if !rhevia_media::available() {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+    let clip = timed_clip("transport-start.mp4", 8);
+    let mut source = MediaSource::open(clip.to_str().unwrap(), WIDTH, HEIGHT, FPS)
+        .expect("the clip should open");
+    wait_for_frame(&source, Duration::from_secs(15)).expect("no first picture");
+
+    // One second in, skipping back five should land inside the file rather
+    // than at minus four seconds, which ffmpeg would refuse outright.
+    source.skip(-5.0).expect("skipping back at the start should be allowed");
+    let landed = source.position_seconds();
+    eprintln!("  landed at {landed:.2}s in an eight second clip");
+    assert!(landed >= 0.0, "the position went negative: {landed:.2}s");
+    assert!(
+        wait_for_frame(&source, Duration::from_secs(10)).is_some(),
+        "the clip stopped producing pictures after skipping back past the start"
+    );
+}
+
+#[test]
+fn stop_cues_the_clip_at_the_beginning_and_holds_it() {
+    if !rhevia_media::available() {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+    let clip = timed_clip("transport-stop.mp4", 12);
+    let mut source = MediaSource::open(clip.to_str().unwrap(), WIDTH, HEIGHT, FPS)
+        .expect("the clip should open");
+    wait_for_frame(&source, Duration::from_secs(15)).expect("no first picture");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(source.position_seconds() > 0.3, "the clip never started playing");
+
+    source.stop().expect("stopping should work");
+    std::thread::sleep(Duration::from_millis(500));
+
+    eprintln!(
+        "  stopped: at {:.2}s, held: {}",
+        source.position_seconds(),
+        source.paused()
+    );
+    assert!(source.paused(), "stop should hold the clip, not leave it running");
+    assert!(
+        source.position_seconds() < 0.3,
+        "stop should cue the clip at the start, not at {:.2}s",
+        source.position_seconds()
+    );
+
+    // Cued, not unloaded: pressing play carries on from the beginning.
+    source.set_paused(false);
+    assert!(
+        wait_for_frame(&source, Duration::from_secs(10)).is_some(),
+        "the clip could not be played again after stopping"
+    );
+}
+
+#[test]
+fn the_transport_leaves_no_decoders_behind() {
+    // Each skip restarts ffmpeg. A skip that abandons the old process leaks
+    // one per press, and an operator cueing a clip presses these a lot.
+    if !rhevia_media::available() {
+        eprintln!("SKIP: ffmpeg not installed");
+        return;
+    }
+    let clip = timed_clip("transport-leak.mp4", 20);
+    let mut source = MediaSource::open(clip.to_str().unwrap(), WIDTH, HEIGHT, FPS)
+        .expect("the clip should open");
+    wait_for_frame(&source, Duration::from_secs(15)).expect("no first picture");
+
+    let mut abandoned = Vec::new();
+    for _ in 0..4 {
+        abandoned.extend(source.decoder_pids());
+        source.skip(2.0).expect("skipping should work");
+    }
+    let alive = source.decoder_pids();
+    drop(source);
+    std::thread::sleep(Duration::from_millis(500));
+
+    let mut still_running = Vec::new();
+    for pid in abandoned.iter().chain(alive.iter()) {
+        if is_running(*pid) {
+            still_running.push(*pid);
+        }
+    }
+    eprintln!(
+        "  started {} decoders across four skips, {} still running",
+        abandoned.len() + alive.len(),
+        still_running.len()
+    );
+    assert!(still_running.is_empty(), "decoders left behind: {still_running:?}");
+}

@@ -17,11 +17,24 @@ use eframe::egui::{self, Rect, RichText, Rounding, Stroke, Vec2};
 use rhevia_engine::Frame;
 
 use crate::audio_ui;
-use crate::engine::{self, Command, EngineHandle, Layout, Snapshot};
+use crate::engine::{self, Command, EngineHandle, Layout, MediaAction, Snapshot};
 use rhevia_engine::Transition;
 use crate::theme;
 
 const TARGET_FPS: f32 = 30.0;
+
+/// The strip under each monitor: the position bar, the buttons and the gaps.
+const TRANSPORT_HEIGHT: f32 = 33.0;
+
+/// What the production is running at, as it is written on the monitors.
+///
+/// Read from the engine rather than written into the interface. It said
+/// "1280x720p30" on every tile no matter what the production was, which is
+/// the kind of label an operator trusts and should not have to.
+fn canvas_label() -> String {
+    let (w, h) = engine::output_size();
+    format!("{w}x{h}p{}", TARGET_FPS as u32)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -50,7 +63,8 @@ enum Filter {
 
 pub struct StudioApp {
     engine: EngineHandle,
-    textures: HashMap<String, egui::TextureHandle>,
+    /// Each monitor's texture, with which frame is already on it.
+    textures: HashMap<String, (egui::TextureHandle, usize)>,
     tab: Tab,
     filter: Filter,
     rtmp_url: String,
@@ -104,6 +118,18 @@ pub struct StudioApp {
     assigning_overlay: Option<usize>,
     /// The channel whose DSP is shown on the audio tab.
     selected_channel: usize,
+    /// Playback devices, listed when the Settings tab is first looked at
+    /// and on demand. Enumerating them is a COM call per device, which is
+    /// not something to do while painting sixty times a second.
+    cached_playback: Vec<rhevia_audio::MonitorDevice>,
+    /// A device picked from the combo box, applied after it closes.
+    pending_monitor: Option<String>,
+    /// What was chosen on the Settings tab, and written down.
+    ///
+    /// Held here rather than read back from disk while painting: the
+    /// resolution only takes effect on the next start, so what is on screen
+    /// is the choice, not what the engine is running.
+    settings: crate::settings::Settings,
 }
 
 /// Everything the input dialog can offer, gathered in one go.
@@ -292,23 +318,65 @@ impl StudioApp {
             attach_to: None,
             assigning_overlay: None,
             selected_channel: 0,
+            cached_playback: Vec::new(),
+            pending_monitor: None,
+            settings: crate::settings::Settings::load(),
         }
     }
 
-    fn texture(&mut self, ctx: &egui::Context, key: &str, frame: &Frame) -> Option<egui::TextureId> {
+    /// Puts a frame on the graphics card, and only when it is a new one.
+    ///
+    /// The engine shares frames rather than copying them, so two snapshots
+    /// holding the same picture hold the same allocation — which makes the
+    /// pointer a reliable answer to "has this changed?". Without that check
+    /// the interface converted and uploaded eight megabytes per monitor per
+    /// repaint, sixty times a second, for a picture arriving thirty times a
+    /// second. Half that work was wasted and the other half was competing
+    /// with the engine for the same memory bandwidth.
+    /// Starts listening on a device, and remembers it for next time.
+    fn choose_monitor(&mut self, device: Option<String>) {
+        self.settings.monitor_device = device.clone();
+        self.settings.monitor = true;
+        self.settings.save();
+        self.engine.send(Command::SetMonitor { device, on: true });
+    }
+
+    fn texture(
+        &mut self,
+        ctx: &egui::Context,
+        key: &str,
+        frame: &std::sync::Arc<Frame>,
+    ) -> Option<egui::TextureId> {
         if frame.is_empty() {
             return None;
         }
-        let image =
-            egui::ColorImage::from_rgba_unmultiplied([frame.width, frame.height], &frame.data);
+        let identity = std::sync::Arc::as_ptr(frame) as usize;
         match self.textures.get_mut(key) {
-            Some(handle) => handle.set(image, egui::TextureOptions::LINEAR),
+            Some((handle, uploaded)) => {
+                if *uploaded != identity {
+                    handle.set(
+                        egui::ColorImage::from_rgba_unmultiplied(
+                            [frame.width, frame.height],
+                            &frame.data,
+                        ),
+                        egui::TextureOptions::LINEAR,
+                    );
+                    *uploaded = identity;
+                }
+            }
             None => {
-                let handle = ctx.load_texture(key, image, egui::TextureOptions::LINEAR);
-                self.textures.insert(key.to_string(), handle);
+                let handle = ctx.load_texture(
+                    key,
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [frame.width, frame.height],
+                        &frame.data,
+                    ),
+                    egui::TextureOptions::LINEAR,
+                );
+                self.textures.insert(key.to_string(), (handle, identity));
             }
         }
-        self.textures.get(key).map(|h| h.id())
+        self.textures.get(key).map(|(h, _)| h.id())
     }
 }
 
@@ -780,8 +848,10 @@ impl StudioApp {
             .and_then(|f| self.texture(ctx, &format!("input{index}"), &f));
 
         let detail = match snapshot.audio.get(index) {
-            Some(c) if c.has_source => format!("1280x720p30 · AUD {:+.0}dB", c.gain_db),
-            _ => "1280x720p30 · no audio".to_string(),
+            Some(c) if c.has_source => {
+                format!("{} · AUD {:+.0}dB", canvas_label(), c.gain_db)
+            }
+            _ => format!("{} · no audio", canvas_label()),
         };
 
         ui.vertical(|ui| {
@@ -906,9 +976,13 @@ impl StudioApp {
                 let available = ui.available_size();
                 let bus = 152.0;
                 let gap = 8.0;
+                // Room kept below each monitor for its transport, whether
+                // or not the input showing has one. Giving the space back
+                // when it is empty would make the pictures jump every time a
+                // clip was armed, which during a show reads as a fault.
                 let monitor = Vec2::new(
                     ((available.x - bus - gap * 4.0) / 2.0).max(180.0),
-                    (available.y - gap * 2.0).max(150.0),
+                    (available.y - gap * 2.0 - TRANSPORT_HEIGHT).max(150.0),
                 );
 
                 ui.add_space(gap);
@@ -919,11 +993,8 @@ impl StudioApp {
                 ui.horizontal_top(|ui| {
                     ui.add_space(gap);
 
-                    let preview_frame = snapshot
-                        .inputs
-                        .get(snapshot.preview_input)
-                        .and_then(|i| i.thumbnail.clone());
-                    let preview_texture = preview_frame
+                    let preview_texture = snapshot
+                        .preview
                         .as_ref()
                         .and_then(|f| self.texture(ctx, "preview", f));
                     let preview_name = snapshot
@@ -931,16 +1002,23 @@ impl StudioApp {
                         .get(snapshot.preview_input)
                         .map(|i| i.name.as_str())
                         .unwrap_or("—");
+                    ui.vertical(|ui| {
                     theme::monitor(
                         ui,
                         "PREVIEW",
                         preview_name,
-                        &format!("IN {}   ·   1280x720p30   ·   NEXT", snapshot.preview_input + 1),
+                        &format!(
+                            "IN {}   ·   {}   ·   NEXT",
+                            snapshot.preview_input + 1,
+                            canvas_label()
+                        ),
                         Some("PVW"),
                         preview_texture,
                         theme::PREVIEW,
                         monitor,
                     );
+                    self.transport(ui, snapshot, snapshot.preview_input, monitor.x);
+                    });
 
                     ui.add_space(gap);
                     self.transition_bus(ui, snapshot, bus);
@@ -960,10 +1038,11 @@ impl StudioApp {
                         .map(|s| format!("OVL{}", s + 1))
                         .collect();
                     let footer = if overlays.is_empty() {
-                        format!("LAYOUT {}   ·   1280x720p30", snapshot.layout.label())
+                        format!("LAYOUT {}   ·   {}", snapshot.layout.label(), canvas_label())
                     } else {
                         format!("LAYOUT {}   ·   {}", snapshot.layout.label(), overlays.join(" "))
                     };
+                    ui.vertical(|ui| {
                     theme::monitor(
                         ui,
                         "PROGRAM",
@@ -974,8 +1053,86 @@ impl StudioApp {
                         theme::PROGRAM,
                         monitor,
                     );
+                    self.transport(ui, snapshot, snapshot.program_input, monitor.x);
+                    });
                 });
             });
+    }
+
+    /// The transport for one input, under its monitor.
+    ///
+    /// Only drawn for a file: a camera has nowhere to skip to. The space is
+    /// still taken when there is nothing to draw, so arming a clip does not
+    /// shove both pictures up the screen.
+    fn transport(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot, index: usize, width: f32) {
+        let Some(media) = snapshot.inputs.get(index).and_then(|i| i.media) else {
+            ui.add_space(TRANSPORT_HEIGHT);
+            return;
+        };
+
+        ui.add_space(4.0);
+        theme::position_bar(ui, media.position_seconds, media.duration_seconds, width);
+        ui.add_space(3.0);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+
+            let press = |ui: &mut egui::Ui, label: &str, hint: &str, w: f32, on: bool| {
+                theme::chip(ui, label, on, theme::ACCENT, Vec2::new(w, 20.0))
+                    .on_hover_text(hint)
+                    .clicked()
+            };
+
+            if press(ui, "STOP", "stop, and cue back at the beginning", 42.0, false) {
+                self.engine.send(Command::MediaTransport {
+                    input: index,
+                    action: MediaAction::Stop,
+                });
+            }
+            if press(ui, "\u{00AB} 5s", "back five seconds", 46.0, false) {
+                self.engine.send(Command::MediaTransport {
+                    input: index,
+                    action: MediaAction::Back,
+                });
+            }
+            // Wider and lit while playing: this is the one an operator finds
+            // without looking, in the dark, during a service.
+            let playing = !media.paused;
+            if press(
+                ui,
+                if playing { "PAUSE" } else { "PLAY" },
+                if playing { "hold the clip where it is" } else { "let the clip carry on" },
+                58.0,
+                playing,
+            ) {
+                self.engine.send(Command::MediaTransport {
+                    input: index,
+                    action: MediaAction::PlayPause,
+                });
+            }
+            if press(ui, "5s \u{00BB}", "on five seconds", 46.0, false) {
+                self.engine.send(Command::MediaTransport {
+                    input: index,
+                    action: MediaAction::Forward,
+                });
+            }
+
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(match media.duration_seconds {
+                    Some(d) => format!(
+                        "{} / {}",
+                        theme::clock(media.position_seconds),
+                        theme::clock(d)
+                    ),
+                    // No length means a stream, where counting down from
+                    // nothing would be a lie.
+                    None => theme::clock(media.position_seconds),
+                })
+                .font(theme::mono(10.5))
+                .color(if playing { theme::TEXT } else { theme::TEXT_DIM }),
+            );
+        });
     }
 
     fn transition_bus(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot, width: f32) {
@@ -1423,6 +1580,150 @@ impl StudioApp {
                 ui.horizontal(|ui| {
                     ui.add_space(24.0);
                     ui.vertical(|ui| {
+                        // A settings page is read, not scanned, and a line of
+                        // prose the full width of a 4K display is not read.
+                        ui.set_max_width(620.0);
+                        ui.label(RichText::new("PRODUCTION").size(12.0).strong().color(theme::TEXT));
+                        ui.add_space(4.0);
+                        // Held to a column width rather than the whole window,
+                        // which on a wide screen strings a sentence out across
+                        // two feet of desk and makes it unreadable.
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "Everything is composited, encoded and streamed at this \
+                                     size. An input larger than the production is scaled down \
+                                     to it on the way in, so choose at least what your cameras \
+                                     and files are.",
+                                )
+                                .size(10.5)
+                                .color(theme::TEXT_DIM),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            for resolution in crate::settings::Resolution::ALL {
+                                let (w, h) = resolution.size();
+                                if theme::chip(
+                                    ui,
+                                    resolution.label(),
+                                    self.settings.resolution == resolution,
+                                    theme::ACCENT,
+                                    Vec2::new(62.0, 24.0),
+                                )
+                                .on_hover_text(format!(
+                                    "{w} x {h} at {:.1} Mb/s",
+                                    resolution.bitrate() as f32 / 1_000_000.0
+                                ))
+                                .clicked()
+                                {
+                                    self.settings.resolution = resolution;
+                                    self.settings.save();
+                                }
+                            }
+                        });
+
+                        // Said plainly, because a setting that looks as though
+                        // it did nothing is worse than one that is not offered.
+                        let running = engine::output_size();
+                        if self.settings.resolution.size() != running {
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "Running at {} x {} — restart Rhevia for {}.",
+                                    running.0,
+                                    running.1,
+                                    self.settings.resolution.label()
+                                ))
+                                .size(10.5)
+                                .color(theme::PROGRAM),
+                            );
+                        }
+
+                        ui.add_space(14.0);
+                        ui.label(RichText::new("MONITORING").size(12.0).strong().color(theme::TEXT));
+                        ui.add_space(6.0);
+                        if theme::chip(
+                            ui,
+                            if self.settings.monitor { "ON AT STARTUP" } else { "OFF AT STARTUP" },
+                            self.settings.monitor,
+                            theme::PREVIEW,
+                            Vec2::new(128.0, 24.0),
+                        )
+                        .on_hover_text(
+                            "whether you hear the programme through your speakers when \
+                             Rhevia starts — the LISTEN control on the mixer changes it now",
+                        )
+                        .clicked()
+                        {
+                            self.settings.monitor = !self.settings.monitor;
+                            self.settings.save();
+                            // Take effect immediately as well as next time, or
+                            // the switch appears not to work.
+                            self.engine.send(Command::SetMonitor {
+                                device: self.settings.monitor_device.clone(),
+                                on: self.settings.monitor,
+                            });
+                        }
+
+                        // Which device. Following the Windows default sounds
+                        // obvious until the operator is on a desk and Windows
+                        // is pointing at a headset — then the programme is
+                        // playing perfectly into something nobody is wearing,
+                        // which is indistinguishable from no sound at all.
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Play through")
+                                    .size(11.0)
+                                    .color(theme::TEXT_DIM),
+                            );
+                            let shown = snapshot
+                                .monitor
+                                .clone()
+                                .or_else(|| self.settings.monitor_device.clone())
+                                .unwrap_or_else(|| "System default".to_string());
+                            egui::ComboBox::from_id_salt("monitor-device")
+                                .selected_text(RichText::new(shown).size(11.0))
+                                .width(280.0)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            self.settings.monitor_device.is_none(),
+                                            "System default",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.choose_monitor(None);
+                                    }
+                                    for device in &self.cached_playback {
+                                        let chosen = self.settings.monitor_device.as_deref()
+                                            == Some(device.name.as_str());
+                                        if ui.selectable_label(chosen, &device.name).clicked() {
+                                            self.pending_monitor = Some(device.name.clone());
+                                        }
+                                    }
+                                });
+                            if ui
+                                .button(RichText::new("Refresh").size(10.5))
+                                .on_hover_text("look for devices plugged in since Rhevia started")
+                                .clicked()
+                            {
+                                self.cached_playback = rhevia_audio::monitor_devices();
+                            }
+                        });
+                        // Applied outside the combo box, which holds a borrow
+                        // of self while it is open.
+                        if let Some(name) = self.pending_monitor.take() {
+                            self.choose_monitor(Some(name));
+                        }
+                        if self.cached_playback.is_empty() {
+                            self.cached_playback = rhevia_audio::monitor_devices();
+                        }
+
+                        ui.add_space(22.0);
                         ui.label(RichText::new("KEYBOARD").size(12.0).strong().color(theme::TEXT));
                         ui.add_space(10.0);
                         for (keys, what) in [
@@ -1447,7 +1748,15 @@ impl StudioApp {
                         ui.add_space(10.0);
                         let s = snapshot.stats;
                         for (label, value) in [
-                            ("Canvas", "1280 x 720 @ 30 fps".to_string()),
+                            (
+                                "Canvas",
+                                format!(
+                                    "{} x {} @ {} fps",
+                                    engine::output_size().0,
+                                    engine::output_size().1,
+                                    TARGET_FPS as u32
+                                ),
+                            ),
                             ("Video codec", "H.264 · OpenH264 (BSD-2-Clause)".to_string()),
                             ("Audio", format!("48 kHz stereo · {} channels", snapshot.audio.len())),
                             ("Frames rendered", s.frames_rendered.to_string()),

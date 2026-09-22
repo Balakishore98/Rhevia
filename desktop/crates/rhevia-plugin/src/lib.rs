@@ -107,7 +107,16 @@ fn validator() -> Option<std::path::PathBuf> {
 pub fn validate(plugin: &PluginInfo) -> Option<bool> {
     let validator = validator()?;
 
-    let mut child = std::process::Command::new(validator)
+    // No console for it: scanning runs one of these per installed plugin,
+    // and each would otherwise flash a window over the interface.
+    let mut command = std::process::Command::new(validator);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = command
         .arg(&plugin.path)
         .arg(&plugin.cid)
         .stdin(std::process::Stdio::null())

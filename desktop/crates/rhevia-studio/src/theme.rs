@@ -249,6 +249,39 @@ pub fn divider(ui: &mut Ui, height: f32) {
 /// The strips carry the things an operator checks without looking away from
 /// the picture: what the source is, what format it is in, and whether it is
 /// live.
+/// How far through a clip it has got, drawn under the monitor showing it.
+///
+/// A bar rather than a number alone, because an operator cueing a walk-in
+/// video needs to see at a glance whether there is a minute left or ten
+/// seconds, and reading two timecodes and subtracting them is not a glance.
+pub fn position_bar(ui: &mut Ui, position: f32, duration: Option<f32>, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 6.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, Rounding::same(3.0_f32), SURFACE_LOWEST);
+
+    if let Some(duration) = duration {
+        if duration > 0.0 {
+            let through = (position / duration).clamp(0.0, 1.0);
+            if through > 0.0 {
+                let filled =
+                    Rect::from_min_size(rect.min, Vec2::new(rect.width() * through, rect.height()));
+                painter.rect_filled(filled, Rounding::same(3.0_f32), ACCENT);
+            }
+        }
+    }
+}
+
+/// Minutes and seconds, as a player writes them.
+pub fn clock(seconds: f32) -> String {
+    let seconds = seconds.max(0.0) as u32;
+    let (h, m, s) = (seconds / 3600, (seconds / 60) % 60, seconds % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 pub fn monitor(
     ui: &mut Ui,
     label: &str,

@@ -87,7 +87,7 @@ pub fn available() -> bool {
         _ => {}
     }
 
-    let found = Command::new("ffmpeg")
+    let found = quietly("ffmpeg")
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -98,6 +98,26 @@ pub fn available() -> bool {
 
     FFMPEG.store(if found { 1 } else { 2 }, Ordering::Relaxed);
     found
+}
+
+/// Starts a helper without letting Windows open a console for it.
+///
+/// ffmpeg and ffprobe are console programs. Started from a windowed program
+/// with no flag, Windows gives each one its own console, which flashes up
+/// over the interface — during a show, in front of whatever is on screen.
+/// Rhevia starts one of these for every file that is opened, every probe and
+/// every check that ffmpeg is installed, so without this the window blinks
+/// constantly. There is nothing to see in those consoles: their output is
+/// already piped or discarded.
+fn quietly(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 /// Forgets whether ffmpeg was found, so the next call looks again.
@@ -114,7 +134,7 @@ pub fn probe(path: &str) -> Result<MediaInfo, MediaError> {
         return Err(MediaError::Missing(path.to_string()));
     }
 
-    let output = Command::new("ffprobe")
+    let output = quietly("ffprobe")
         .args([
             "-hide_banner",
             "-loglevel",
@@ -244,7 +264,23 @@ pub struct MediaSource {
     /// Counts what the audio thread has produced, so a caller can tell a
     /// silent file from a stalled one.
     audio_produced: Arc<AtomicU64>,
+    /// Counts pictures, which is how far through the file we are.
+    frames_produced: Arc<AtomicU64>,
+    /// Set while the operator has it held.
+    ///
+    /// The reading threads stop taking from the pipe, ffmpeg fills it and
+    /// blocks, and the clip stands still where it is. Nothing is thrown away
+    /// and nothing has to be restarted to carry on.
+    paused: Arc<AtomicBool>,
     children: Vec<Child>,
+    /// Where the current decoders were started from, in seconds. A skip
+    /// restarts them further in, and the position is that plus what has been
+    /// decoded since.
+    offset_seconds: f32,
+    /// What the decoders were opened at, kept so a skip can reopen them the
+    /// same way.
+    size: (u32, u32),
+    fps: f32,
     pub path: String,
     pub info: MediaInfo,
 }
@@ -268,36 +304,171 @@ impl MediaSource {
         let audio: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let running = Arc::new(AtomicBool::new(true));
         let audio_produced = Arc::new(AtomicU64::new(0));
-        let mut children = Vec::new();
+        let frames_produced = Arc::new(AtomicU64::new(0));
+        let paused = Arc::new(AtomicBool::new(false));
 
-        if info.has_video {
-            children.push(spawn_video(
-                path,
-                width,
-                height,
-                fps,
-                Arc::clone(&latest),
-                Arc::clone(&running),
-            )?);
-        }
-        if info.has_audio {
-            children.push(spawn_audio(
-                path,
-                Arc::clone(&audio),
-                Arc::clone(&running),
-                Arc::clone(&audio_produced),
-            )?);
-        }
-
-        Ok(Self {
+        let mut source = Self {
             latest,
             audio,
             running,
             audio_produced,
-            children,
+            frames_produced,
+            paused,
+            children: Vec::new(),
+            offset_seconds: 0.0,
+            size: (width, height),
+            fps,
             path: path.to_string(),
             info,
-        })
+        };
+        source.start_decoders(0.0)?;
+        Ok(source)
+    }
+
+    /// Starts the decoders at `from` seconds into the file.
+    ///
+    /// Seeking means restarting them: ffmpeg is being driven as a pipe, and a
+    /// pipe cannot be told to go back. That costs the moment it takes to open
+    /// the file again, which is why skipping is offered in fixed steps rather
+    /// than as a scrub.
+    fn start_decoders(&mut self, from: f32) -> Result<(), MediaError> {
+        let (width, height) = self.size;
+        let from = from.max(0.0);
+        let mut children = Vec::new();
+
+        if self.info.has_video {
+            children.push(spawn_video(
+                &self.path,
+                width,
+                height,
+                self.fps,
+                from,
+                Arc::clone(&self.latest),
+                Arc::clone(&self.running),
+                Arc::clone(&self.paused),
+                Arc::clone(&self.frames_produced),
+            )?);
+        }
+        if self.info.has_audio {
+            children.push(spawn_audio(
+                &self.path,
+                from,
+                Arc::clone(&self.audio),
+                Arc::clone(&self.running),
+                Arc::clone(&self.paused),
+                Arc::clone(&self.audio_produced),
+            )?);
+        }
+
+        self.children = children;
+        self.offset_seconds = from;
+        Ok(())
+    }
+
+    /// Stops the current decoders and the threads reading them.
+    ///
+    /// The threads watch `running`, so it is lowered to let them finish and
+    /// raised again for the ones that follow. Without that the old threads
+    /// would keep writing frames from the old position into the same slot as
+    /// the new ones.
+    fn stop_decoders(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        // Unpaused first, or a thread parked in the pause loop never notices.
+        self.paused.store(false, Ordering::Relaxed);
+        for child in &mut self.children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.children.clear();
+        // Long enough for a reader blocked on a now-dead pipe to come back
+        // and see that it should stop.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        self.running.store(true, Ordering::Relaxed);
+
+        if let Ok(mut buffer) = self.audio.lock() {
+            buffer.clear();
+        }
+        self.audio_produced.store(0, Ordering::Relaxed);
+        self.frames_produced.store(0, Ordering::Relaxed);
+    }
+
+    /// Whether the clip is standing still.
+    pub fn paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    /// Holds the clip where it is, or lets it carry on.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+        if paused {
+            // Whatever was already decoded ahead is dropped, so letting go
+            // does not start with a burst of sound from before the pause.
+            if let Ok(mut buffer) = self.audio.lock() {
+                buffer.clear();
+            }
+        }
+    }
+
+    /// How far into the file the clip has played, in seconds.
+    ///
+    /// Counted from pictures where there are pictures and from samples where
+    /// there are not, because an audio-only file has no frames to count.
+    pub fn position_seconds(&self) -> f32 {
+        let since = if self.info.has_video && self.fps > 0.0 {
+            self.frames_produced.load(Ordering::Relaxed) as f32 / self.fps
+        } else {
+            self.audio_produced.load(Ordering::Relaxed) as f32 / SAMPLE_RATE as f32
+        };
+        let position = self.offset_seconds + since;
+        // The file loops, so the position does too rather than counting past
+        // the end for as long as the clip is left running.
+        match self.duration_seconds() {
+            Some(d) => position % d,
+            None => position,
+        }
+    }
+
+    /// How long the file is, when ffprobe could say.
+    ///
+    /// A live stream has no duration, and neither does a file ffprobe could
+    /// not measure; both come back as nothing rather than as zero, so a
+    /// caller cannot accidentally divide by it.
+    pub fn duration_seconds(&self) -> Option<f32> {
+        match self.info.duration_seconds {
+            d if d > 0.0 => Some(d as f32),
+            _ => None,
+        }
+    }
+
+    /// Jumps to a point in the file and carries on playing from there.
+    ///
+    /// Past the end wraps to the start and before the start clamps to it,
+    /// which is what skipping back five seconds at two seconds in should do.
+    pub fn seek(&mut self, to: f32) -> Result<(), MediaError> {
+        let to = match self.duration_seconds() {
+            Some(d) => to.rem_euclid(d),
+            None => to.max(0.0),
+        };
+        let was_paused = self.paused();
+        self.stop_decoders();
+        self.start_decoders(to)?;
+        self.paused.store(was_paused, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Moves by `delta` seconds from where the clip is now.
+    pub fn skip(&mut self, delta: f32) -> Result<(), MediaError> {
+        let to = self.position_seconds() + delta;
+        self.seek(to)
+    }
+
+    /// Back to the beginning and held there, the way a stop button behaves on
+    /// a player: the clip is cued, not unloaded.
+    pub fn stop(&mut self) -> Result<(), MediaError> {
+        self.stop_decoders();
+        self.start_decoders(0.0)?;
+        self.paused.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     /// The newest picture, if one has arrived since the last call.
@@ -359,15 +530,19 @@ impl Drop for MediaSource {
 }
 
 /// Decodes video to raw RGBA at the programme size, paced at real time.
+#[allow(clippy::too_many_arguments)]
 fn spawn_video(
     path: &str,
     width: u32,
     height: u32,
     fps: f32,
+    from: f32,
     latest: Arc<Mutex<Option<Frame>>>,
     running: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    produced: Arc<AtomicU64>,
 ) -> Result<Child, MediaError> {
-    let mut child = Command::new("ffmpeg")
+    let mut child = quietly("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel",
@@ -378,6 +553,12 @@ fn spawn_video(
             // Paced at real time. Without this ffmpeg decodes as fast as it
             // can and the clip plays at several hundred frames a second.
             "-re",
+            // Before -i, so ffmpeg seeks the file rather than decoding
+            // everything up to the point and throwing it away. It lands on
+            // the nearest key frame, which is close enough for a skip and an
+            // order of magnitude faster than being exact.
+            "-ss",
+            &format!("{from:.3}"),
             "-i",
         ])
         .arg(path)
@@ -389,6 +570,15 @@ fn spawn_video(
             "rgba",
             // Scaled here rather than in the compositor: the decoder does it
             // with optimised code, once, instead of per composite.
+            //
+            // Lanczos rather than ffmpeg's default bicubic. Any scaling at
+            // all is where a source visibly loses its edges, and this is the
+            // only place in Rhevia where a whole picture is resampled, so it
+            // is the one place worth paying for. Accurate rounding and full
+            // chroma interpolation stop the 4:2:0 a camera or a file arrives
+            // in from smearing colour across the edges on the way to RGB.
+            "-sws_flags",
+            "lanczos+accurate_rnd+full_chroma_int",
             "-s",
             &format!("{width}x{height}"),
             "-r",
@@ -412,11 +602,19 @@ fn spawn_video(
         .spawn(move || {
             let mut buffer = vec![0u8; frame_bytes];
             while running.load(Ordering::Relaxed) {
+                // Paused by not reading. ffmpeg fills the pipe, blocks, and
+                // the clip stands exactly where it was; the last picture
+                // stays on screen because nothing replaces it.
+                if paused.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                }
                 // read_exact, not read: a pipe hands over whatever is ready,
                 // and a partial frame drawn as a whole one tears diagonally.
                 if stdout.read_exact(&mut buffer).is_err() {
                     break;
                 }
+                produced.fetch_add(1, Ordering::Relaxed);
                 if let Ok(mut slot) = latest.lock() {
                     *slot = Some(Frame {
                         width: width as usize,
@@ -434,12 +632,16 @@ fn spawn_video(
 /// Decodes audio to raw 48 kHz stereo floats, paced at real time.
 fn spawn_audio(
     path: &str,
+    from: f32,
     audio: Arc<Mutex<Vec<f32>>>,
     running: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     produced: Arc<AtomicU64>,
 ) -> Result<Child, MediaError> {
-    let mut child = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-stream_loop", "-1", "-re", "-i"])
+    let mut child = quietly("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-stream_loop", "-1", "-re"])
+        .args(["-ss", &format!("{from:.3}")])
+        .arg("-i")
         .arg(path)
         .args([
             "-vn",
@@ -471,6 +673,12 @@ fn spawn_audio(
             let mut raw = vec![0u8; BLOCK * 4];
 
             while running.load(Ordering::Relaxed) {
+                // Held by not reading, the same as the picture, so the two
+                // stand still together and stay in step when let go.
+                if paused.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                }
                 if stdout.read_exact(&mut raw).is_err() {
                     break;
                 }
@@ -478,7 +686,9 @@ fn spawn_audio(
                     .chunks_exact(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect();
-                produced.fetch_add(samples.len() as u64, Ordering::Relaxed);
+                // Frames, not samples: this is read as a position as well
+                // as a sign of life, and a stereo frame is two samples.
+                produced.fetch_add((samples.len() / CHANNELS) as u64, Ordering::Relaxed);
 
                 if let Ok(mut buffer) = audio.lock() {
                     buffer.extend_from_slice(&samples);
@@ -493,6 +703,29 @@ fn spawn_audio(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A source with no decoders behind it, for checking the buffer handling
+    /// on its own.
+    ///
+    /// Built here rather than spelled out at each call site so that adding a
+    /// field to `MediaSource` does not break three tests that do not care
+    /// about it.
+    fn detached(buffered: Vec<f32>) -> MediaSource {
+        MediaSource {
+            latest: Arc::new(Mutex::new(None)),
+            audio: Arc::new(Mutex::new(buffered)),
+            running: Arc::new(AtomicBool::new(false)),
+            audio_produced: Arc::new(AtomicU64::new(0)),
+            frames_produced: Arc::new(AtomicU64::new(0)),
+            paused: Arc::new(AtomicBool::new(false)),
+            children: Vec::new(),
+            offset_seconds: 0.0,
+            size: (0, 0),
+            fps: 30.0,
+            path: String::new(),
+            info: MediaInfo::default(),
+        }
+    }
 
     #[test]
     fn a_video_file_is_described_from_its_streams() {
@@ -640,15 +873,7 @@ mod tests {
         // The mixer works in fixed blocks; a short one would shift everything
         // after it. This is the path taken for the first few ticks of every
         // clip, so it has to be right.
-        let source = MediaSource {
-            latest: Arc::new(Mutex::new(None)),
-            audio: Arc::new(Mutex::new(Vec::new())),
-            running: Arc::new(AtomicBool::new(false)),
-            audio_produced: Arc::new(AtomicU64::new(0)),
-            children: Vec::new(),
-            path: String::new(),
-            info: MediaInfo::default(),
-        };
+        let source = detached(Vec::new());
 
         let block = source.take_audio(512);
         assert_eq!(block.len(), 512 * CHANNELS);
@@ -657,15 +882,7 @@ mod tests {
 
     #[test]
     fn a_partly_filled_buffer_is_padded_rather_than_truncated() {
-        let source = MediaSource {
-            latest: Arc::new(Mutex::new(None)),
-            audio: Arc::new(Mutex::new(vec![0.5; 100])),
-            running: Arc::new(AtomicBool::new(false)),
-            audio_produced: Arc::new(AtomicU64::new(0)),
-            children: Vec::new(),
-            path: String::new(),
-            info: MediaInfo::default(),
-        };
+        let source = detached(vec![0.5; 100]);
 
         let block = source.take_audio(512);
         assert_eq!(block.len(), 512 * CHANNELS);
@@ -678,15 +895,7 @@ mod tests {
     fn a_decoder_running_ahead_is_trimmed_so_latency_does_not_grow() {
         // Left alone the buffer grows for the length of the file and every
         // sample of it is delay the operator cannot get rid of.
-        let source = MediaSource {
-            latest: Arc::new(Mutex::new(None)),
-            audio: Arc::new(Mutex::new(vec![0.25; SAMPLE_RATE as usize * CHANNELS * 5])),
-            running: Arc::new(AtomicBool::new(false)),
-            audio_produced: Arc::new(AtomicU64::new(0)),
-            children: Vec::new(),
-            path: String::new(),
-            info: MediaInfo::default(),
-        };
+        let source = detached(vec![0.25; SAMPLE_RATE as usize * CHANNELS * 5]);
 
         source.take_audio(512);
         let left = source.audio.lock().unwrap().len();

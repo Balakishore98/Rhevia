@@ -6,6 +6,7 @@
 mod app;
 mod audio_ui;
 mod engine;
+mod settings;
 mod theme;
 
 /// The mark, drawn by the window manager.

@@ -112,6 +112,13 @@ pub enum Command {
     SetInputTransform { input: usize, zoom: f32, offset_x: f32, offset_y: f32 },
     SetInputColour { input: usize, colour: ColourAdjust },
     ResetInputSettings(usize),
+    /// Works the transport of a playable input.
+    ///
+    /// A clip an operator cannot hold or cue is something they are watching
+    /// rather than a source they are using: a walk-in video has to be stopped
+    /// at the top and taken at the moment the service starts, not whenever it
+    /// happens to have looped round to.
+    MediaTransport { input: usize, action: MediaAction },
     RemoveSource(usize),
     StartStream { url: String, key: String },
     /// Stops every destination.
@@ -165,14 +172,46 @@ pub fn remap_after_removal(removed: usize, index: usize) -> Option<usize> {
 /// Where each overlay slot draws. Slot 4 is full-frame, as on most switchers,
 /// so it can carry a full-screen graphic rather than only a corner box.
 fn overlay_rect(slot: usize) -> Rect {
-    let w = OUTPUT_WIDTH as f32;
-    let h = OUTPUT_HEIGHT as f32;
+    let w = OUTPUT_WIDTH() as f32;
+    let h = OUTPUT_HEIGHT() as f32;
     match slot {
         0 => Rect::new(w * 0.04, h * 0.62, w * 0.30, h * 0.30),
         1 => Rect::new(w * 0.66, h * 0.06, w * 0.30, h * 0.30),
         2 => Rect::new(w * 0.50, h * 0.08, w * 0.46, h * 0.84),
-        _ => Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT),
+        _ => Rect::full(OUTPUT_WIDTH(), OUTPUT_HEIGHT()),
     }
+}
+
+/// What the transport controls can be asked to do.
+///
+/// Not `Transport`: that name already belongs to how the stream leaves the
+/// building, and confusing the two in a switcher would be a bad joke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaAction {
+    /// Holds the clip where it is, or lets it carry on.
+    PlayPause,
+    /// Back to the top and held there, cued and ready.
+    Stop,
+    /// Five seconds back, which is the step for finding a cue point by ear.
+    Back,
+    /// Five seconds on.
+    Forward,
+}
+
+/// How far a step of the transport moves.
+///
+/// Five seconds because that is what the operator asked for and what every
+/// player uses: long enough to be worth pressing, short enough to land on.
+pub const TRANSPORT_STEP_SECONDS: f32 = 5.0;
+
+/// Where a playable input has got to, as the transport bar needs it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MediaState {
+    pub position_seconds: f32,
+    /// None for a file with no measurable length, which is normal for a
+    /// stream: the bar then shows the position and no scale.
+    pub duration_seconds: Option<f32>,
+    pub paused: bool,
 }
 
 /// Per-input picture settings.
@@ -234,6 +273,13 @@ pub struct Snapshot {
     /// every repaint, and a full-size picture copied each time would cost
     /// more than compositing it did.
     pub program: Option<Arc<Frame>>,
+    /// What is armed next, at full size.
+    ///
+    /// Its own picture rather than the input's thumbnail. The Preview monitor
+    /// is the same size on screen as Program, and feeding it a 320x180
+    /// thumbnail showed the operator a blurred picture of a sharp source —
+    /// which is indistinguishable from the source being bad.
+    pub preview: Option<Arc<Frame>>,
     pub streaming: bool,
     pub stream_error: Option<String>,
     pub stats: Stats,
@@ -331,6 +377,8 @@ pub struct InputInfo {
     pub settings: InputSettings,
     /// What kind of source this is, for the settings dialog and the filters.
     pub kind: &'static str,
+    /// Set when this input is a file that can be held and cued.
+    pub media: Option<MediaState>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -416,14 +464,33 @@ struct SourceSlot {
     needs_push: bool,
 }
 
-const OUTPUT_WIDTH: usize = 1280;
-const OUTPUT_HEIGHT: usize = 720;
+/// What the production runs at, read once at startup.
+///
+/// Not a constant any more: a 1080p file in a 720p production is a 720p file
+/// from the moment it is decoded, so this is the operator's choice rather
+/// than mine. It cannot change while running — the encoder, the compositor
+/// and every decoder are built around it — which is why it is read here and
+/// applied when Rhevia starts.
+static OUTPUT_SIZE: std::sync::OnceLock<(usize, usize)> = std::sync::OnceLock::new();
+
+pub fn output_size() -> (usize, usize) {
+    *OUTPUT_SIZE.get_or_init(|| crate::settings::Settings::load().resolution.size())
+}
+
+#[allow(non_snake_case)]
+fn OUTPUT_WIDTH() -> usize {
+    output_size().0
+}
+
+#[allow(non_snake_case)]
+fn OUTPUT_HEIGHT() -> usize {
+    output_size().1
+}
+
 const TARGET_FPS: f32 = 30.0;
 const THUMBNAIL_WIDTH: usize = 320;
 const THUMBNAIL_HEIGHT: usize = 180;
-/// The program picture sent to the UI. Smaller than the canvas because it is
-/// displayed scaled anyway, and every pixel here is paid for on the render
-/// thread.
+
 /// The programme and preview pictures the interface draws.
 ///
 /// Full programme size. These were half that, which cost nothing to send but
@@ -431,8 +498,15 @@ const THUMBNAIL_HEIGHT: usize = 180;
 /// stream was always full quality; only the monitor on screen was not. The
 /// frames are shared rather than copied into each snapshot, so the larger
 /// size costs a reference count rather than four megabytes a tick.
-const PREVIEW_WIDTH: usize = OUTPUT_WIDTH;
-const PREVIEW_HEIGHT: usize = OUTPUT_HEIGHT;
+#[allow(non_snake_case)]
+fn PREVIEW_WIDTH() -> usize {
+    OUTPUT_WIDTH()
+}
+
+#[allow(non_snake_case)]
+fn PREVIEW_HEIGHT() -> usize {
+    OUTPUT_HEIGHT()
+}
 /// Thumbnails are regenerated every Nth frame. The eye cannot read a
 /// multiview faster than this, and doing it every frame cost more than the
 /// compositing it was illustrating.
@@ -528,9 +602,9 @@ fn run(
     running: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let settings = EncoderSettings {
-        width: OUTPUT_WIDTH,
-        height: OUTPUT_HEIGHT,
-        bitrate_bps: 4_500_000,
+        width: OUTPUT_WIDTH(),
+        height: OUTPUT_HEIGHT(),
+        bitrate_bps: crate::settings::Settings::load().resolution.bitrate(),
         fps: TARGET_FPS,
         keyframe_interval: (TARGET_FPS as u32) * 2,
     };
@@ -545,7 +619,34 @@ fn run(
     let mut ndi_output: Option<rhevia_ndi::NdiSender> = None;
     // Hearing the programme. Off until asked for, because a machine with the
     // speakers next to the microphone would howl the moment it started.
-    let mut monitor: Option<rhevia_audio::AudioMonitor> = None;
+    // On from the start. An operator who adds a video expects to hear it;
+    // making that a button they have to find means the program looks broken
+    // until they find it.
+    // Listening from the start, on the device that was chosen last time.
+    // Someone who adds a video and hears nothing has found a fault, not a
+    // preference, so this is on unless it was deliberately turned off.
+    let chosen = crate::settings::Settings::load();
+    let mut monitor = if chosen.monitor {
+        match rhevia_audio::AudioMonitor::open(chosen.monitor_device.as_deref()) {
+            Ok(monitor) => Some(monitor),
+            // Falling back to the default rather than going silent: a device
+            // that was remembered may have been unplugged since.
+            Err(e) if chosen.monitor_device.is_some() => {
+                tracing::warn!(
+                    error = %e,
+                    device = ?chosen.monitor_device,
+                    "the chosen device would not open; using the default"
+                );
+                rhevia_audio::AudioMonitor::open(None).ok()
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "nothing to listen on");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut monitor_gain_db: f32 = 0.0;
     // True while the operator has hold of the T-bar, so the automatic advance
     // does not fight them for it.
@@ -815,8 +916,8 @@ fn run(
                     open_elsewhere(&opened_tx, move || {
                         match rhevia_media::MediaSource::open(
                             &path,
-                            OUTPUT_WIDTH as u32,
-                            OUTPUT_HEIGHT as u32,
+                            OUTPUT_WIDTH() as u32,
+                            OUTPUT_HEIGHT() as u32,
                             TARGET_FPS,
                         ) {
                             Ok(media) => Opened::Source {
@@ -980,7 +1081,7 @@ fn run(
                     Some(font) => {
                         let style = TitleStyle { text, subtitle, ..Default::default() };
                         let rendered =
-                            rhevia_engine::render_title(font, &style, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+                            rhevia_engine::render_title(font, &style, OUTPUT_WIDTH(), OUTPUT_HEIGHT());
                         if let Ok(input) = mixer.add_input(name.clone()) {
                             sources.push(SourceSlot {
                                 source: Source::Title { style, rendered },
@@ -1016,6 +1117,30 @@ fn run(
                         slot.settings.colour = colour;
                     }
                 }
+                Command::MediaTransport { input, action } => {
+                    if let Some(SourceSlot { source: Source::Media(media), .. }) =
+                        sources.get_mut(input)
+                    {
+                        // A skip restarts ffmpeg, which takes a moment. It is
+                        // done here on the engine thread rather than a worker
+                        // because the alternative is two transports racing for
+                        // the same decoder, and a clip that ends up wherever
+                        // the presses happened to land.
+                        let outcome = match action {
+                            MediaAction::PlayPause => {
+                                media.set_paused(!media.paused());
+                                Ok(())
+                            }
+                            MediaAction::Stop => media.stop(),
+                            MediaAction::Back => media.skip(-TRANSPORT_STEP_SECONDS),
+                            MediaAction::Forward => media.skip(TRANSPORT_STEP_SECONDS),
+                        };
+                        if let Err(e) = outcome {
+                            tracing::warn!(error = %e, ?action, "the transport could not move the clip");
+                            stream_error = Some(format!("could not move the clip: {e}"));
+                        }
+                    }
+                }
                 Command::ResetInputSettings(input) => {
                     if let Some(slot) = sources.get_mut(input) {
                         slot.settings = InputSettings::default();
@@ -1032,8 +1157,8 @@ fn run(
                             *rendered = rhevia_engine::render_title(
                                 font,
                                 style,
-                                OUTPUT_WIDTH,
-                                OUTPUT_HEIGHT,
+                                OUTPUT_WIDTH(),
+                                OUTPUT_HEIGHT(),
                             );
                             slot.needs_push = true;
                         }
@@ -1237,13 +1362,13 @@ fn run(
                     if slot.needs_push {
                         let _ = mixer.push_frame(
                             slot.mixer_input,
-                            Frame::filled(OUTPUT_WIDTH, OUTPUT_HEIGHT, *rgb),
+                            Frame::filled(OUTPUT_WIDTH(), OUTPUT_HEIGHT(), *rgb),
                         );
                         slot.needs_push = false;
                     }
                 }
                 Source::Bars => {
-                    let _ = mixer.push_frame(slot.mixer_input, bars(OUTPUT_WIDTH, OUTPUT_HEIGHT, seconds));
+                    let _ = mixer.push_frame(slot.mixer_input, bars(OUTPUT_WIDTH(), OUTPUT_HEIGHT(), seconds));
                 }
                 Source::Still(frame) => {
                     if slot.needs_push {
@@ -1302,7 +1427,7 @@ fn run(
                         .unwrap_or(0.0);
                     let _ = mixer.push_frame(
                         slot.mixer_input,
-                        audio_tile(OUTPUT_WIDTH, OUTPUT_HEIGHT, level),
+                        audio_tile(OUTPUT_WIDTH(), OUTPUT_HEIGHT(), level),
                     );
                 }
                 Source::File { units, next } => {
@@ -1338,14 +1463,14 @@ fn run(
 
         let build_scene = |program: usize, preview: usize| -> Scene {
             let mut scene = Scene::new();
-            let w = OUTPUT_WIDTH as f32;
-            let h = OUTPUT_HEIGHT as f32;
+            let w = OUTPUT_WIDTH() as f32;
+            let h = OUTPUT_HEIGHT() as f32;
             match layout {
                 Layout::Full => {
-                    scene.push(layer_for(program, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
+                    scene.push(layer_for(program, Rect::full(OUTPUT_WIDTH(), OUTPUT_HEIGHT())));
                 }
                 Layout::Pip => {
-                    scene.push(layer_for(program, Rect::full(OUTPUT_WIDTH, OUTPUT_HEIGHT)));
+                    scene.push(layer_for(program, Rect::full(OUTPUT_WIDTH(), OUTPUT_HEIGHT())));
                     scene.push(layer_for(
                         preview,
                         Rect::new(w * 0.66, h * 0.62, w * 0.30, h * 0.30),
@@ -1550,6 +1675,14 @@ fn run(
                     }
                     _ => None,
                 },
+                media: match &slot.source {
+                    Source::Media(m) => Some(MediaState {
+                        position_seconds: m.position_seconds(),
+                        duration_seconds: m.duration_seconds(),
+                        paused: m.paused(),
+                    }),
+                    _ => None,
+                },
                 settings: slot.settings,
                 kind: match &slot.source {
                     Source::Colour(_) => "Colour",
@@ -1571,8 +1704,17 @@ fn run(
             .collect();
         if redraw_thumbnails {
             cached_inputs = infos.clone();
-            cached_program = Some(Arc::new(downscale(mixer.program(), PREVIEW_WIDTH, PREVIEW_HEIGHT)));
         }
+
+        // Every frame, not every third: these are the two biggest pictures on
+        // screen and the ones an operator judges the production by. Tying them
+        // to the thumbnail tick ran them at ten frames a second against a
+        // thirty frame stream, which looks like a fault in the source.
+        cached_program = Some(Arc::new(downscale(mixer.program(), PREVIEW_WIDTH(), PREVIEW_HEIGHT())));
+        let cached_preview = sources
+            .get(preview_input)
+            .and_then(|slot| mixer.input_frame(slot.mixer_input))
+            .map(|f| Arc::new(downscale(f, PREVIEW_WIDTH(), PREVIEW_HEIGHT())));
 
         if let Ok(mut s) = snapshot.lock() {
             s.inputs = infos;
@@ -1581,6 +1723,7 @@ fn run(
             s.transition = transition;
             s.transition_seconds = transition_seconds;
             s.program = cached_program.clone();
+            s.preview = cached_preview.clone();
             s.streaming = !deliveries.is_empty();
             s.ndi_output = ndi_output.as_ref().map(|s| s.name.clone());
             s.opening = opening;
@@ -1945,6 +2088,11 @@ fn downscale(frame: &Frame, width: usize, height: usize) -> Frame {
     if frame.is_empty() || width == 0 || height == 0 {
         return Frame::new(0, 0);
     }
+    if frame.width == width && frame.height == height {
+        // The usual case now that the monitors are shown at full size. One
+        // memcpy rather than two million four-byte ones.
+        return frame.clone();
+    }
     let mut out = Frame::new(width, height);
 
     // Precomputed source columns: the inner loop then does one copy per pixel
@@ -2183,6 +2331,357 @@ mod tests {
                 "the clip's sound reached its own channel but not the master: {:.1} dB",
                 heard.master.peak_db
             );
+        }
+
+        #[test]
+        fn both_monitors_show_the_production_at_full_size_and_full_rate() {
+            // What "the display quality is very worst" turned out to be. The
+            // Preview monitor was fed the input's 320x180 thumbnail and shown
+            // at the same size as Program, so a sharp source arrived on screen
+            // as a blur; and both monitors were refreshed on the thumbnail
+            // tick, one frame in three, so a thirty frame production was
+            // watched at ten.
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            let clip = fixture(
+                "sharp.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30",
+                    "-t", "8",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                ],
+            );
+
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Sharp".into(),
+                path: clip.to_str().unwrap().to_string(),
+            });
+
+            let up = wait_for(&engine, Duration::from_secs(25), |s| {
+                s.inputs.iter().any(|i| i.name == "Sharp")
+            })
+            .expect("the clip never became an input");
+            let index = up.inputs.iter().position(|i| i.name == "Sharp").unwrap();
+
+            // Armed in Preview, which is where a newly added input is judged.
+            engine.send(Command::SetPreview(index));
+
+            let (want_w, want_h) = output_size();
+            let shown = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.preview.as_ref().is_some_and(|f| !f.is_empty())
+            })
+            .expect("the Preview monitor never got a picture");
+
+            let preview = shown.preview.as_ref().unwrap();
+            eprintln!(
+                "  production {want_w}x{want_h}, preview {}x{}, thumbnail {}x{}",
+                preview.width,
+                preview.height,
+                shown.inputs[index].thumbnail.as_ref().map_or(0, |f| f.width),
+                shown.inputs[index].thumbnail.as_ref().map_or(0, |f| f.height),
+            );
+            assert_eq!(
+                (preview.width, preview.height),
+                (want_w, want_h),
+                "Preview is not being shown at production size"
+            );
+            assert!(
+                preview.width > THUMBNAIL_WIDTH,
+                "Preview is still being fed a thumbnail"
+            );
+
+            // And both change every tick rather than every third one. Frames
+            // are shared, so a new picture is a new allocation: comparing the
+            // pointers says whether anything actually arrived.
+            let mut program_changes = 0;
+            let mut preview_changes = 0;
+            let mut ticks = 0;
+            let mut last: (usize, usize) = (0, 0);
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while Instant::now() < deadline && ticks < 40 {
+                let s = engine.snapshot();
+                let now = (
+                    s.program.as_ref().map_or(0, |f| Arc::as_ptr(f) as usize),
+                    s.preview.as_ref().map_or(0, |f| Arc::as_ptr(f) as usize),
+                );
+                if now.0 != 0 && now != last {
+                    if now.0 != last.0 {
+                        program_changes += 1;
+                    }
+                    if now.1 != last.1 {
+                        preview_changes += 1;
+                    }
+                    last = now;
+                    ticks += 1;
+                }
+                std::thread::sleep(Duration::from_millis(12));
+            }
+
+            let seconds = 4.0_f64.min(ticks as f64 / 30.0).max(0.5);
+            eprintln!(
+                "  program {program_changes} new pictures, preview {preview_changes}, over ~{seconds:.1}s"
+            );
+            // Sampling at roughly the frame rate cannot catch every frame, so
+            // this only has to rule out the one-in-three it used to be.
+            assert!(
+                program_changes >= 20,
+                "the Program monitor is still refreshing slower than the production runs: {program_changes}"
+            );
+            assert!(
+                preview_changes >= 20,
+                "the Preview monitor is still refreshing slower than the production runs: {preview_changes}"
+            );
+        }
+
+        /// The operator's own file, when it is on this machine.
+        ///
+        /// A generated fixture proves the pipeline; it does not prove the
+        /// thing that was actually reported. Set `RHEVIA_TEST_CLIP` to a real
+        /// file to check it end to end — picture, sound and cost.
+        #[test]
+        fn a_real_clip_plays_with_its_sound_and_at_its_size() {
+            let Ok(path) = std::env::var("RHEVIA_TEST_CLIP") else {
+                eprintln!("SKIP: set RHEVIA_TEST_CLIP to a file to check it");
+                return;
+            };
+            if !std::path::Path::new(&path).exists() {
+                eprintln!("SKIP: {path} is not on this machine");
+                return;
+            }
+
+            let engine = start();
+            engine.send(Command::AddMediaSource { name: "Clip".into(), path: path.clone() });
+
+            let up = wait_for(&engine, Duration::from_secs(30), |s| {
+                s.inputs.iter().any(|i| i.name == "Clip")
+            })
+            .expect("the file never became an input");
+            let index = up.inputs.iter().position(|i| i.name == "Clip").unwrap();
+
+            engine.send(Command::SetPreview(index));
+            engine.send(Command::Cut);
+
+            // Picture on air at production size, and sound at the master.
+            let live = wait_for(&engine, Duration::from_secs(25), |s| {
+                s.program_input == index
+                    && s.program.as_ref().is_some_and(|f| !f.is_empty())
+                    && s.master.peak_db > -50.0
+            })
+            .expect("the clip did not reach air with its sound");
+
+            let picture = live.program.as_ref().unwrap();
+            eprintln!(
+                "  {} on air at {}x{}, master {:.1} dB, listening on {}",
+                std::path::Path::new(&path).file_name().unwrap().to_string_lossy(),
+                picture.width,
+                picture.height,
+                live.master.peak_db,
+                live.monitor.as_deref().unwrap_or("nothing"),
+            );
+
+            assert_eq!((picture.width, picture.height), output_size());
+            assert!(
+                live.master.peak_db > -50.0,
+                "the file's sound never reached the master: {:.1} dB",
+                live.master.peak_db
+            );
+
+            // Not silently costing more than the machine has. Measured rather
+            // than assumed: raising the production size and the monitor rate
+            // both cost real work.
+            std::thread::sleep(Duration::from_secs(3));
+            let s = engine.snapshot().stats;
+            eprintln!(
+                "  {:.1} fps, {:.2} ms a frame ({:.0}% of the budget)",
+                s.fps,
+                s.render_ms,
+                s.render_ms / (1000.0 / TARGET_FPS) * 100.0
+            );
+            // Only held to the frame rate when built the way it ships.
+            // Compositing two million pixels a frame in an unoptimised build
+            // is an order of magnitude slower and says nothing useful.
+            if cfg!(debug_assertions) {
+                eprintln!("  (debug build — the frame rate is not judged here)");
+            } else {
+                assert!(
+                    s.fps > TARGET_FPS * 0.9,
+                    "the production is dropping frames: {:.1} fps",
+                    s.fps
+                );
+            }
+        }
+
+        #[test]
+        fn a_clip_can_be_held_cued_and_skipped_from_the_interface() {
+            // The controls an operator expects on anything playable: a walk-in
+            // video has to be stopped at the top and taken when the service
+            // starts, not wherever it has looped round to.
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            let clip = fixture(
+                "transport.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30",
+                    "-t", "30",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-g", "15",
+                ],
+            );
+
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Walk-in".into(),
+                path: clip.to_str().unwrap().to_string(),
+            });
+
+            let up = wait_for(&engine, Duration::from_secs(30), |s| {
+                s.inputs.iter().any(|i| i.media.is_some_and(|m| m.position_seconds > 0.2))
+            })
+            .expect("the clip never started playing");
+            let index = up.inputs.iter().position(|i| i.media.is_some()).unwrap();
+            let state = |s: &Snapshot| s.inputs[index].media.unwrap();
+
+            assert_eq!(
+                state(&up).duration_seconds.map(|d| d.round()),
+                Some(30.0),
+                "the length of the file did not reach the interface"
+            );
+
+            // ---- pause holds it -----------------------------------------
+            engine.send(Command::MediaTransport { input: index, action: MediaAction::PlayPause });
+            let held = wait_for(&engine, Duration::from_secs(5), |s| state(s).paused)
+                .expect("pause never took");
+            let at = state(&held).position_seconds;
+            std::thread::sleep(Duration::from_millis(1200));
+            let after = state(&engine.snapshot()).position_seconds;
+            eprintln!("  paused at {at:.2}s, still {after:.2}s a second later");
+            assert!((after - at).abs() < 0.2, "it kept playing while held");
+
+            // ---- and lets go --------------------------------------------
+            engine.send(Command::MediaTransport { input: index, action: MediaAction::PlayPause });
+            let moving = wait_for(&engine, Duration::from_secs(5), |s| {
+                !state(s).paused && state(s).position_seconds > at + 0.2
+            })
+            .expect("letting go did not restart it");
+            let running_at = state(&moving).position_seconds;
+
+            // ---- five seconds on ----------------------------------------
+            engine.send(Command::MediaTransport { input: index, action: MediaAction::Forward });
+            let forward = wait_for(&engine, Duration::from_secs(20), |s| {
+                state(s).position_seconds >= running_at + 4.0
+            })
+            .expect("skipping forward did nothing");
+            let forward_at = state(&forward).position_seconds;
+            eprintln!("  {running_at:.2}s -> +5s -> {forward_at:.2}s");
+
+            // ---- and five back ------------------------------------------
+            engine.send(Command::MediaTransport { input: index, action: MediaAction::Back });
+            let back = wait_for(&engine, Duration::from_secs(20), |s| {
+                state(s).position_seconds < forward_at - 3.0
+            })
+            .expect("skipping back did nothing");
+            eprintln!("  {forward_at:.2}s -> -5s -> {:.2}s", state(&back).position_seconds);
+
+            // ---- stop cues it at the top --------------------------------
+            engine.send(Command::MediaTransport { input: index, action: MediaAction::Stop });
+            let stopped = wait_for(&engine, Duration::from_secs(20), |s| {
+                state(s).paused && state(s).position_seconds < 0.5
+            })
+            .expect("stop did not cue the clip at the beginning");
+            eprintln!(
+                "  stopped at {:.2}s, held: {}",
+                state(&stopped).position_seconds,
+                state(&stopped).paused
+            );
+
+            // ---- and the production never stopped running ---------------
+            let s = engine.snapshot().stats;
+            eprintln!("  engine still at {:.1} fps through all of that", s.fps);
+            // Judged only in an optimised build, where the production runs at
+            // rate to begin with. Compositing two million pixels a frame
+            // unoptimised is a third of that before anything else happens.
+            if !cfg!(debug_assertions) {
+                assert!(
+                    s.fps > TARGET_FPS * 0.8,
+                    "working the transport stalled the production: {:.1} fps",
+                    s.fps
+                );
+            }
+        }
+
+        #[test]
+        fn a_camera_or_a_colour_has_no_transport() {
+            // The bar is only drawn when there is something to move, and the
+            // interface decides that from this being None.
+            let engine = start();
+            let snapshot = wait_for(&engine, Duration::from_secs(10), |s| !s.inputs.is_empty())
+                .expect("the engine started with no inputs at all");
+            assert!(
+                snapshot.inputs.iter().all(|i| i.media.is_none()),
+                "a generated input is claiming to be playable"
+            );
+        }
+
+        #[test]
+        fn a_video_file_is_audible_without_being_asked_to_be() {
+            // The complaint that mattered most: a video is added and nothing
+            // is heard. Monitoring existed but had to be found and switched
+            // on, which is not a preference — it is the program appearing
+            // broken. This checks the engine is listening from the start and
+            // that the device is really taking the sound.
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            let clip = fixture(
+                "audible.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                    "-t", "6",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                ],
+            );
+
+            let engine = start();
+
+            // Listening without anyone asking for it.
+            let ready = wait_for(&engine, Duration::from_secs(15), |s| s.monitor.is_some());
+            let Some(ready) = ready else {
+                eprintln!("SKIP: this machine has nothing to listen on");
+                return;
+            };
+            eprintln!("  listening on {}", ready.monitor.as_deref().unwrap_or("?"));
+
+            engine.send(Command::AddMediaSource {
+                name: "Clip".into(),
+                path: clip.to_str().unwrap().to_string(),
+            });
+
+            // The clip's own channel carries sound, and so does the master —
+            // which is what the monitor is fed from.
+            let heard = wait_for(&engine, Duration::from_secs(25), |s| {
+                s.audio.iter().any(|c| c.name == "Clip" && c.peak_db > -40.0)
+                    && s.master.peak_db > -40.0
+            })
+            .expect("the clip never reached the master");
+
+            eprintln!(
+                "  clip {:.1} dB, master {:.1} dB, still listening: {}",
+                heard.audio.iter().find(|c| c.name == "Clip").unwrap().peak_db,
+                heard.master.peak_db,
+                heard.monitor.is_some()
+            );
+            assert!(heard.monitor.is_some(), "the monitor stopped");
         }
 
         #[test]

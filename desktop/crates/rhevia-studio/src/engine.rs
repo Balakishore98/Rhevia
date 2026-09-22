@@ -53,7 +53,20 @@ pub enum Command {
     RemovePlugin { channel: usize, index: usize },
     SetLayout(Layout),
     /// Assigns a source to one of the four overlay slots.
+    /// Adds an empty input that other inputs are stacked into.
+    ///
+    /// A video and a logo taken to air as one thing rather than as two that
+    /// have to be switched together and can get out of step.
+    AddLayeredSource { name: String },
+    /// Puts `layer` on top of the stack in `input`.
+    AddLayer { input: usize, layer: usize },
+    RemoveLayer { input: usize, at: usize },
+    SetLayer { input: usize, at: usize, layer: StackLayer },
+    /// Moves a layer up or down the stack. True raises it.
+    MoveLayer { input: usize, at: usize, up: bool },
     SetOverlaySource { slot: usize, input: usize },
+    /// Chooses where an overlay slot draws.
+    SetOverlayMode { slot: usize, mode: OverlayMode },
     /// Puts an overlay on or off air. Overlays sit above the transition, so
     /// a lower third survives a cut underneath it — which is the whole point.
     ToggleOverlay(usize),
@@ -169,17 +182,150 @@ pub fn remap_after_removal(removed: usize, index: usize) -> Option<usize> {
     }
 }
 
-/// Where each overlay slot draws. Slot 4 is full-frame, as on most switchers,
-/// so it can carry a full-screen graphic rather than only a corner box.
-fn overlay_rect(slot: usize) -> Rect {
-    let w = OUTPUT_WIDTH() as f32;
-    let h = OUTPUT_HEIGHT() as f32;
-    match slot {
-        0 => Rect::new(w * 0.04, h * 0.62, w * 0.30, h * 0.30),
-        1 => Rect::new(w * 0.66, h * 0.06, w * 0.30, h * 0.30),
-        2 => Rect::new(w * 0.50, h * 0.08, w * 0.46, h * 0.84),
-        _ => Rect::full(OUTPUT_WIDTH(), OUTPUT_HEIGHT()),
+/// One picture inside a layered input.
+///
+/// Position is held as fractions of the frame rather than pixels, so a stack
+/// built at 1080p still lines up if the production is later run at 720p or
+/// 2160p.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StackLayer {
+    /// Which input supplies the picture, by its place in the matrix.
+    pub input: usize,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// 0 invisible, 1 solid. A logo at 0.6 sits over a shot without hiding it.
+    pub opacity: f32,
+    /// Off rather than removed, so a layer can be tried and put back.
+    pub visible: bool,
+    /// Letterbox inside the rectangle rather than stretching to fill it.
+    pub preserve_aspect: bool,
+}
+
+impl Default for StackLayer {
+    fn default() -> Self {
+        // Full frame: a layer added on top of nothing should be visible
+        // immediately, not a speck in the corner to be hunted for.
+        Self {
+            input: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+            opacity: 1.0,
+            visible: true,
+            preserve_aspect: true,
+        }
     }
+}
+
+impl StackLayer {
+    /// The named places a layer is usually put.
+    pub const PLACES: [(&'static str, f32, f32, f32, f32); 6] = [
+        ("FULL", 0.0, 0.0, 1.0, 1.0),
+        ("LOWER L", 0.04, 0.62, 0.30, 0.30),
+        ("LOWER R", 0.66, 0.62, 0.30, 0.30),
+        ("UPPER L", 0.04, 0.06, 0.30, 0.30),
+        ("UPPER R", 0.66, 0.06, 0.30, 0.30),
+        ("CENTRE", 0.15, 0.15, 0.70, 0.70),
+    ];
+
+    fn rect(&self, width: usize, height: usize) -> Rect {
+        let (w, h) = (width as f32, height as f32);
+        Rect::new(self.x * w, self.y * h, self.width * w, self.height * h)
+    }
+
+    /// Keeps a layer somewhere it can be seen and dragged back from.
+    pub fn sane(mut self) -> Self {
+        self.width = self.width.clamp(0.02, 4.0);
+        self.height = self.height.clamp(0.02, 4.0);
+        self.x = self.x.clamp(-2.0, 2.0);
+        self.y = self.y.clamp(-2.0, 2.0);
+        self.opacity = self.opacity.clamp(0.0, 1.0);
+        self
+    }
+}
+
+/// How many layers one input may stack.
+///
+/// Each one is a full composite pass over the frame, and the whole stack has
+/// to be built every tick inside the same budget as everything else.
+pub const MAX_LAYERS: usize = 8;
+
+/// Where an overlay slot draws.
+///
+/// Each slot chooses, rather than being fixed by its number. An operator
+/// running a service wants slot 1 to be the verse full-screen and slot 2 to
+/// be a camera full-screen, and being told that slot 1 can only ever be a
+/// corner box is an arbitrary rule to work around.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverlayMode {
+    /// Covers the programme completely. The one an operator reaches for when
+    /// the graphic *is* the shot: a verse, a notice, a second camera taken
+    /// whole without disturbing what is in Preview.
+    #[default]
+    Full,
+    /// Small, bottom left. The usual place for a name or a lower third.
+    BottomLeft,
+    /// Small, top right. Where a logo or a clock goes.
+    TopRight,
+    /// Half the frame, on the right. For a talking head beside a slide.
+    RightHalf,
+    /// Centred and large, with the programme showing around the edge.
+    Centre,
+}
+
+impl OverlayMode {
+    pub const ALL: [OverlayMode; 5] = [
+        OverlayMode::Full,
+        OverlayMode::BottomLeft,
+        OverlayMode::TopRight,
+        OverlayMode::RightHalf,
+        OverlayMode::Centre,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OverlayMode::Full => "FULL",
+            OverlayMode::BottomLeft => "LOWER L",
+            OverlayMode::TopRight => "UPPER R",
+            OverlayMode::RightHalf => "RIGHT ½",
+            OverlayMode::Centre => "CENTRE",
+        }
+    }
+
+    /// What it means, in the words someone running a service would use.
+    pub fn hint(self) -> &'static str {
+        match self {
+            OverlayMode::Full => "covers the programme completely",
+            OverlayMode::BottomLeft => "small, bottom left — a name or a lower third",
+            OverlayMode::TopRight => "small, top right — a logo or a clock",
+            OverlayMode::RightHalf => "half the frame on the right, beside the shot",
+            OverlayMode::Centre => "large and centred, programme showing around it",
+        }
+    }
+
+    fn rect(self) -> Rect {
+        let w = OUTPUT_WIDTH() as f32;
+        let h = OUTPUT_HEIGHT() as f32;
+        match self {
+            OverlayMode::Full => Rect::full(OUTPUT_WIDTH(), OUTPUT_HEIGHT()),
+            OverlayMode::BottomLeft => Rect::new(w * 0.04, h * 0.62, w * 0.30, h * 0.30),
+            OverlayMode::TopRight => Rect::new(w * 0.66, h * 0.06, w * 0.30, h * 0.30),
+            OverlayMode::RightHalf => Rect::new(w * 0.50, h * 0.08, w * 0.46, h * 0.84),
+            OverlayMode::Centre => Rect::new(w * 0.12, h * 0.10, w * 0.76, h * 0.76),
+        }
+    }
+}
+
+/// The arrangement each slot starts out in.
+///
+/// All four full-screen, which is the thing that was asked for and the more
+/// useful default: a slot whose graphic covers the screen is obvious the
+/// moment it is turned on, whereas a corner box on a dark shot can be missed.
+fn default_overlay_modes() -> [OverlayMode; 4] {
+    [OverlayMode::Full; 4]
 }
 
 /// What the transport controls can be asked to do.
@@ -288,6 +434,8 @@ pub struct Snapshot {
     pub overlay_source: [Option<usize>; 4],
     /// Which overlay slots are currently on air.
     pub overlay_on: [bool; 4],
+    /// Where each slot draws when it is on.
+    pub overlay_mode: [OverlayMode; 4],
     /// Every destination currently being fed, in the order they were added.
     pub destinations: Vec<DestinationState>,
     /// The name the programme is being published under over NDI, if it is.
@@ -296,6 +444,15 @@ pub struct Snapshot {
     pub monitor: Option<String>,
     /// Listening level in dB, which is not the master fader.
     pub monitor_gain_db: f32,
+    /// Discontinuities spliced into a clip's sound: silence handed over when
+    /// there was not enough, and jumps when the buffer was trimmed. Both are
+    /// heard as a pop.
+    pub audio_padded: u64,
+    pub audio_trimmed: u64,
+    /// Blocks thrown away because the listening cushion outgrew its limit.
+    pub audio_dropped: u64,
+    /// How much sound is waiting to be played, in frames.
+    pub audio_buffered: usize,
     /// How many times the sound card asked for audio and found none ready.
     ///
     /// Each one is a gap, and gaps arriving at the tick rate are heard as a
@@ -386,6 +543,8 @@ pub struct InputInfo {
     pub kind: &'static str,
     /// Set when this input is a file that can be held and cued.
     pub media: Option<MediaState>,
+    /// Set when this input is a stack, holding it from bottom to top.
+    pub layers: Option<Vec<StackLayer>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -453,6 +612,15 @@ enum Source {
     /// A media file, played on a loop. Carries its own sound, so it feeds the
     /// mixer directly rather than through a capture device.
     Media(Box<rhevia_media::MediaSource>),
+    /// Several inputs composited into one.
+    ///
+    /// Carries its own compositor rather than borrowing the programme's: this
+    /// is rendered while building the inputs, before the programme scene
+    /// exists, and it needs its own canvas to draw onto.
+    Layered {
+        layers: Vec<StackLayer>,
+        compositor: Box<rhevia_engine::Compositor>,
+    },
     /// A source from another machine on the network, with its sound.
     Ndi(Box<rhevia_ndi::NdiReceiver>),
 }
@@ -709,6 +877,7 @@ fn run(
     let mut layout = Layout::Full;
     let mut overlay_source: [Option<usize>; 4] = [None; 4];
     let mut overlay_on = [false; 4];
+    let mut overlay_mode = default_overlay_modes();
     let mut ftb = false;
     let mut transition_kind = Transition::Fade;
     // Loaded once. A title that cannot find a face is reported rather than
@@ -850,6 +1019,74 @@ fn run(
                     }
                 }
                 Command::SetLayout(l) => layout = l,
+                Command::AddLayeredSource { name } => {
+                    if let Ok(input) = mixer.add_input(name.clone()) {
+                        sources.push(SourceSlot {
+                            mixer_input: input,
+                            source: Source::Layered {
+                                layers: Vec::new(),
+                                compositor: Box::new(rhevia_engine::Compositor::new(
+                                    OUTPUT_WIDTH(),
+                                    OUTPUT_HEIGHT(),
+                                )),
+                            },
+                            audio: None,
+                            needs_push: true,
+                            settings: InputSettings::default(),
+                        });
+                        audio.add_channel(name);
+                    }
+                }
+                Command::AddLayer { input, layer } => {
+                    // A stack that contains itself would ask for the picture
+                    // it is in the middle of making.
+                    if input != layer {
+                        if let Some(SourceSlot { source: Source::Layered { layers, .. }, .. }) =
+                            sources.get_mut(input)
+                        {
+                            if layers.len() < MAX_LAYERS {
+                                layers.push(StackLayer { input: layer, ..Default::default() });
+                            }
+                        }
+                    }
+                }
+                Command::RemoveLayer { input, at } => {
+                    if let Some(SourceSlot { source: Source::Layered { layers, .. }, .. }) =
+                        sources.get_mut(input)
+                    {
+                        if at < layers.len() {
+                            layers.remove(at);
+                        }
+                    }
+                }
+                Command::SetLayer { input, at, layer } => {
+                    if input != layer.input {
+                        if let Some(SourceSlot { source: Source::Layered { layers, .. }, .. }) =
+                            sources.get_mut(input)
+                        {
+                            if let Some(existing) = layers.get_mut(at) {
+                                *existing = layer.sane();
+                            }
+                        }
+                    }
+                }
+                Command::MoveLayer { input, at, up } => {
+                    if let Some(SourceSlot { source: Source::Layered { layers, .. }, .. }) =
+                        sources.get_mut(input)
+                    {
+                        // Up the stack means later in the list, because later
+                        // layers are drawn over earlier ones.
+                        let to = if up { at + 1 } else { at.wrapping_sub(1) };
+                        if at < layers.len() && to < layers.len() {
+                            layers.swap(at, to);
+                        }
+                    }
+                }
+                Command::SetOverlayMode { slot, mode } => {
+                    if slot < 4 {
+                        overlay_mode[slot] = mode;
+                    }
+                }
                 Command::SetOverlaySource { slot, input } => {
                     if slot < 4 && input < sources.len() {
                         overlay_source[slot] = Some(input);
@@ -1385,6 +1622,10 @@ fn run(
 
         // ---- sources -------------------------------------------------------
         let seconds = start.elapsed().as_secs_f32();
+        // Which mixer input each place in the matrix uses. Taken before the
+        // loop because a layered input needs to look up its layers' inputs
+        // while the list is being walked.
+        let mixer_inputs: Vec<usize> = sources.iter().map(|s| s.mixer_input).collect();
         for slot in &mut sources {
             match &mut slot.source {
                 Source::Colour(rgb) => {
@@ -1459,6 +1700,33 @@ fn run(
                         audio_tile(OUTPUT_WIDTH(), OUTPUT_HEIGHT(), level),
                     );
                 }
+                Source::Layered { layers, compositor } => {
+                    // Built every tick rather than only when something
+                    // changes: the layers are live inputs, and a stack that
+                    // only redrew on an edit would freeze the video inside it.
+                    let mut scene = Scene::new();
+                    scene.background = [0, 0, 0];
+                    for layer in layers.iter().filter(|l| l.visible) {
+                        let Some(&input) = mixer_inputs.get(layer.input) else { continue };
+                        if input == slot.mixer_input {
+                            continue;
+                        }
+                        scene.push(Layer {
+                            opacity: layer.opacity,
+                            preserve_aspect: layer.preserve_aspect,
+                            ..Layer::new(input, layer.rect(OUTPUT_WIDTH(), OUTPUT_HEIGHT()))
+                        });
+                    }
+
+                    // Cloned out so the borrow of the mixer ends before the
+                    // result is pushed back into it.
+                    let composed = {
+                        let frames: Vec<Option<&Frame>> =
+                            (0..mixer.input_count()).map(|i| mixer.input_frame(i)).collect();
+                        compositor.render(&scene, &frames).clone()
+                    };
+                    let _ = mixer.push_frame(slot.mixer_input, composed);
+                }
                 Source::File { units, next } => {
                     if !units.is_empty() {
                         let unit = &units[*next % units.len()];
@@ -1530,7 +1798,7 @@ fn run(
                 }
                 if let Some(source_index) = overlay_source[slot] {
                     if let Some(source) = sources.get(source_index) {
-                        scene.push(layer_for(source.mixer_input, overlay_rect(slot)));
+                        scene.push(layer_for(source.mixer_input, overlay_mode[slot].rect()));
                     }
                 }
             }
@@ -1704,6 +1972,10 @@ fn run(
                     }
                     _ => None,
                 },
+                layers: match &slot.source {
+                    Source::Layered { layers, .. } => Some(layers.clone()),
+                    _ => None,
+                },
                 media: match &slot.source {
                     Source::Media(m) => Some(MediaState {
                         position_seconds: m.position_seconds(),
@@ -1728,6 +2000,7 @@ fn run(
                         if m.info.has_video { "Media" } else { "Audio File" }
                     }
                     Source::Ndi(_) => "NDI",
+                    Source::Layered { .. } => "Layers",
                 },
             })
             .collect();
@@ -1759,6 +2032,17 @@ fn run(
             s.monitor = monitor.as_ref().map(|m| m.device_name.clone());
             s.monitor_gain_db = monitor_gain_db;
             s.audio_gaps = monitor.as_ref().map(|m| m.starved()).unwrap_or(0);
+            s.audio_dropped = monitor.as_ref().map(|m| m.dropped()).unwrap_or(0);
+            s.audio_buffered = monitor.as_ref().map(|m| m.buffered_frames()).unwrap_or(0);
+            let (padded, trimmed) = sources
+                .iter()
+                .filter_map(|slot| match &slot.source {
+                    Source::Media(m) => Some(m.audio_faults()),
+                    _ => None,
+                })
+                .fold((0, 0), |(p, t), (a, b)| (p + a, t + b));
+            s.audio_padded = padded;
+            s.audio_trimmed = trimmed;
             s.destinations = deliveries
                 .iter()
                 .map(|d| DestinationState {
@@ -1771,6 +2055,7 @@ fn run(
             s.stream_error = stream_error.clone();
             s.layout = layout;
             s.overlay_source = overlay_source;
+            s.overlay_mode = overlay_mode;
             s.overlay_on = overlay_on;
             s.ftb = ftb;
             s.transition_kind = transition_kind;
@@ -2833,6 +3118,288 @@ mod tests {
                 gaps < 10,
                 "{gaps} gaps in six seconds is a crackle, not an occasional pause"
             );
+        }
+
+        /// The average colour of a rectangle of the programme, as a fraction
+        /// of the frame.
+        fn patch(frame: &Frame, x: f32, y: f32, w: f32, h: f32) -> [u8; 3] {
+            let (fw, fh) = (frame.width as f32, frame.height as f32);
+            let (x0, y0) = ((x * fw) as usize, (y * fh) as usize);
+            let (x1, y1) = (((x + w) * fw) as usize, ((y + h) * fh) as usize);
+            let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
+            for py in y0..y1.min(frame.height) {
+                for px in x0..x1.min(frame.width) {
+                    let i = (py * frame.width + px) * 4;
+                    r += frame.data[i] as u64;
+                    g += frame.data[i + 1] as u64;
+                    b += frame.data[i + 2] as u64;
+                    n += 1;
+                }
+            }
+            let n = n.max(1);
+            [(r / n) as u8, (g / n) as u8, (b / n) as u8]
+        }
+
+        fn near(a: [u8; 3], b: [u8; 3], tolerance: i32) -> bool {
+            (0..3).all(|c| (a[c] as i32 - b[c] as i32).abs() <= tolerance)
+        }
+
+        #[test]
+        fn several_inputs_can_be_stacked_into_one() {
+            // Asked for as clubbing a video and a logo together and taking
+            // them to air as a single input: a blank input, then layers added
+            // into it and each one placed. This builds a stack out of two
+            // colours, puts it on air, and reads the programme back to check
+            // each layer landed where it was put.
+            let engine = start();
+            let up = wait_for(&engine, Duration::from_secs(10), |s| s.inputs.len() >= 5)
+                .expect("the engine started with too few inputs");
+            // Input 2 is Magenta and input 4 is Amber in the starting set.
+            let magenta = up.inputs.iter().position(|i| i.name == "Magenta").unwrap();
+            let amber = up.inputs.iter().position(|i| i.name == "Amber").unwrap();
+
+            engine.send(Command::AddLayeredSource { name: "Stack".into() });
+            let made = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.inputs.iter().any(|i| i.name == "Stack")
+            })
+            .expect("the layered input was never made");
+            let stack = made.inputs.iter().position(|i| i.name == "Stack").unwrap();
+            assert_eq!(made.inputs[stack].kind, "Layers");
+            assert_eq!(made.inputs[stack].layers.as_deref(), Some(&[][..]));
+
+            // A background across the whole frame, then a box in the corner.
+            engine.send(Command::AddLayer { input: stack, layer: magenta });
+            engine.send(Command::AddLayer { input: stack, layer: amber });
+            let two = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.inputs[stack].layers.as_ref().is_some_and(|l| l.len() == 2)
+            })
+            .expect("the layers were never added");
+
+            let mut box_layer = two.inputs[stack].layers.as_ref().unwrap()[1];
+            box_layer.x = 0.66;
+            box_layer.y = 0.62;
+            box_layer.width = 0.30;
+            box_layer.height = 0.30;
+            box_layer.preserve_aspect = false;
+            engine.send(Command::SetLayer { input: stack, at: 1, layer: box_layer });
+
+            engine.send(Command::SetPreview(stack));
+            engine.send(Command::Cut);
+
+            let live = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.program_input == stack && s.program.as_ref().is_some_and(|f| !f.is_empty())
+            })
+            .expect("the stack never reached air");
+            let frame = live.program.as_ref().unwrap();
+
+            // Top left is the background layer only; bottom right is the box.
+            let background = patch(frame, 0.05, 0.05, 0.2, 0.2);
+            let corner = patch(frame, 0.72, 0.68, 0.16, 0.16);
+            eprintln!(
+                "  background {background:?}, corner {corner:?} \
+                 (magenta and amber, stacked)"
+            );
+            assert!(
+                !near(background, corner, 24),
+                "both parts of the stack are the same colour, so only one layer drew"
+            );
+            assert!(
+                background.iter().any(|&c| c > 24),
+                "the bottom layer never drew: {background:?}"
+            );
+            assert!(
+                corner.iter().any(|&c| c > 24),
+                "the top layer never drew: {corner:?}"
+            );
+
+            // Hiding the top layer leaves the background showing through.
+            box_layer.visible = false;
+            engine.send(Command::SetLayer { input: stack, at: 1, layer: box_layer });
+            let hidden = wait_for(&engine, Duration::from_secs(5), |s| {
+                s.program
+                    .as_ref()
+                    .is_some_and(|f| near(patch(f, 0.72, 0.68, 0.16, 0.16), background, 24))
+            });
+            assert!(hidden.is_some(), "hiding a layer did not take it off the stack");
+        }
+
+        #[test]
+        fn a_stack_cannot_be_built_out_of_itself() {
+            // It would be asked for the picture it is in the middle of
+            // making. Refused where it is asked for rather than guarded in
+            // the render loop, so the stack never holds a layer that is
+            // silently skipped.
+            let engine = start();
+            engine.send(Command::AddLayeredSource { name: "Stack".into() });
+            let made = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.inputs.iter().any(|i| i.name == "Stack")
+            })
+            .expect("the layered input was never made");
+            let stack = made.inputs.iter().position(|i| i.name == "Stack").unwrap();
+
+            engine.send(Command::AddLayer { input: stack, layer: stack });
+            std::thread::sleep(Duration::from_millis(400));
+            assert_eq!(
+                engine.snapshot().inputs[stack].layers.as_ref().map(|l| l.len()),
+                Some(0),
+                "a stack accepted itself as one of its own layers"
+            );
+
+            // And the engine is still running rather than chasing its tail.
+            // Counted in frames rather than read off the rate, which is
+            // smoothed and has nothing to smooth this early.
+            let before = engine.snapshot().stats.frames_rendered;
+            std::thread::sleep(Duration::from_millis(400));
+            let after = engine.snapshot().stats.frames_rendered;
+            assert!(after > before, "the engine stopped after being handed a stack of itself");
+        }
+
+        #[test]
+        fn layers_can_be_reordered_and_removed() {
+            let engine = start();
+            let up = wait_for(&engine, Duration::from_secs(10), |s| s.inputs.len() >= 5)
+                .expect("too few inputs");
+            let (a, b) = (
+                up.inputs.iter().position(|i| i.name == "Magenta").unwrap(),
+                up.inputs.iter().position(|i| i.name == "Amber").unwrap(),
+            );
+
+            engine.send(Command::AddLayeredSource { name: "Stack".into() });
+            let made = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.inputs.iter().any(|i| i.name == "Stack")
+            })
+            .unwrap();
+            let stack = made.inputs.iter().position(|i| i.name == "Stack").unwrap();
+
+            engine.send(Command::AddLayer { input: stack, layer: a });
+            engine.send(Command::AddLayer { input: stack, layer: b });
+            let two = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.inputs[stack].layers.as_ref().is_some_and(|l| l.len() == 2)
+            })
+            .expect("the layers were never added");
+            assert_eq!(two.inputs[stack].layers.as_ref().unwrap()[0].input, a);
+
+            engine.send(Command::MoveLayer { input: stack, at: 0, up: true });
+            let swapped = wait_for(&engine, Duration::from_secs(5), |s| {
+                s.inputs[stack].layers.as_ref().is_some_and(|l| l[0].input == b)
+            });
+            assert!(swapped.is_some(), "raising a layer did not move it up the stack");
+
+            engine.send(Command::RemoveLayer { input: stack, at: 0 });
+            let gone = wait_for(&engine, Duration::from_secs(5), |s| {
+                s.inputs[stack].layers.as_ref().is_some_and(|l| l.len() == 1)
+            });
+            assert!(gone.is_some(), "removing a layer left it in the stack");
+        }
+
+        #[test]
+        fn an_overlay_can_be_taken_full_screen() {
+            // Asked for as "1 means verse fullscreen, 2 means ndi full
+            // screen": the slot decides where it sits rather than its number
+            // deciding for it.
+            let engine = start();
+            let up = wait_for(&engine, Duration::from_secs(10), |s| s.inputs.len() >= 5)
+                .expect("too few inputs");
+            let amber = up.inputs.iter().position(|i| i.name == "Amber").unwrap();
+
+            // Every slot starts full screen, which is the useful default.
+            assert!(
+                up.overlay_mode.iter().all(|m| *m == OverlayMode::Full),
+                "overlays did not start full screen"
+            );
+
+            engine.send(Command::SetOverlaySource { slot: 0, input: amber });
+            engine.send(Command::ToggleOverlay(0));
+            let covered = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.overlay_on[0] && s.program.as_ref().is_some_and(|f| !f.is_empty())
+            })
+            .expect("the overlay never came on");
+            let frame = covered.program.as_ref().unwrap();
+
+            let middle = patch(frame, 0.4, 0.4, 0.2, 0.2);
+            let edge = patch(frame, 0.02, 0.02, 0.08, 0.08);
+            eprintln!("  full screen: middle {middle:?}, corner {edge:?}");
+            assert!(
+                near(middle, edge, 20),
+                "a full-screen overlay left the programme showing at the edge"
+            );
+
+            // And moved to a corner, the programme comes back around it.
+            engine.send(Command::SetOverlayMode { slot: 0, mode: OverlayMode::BottomLeft });
+            let boxed = wait_for(&engine, Duration::from_secs(5), |s| {
+                s.program
+                    .as_ref()
+                    .is_some_and(|f| !near(patch(f, 0.4, 0.4, 0.2, 0.2), middle, 20))
+            });
+            assert!(boxed.is_some(), "moving the overlay to a corner changed nothing");
+        }
+
+        #[test]
+        #[ignore = "diagnostic; run with --ignored and RHEVIA_TEST_CLIP"]
+        fn where_the_pops_in_a_real_clip_come_from() {
+            // He can still hear pops. A pop is a discontinuity in the
+            // waveform, and there are four places one can be introduced: the
+            // sound card running dry, the clip's buffer being handed over
+            // short, the clip's buffer being trimmed, and the master clipping.
+            // This runs his own file and reports all four rather than
+            // guessing which.
+            let Ok(path) = std::env::var("RHEVIA_TEST_CLIP") else {
+                eprintln!("SKIP: set RHEVIA_TEST_CLIP");
+                return;
+            };
+
+            let engine = start();
+            let Some(_) = wait_for(&engine, Duration::from_secs(15), |s| s.monitor.is_some())
+            else {
+                eprintln!("SKIP: nothing to listen on");
+                return;
+            };
+            engine.send(Command::AddMediaSource { name: "Clip".into(), path });
+            let up = wait_for(&engine, Duration::from_secs(30), |s| {
+                s.audio.iter().any(|c| c.name == "Clip" && c.peak_db > -50.0)
+            })
+            .expect("the clip never made a sound");
+            let index = up.inputs.iter().position(|i| i.media.is_some()).unwrap();
+            engine.send(Command::SetPreview(index));
+            engine.send(Command::Cut);
+
+            std::thread::sleep(Duration::from_secs(2));
+            let first = engine.snapshot();
+            let (g0, p0, t0) = (first.audio_gaps, first.audio_padded, first.audio_trimmed);
+            let d0 = first.audio_dropped;
+
+            // Sampled closely so a clipping peak is not averaged away.
+            let mut worst_clip = f32::MIN;
+            let mut clipped_ticks = 0;
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while Instant::now() < deadline {
+                let s = engine.snapshot();
+                worst_clip = worst_clip.max(s.master.peak_db);
+                if s.master.clipped {
+                    clipped_ticks += 1;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+
+            let last = engine.snapshot();
+            eprintln!("  over ten seconds on air:");
+            eprintln!("    sound card ran dry   {:>6}", last.audio_gaps - g0);
+            eprintln!("    cushion thrown away  {:>6}", last.audio_dropped - d0);
+            eprintln!(
+                "    cushion now          {:>6} frames ({:.0} ms)",
+                last.audio_buffered,
+                last.audio_buffered as f32 / 48_000.0 * 1000.0
+            );
+            eprintln!("    clip handed short    {:>6}", last.audio_padded - p0);
+            eprintln!("    clip buffer trimmed  {:>6}", last.audio_trimmed - t0);
+            eprintln!("    master clipped on    {clipped_ticks:>6} samples");
+            eprintln!("    loudest master peak  {worst_clip:>6.1} dB");
+            for channel in &last.audio {
+                eprintln!(
+                    "    channel {:<14} {:>6.1} dB peak, clipped: {}",
+                    channel.name, channel.peak_db, channel.clipped
+                );
+            }
         }
 
         #[test]

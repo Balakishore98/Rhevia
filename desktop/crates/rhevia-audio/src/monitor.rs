@@ -74,6 +74,10 @@ pub struct AudioMonitor {
     /// callback, which is the one place that reads it.
     #[allow(dead_code)]
     flowing: Arc<AtomicBool>,
+    /// How many blocks were thrown away because the cushion had grown past
+    /// what it is allowed to hold. Each one jumps the waveform, which is
+    /// heard as a pop.
+    dropped: Arc<AtomicU64>,
     /// How many times the callback asked for sound and found none.
     ///
     /// Exposed because this is the difference between "the audio is fine" and
@@ -96,6 +100,7 @@ impl AudioMonitor {
         let gain = Arc::new(Mutex::new(1.0f32));
         let playing = Arc::new(AtomicBool::new(false));
         let gaps = Arc::new(AtomicU64::new(0));
+        let spilled = Arc::new(AtomicU64::new(0));
 
         let source = Arc::clone(&pending);
         let alive = Arc::clone(&running);
@@ -184,6 +189,7 @@ impl AudioMonitor {
                 gain,
                 flowing: playing,
                 starved: gaps,
+                dropped: spilled,
                 device_name,
                 device_rate,
                 device_channels,
@@ -220,9 +226,17 @@ impl AudioMonitor {
         // would mean the operator hears the show later and later as the
         // evening goes on.
         let limit = MAX_BUFFERED_FRAMES * CHANNELS;
-        while pending.len() > limit {
-            pending.pop_front();
+        if pending.len() > limit {
+            let excess = pending.len() - limit;
+            pending.drain(..excess);
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// How many times sound had to be thrown away to stop the cushion
+    /// growing. Each one is a jump in the middle of the waveform.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// Sets the listening level, which is nothing to do with the stream.
@@ -295,8 +309,25 @@ pub(crate) fn fill(
             break;
         }
 
-        let left = pending[at] * gain;
-        let right = pending[at + 1] * gain;
+        // Interpolated between neighbouring frames rather than snapped to
+        // the nearest one. On a device at the engine's own rate this costs
+        // nothing -- the fraction is zero and it reduces to a copy -- but on
+        // a 44.1 kHz device, snapping drops or repeats a sample in an
+        // irregular pattern, and that is heard as grit and clicks over
+        // everything rather than as a change of pitch.
+        let fraction = (position - index as f64) as f32;
+        // The frame after, where there is one. On the last frame in hand
+        // there is nothing to interpolate towards, so it is held -- which
+        // costs at most one frame at the very end of what has arrived, and
+        // never happens at all on a device running at the engine's rate.
+        let next = at + CHANNELS;
+        let (ahead_left, ahead_right) = if next + 1 < pending.len() {
+            (pending[next], pending[next + 1])
+        } else {
+            (pending[at], pending[at + 1])
+        };
+        let left = (pending[at] + (ahead_left - pending[at]) * fraction) * gain;
+        let right = (pending[at + 1] + (ahead_right - pending[at + 1]) * fraction) * gain;
 
         let base = frame * device_channels;
         for channel in 0..device_channels {
@@ -332,6 +363,60 @@ mod tests {
 
     fn ring(samples: &[f32]) -> Arc<Mutex<VecDeque<f32>>> {
         Arc::new(Mutex::new(samples.iter().copied().collect()))
+    }
+
+    #[test]
+    fn a_device_at_44_1_khz_is_played_smoothly_rather_than_snapped() {
+        // Not every device runs at the engine's rate, and a Bluetooth headset
+        // often does not. Snapping to the nearest frame drops or repeats a
+        // sample in an irregular pattern, which is not heard as a change of
+        // pitch -- it is heard as grit and clicks over everything.
+        //
+        // A clean tone in must come out clean, measured as the error against
+        // the same tone at the device's rate.
+        const HZ: f32 = 1000.0;
+        const DEVICE: u32 = 44_100;
+
+        let frames = SAMPLE_RATE as usize / 4;
+        let mut samples = Vec::with_capacity(frames * CHANNELS);
+        for i in 0..frames {
+            let v = 0.5
+                * (std::f32::consts::TAU * HZ * i as f32 / SAMPLE_RATE as f32).sin();
+            samples.push(v);
+            samples.push(v);
+        }
+        let source = ring(&samples);
+
+        let out_frames = DEVICE as usize / 5;
+        let mut out = vec![0.0f32; out_frames * 2];
+        fill(&mut out, 2, DEVICE, &source, 1.0, &playing(), &AtomicU64::new(0));
+
+        // What the tone should be at the device's rate.
+        let mut worst = 0.0f32;
+        for frame in 0..out_frames {
+            let want = 0.5
+                * (std::f32::consts::TAU * HZ * frame as f32 / DEVICE as f32).sin();
+            worst = worst.max((out[frame * 2] - want).abs());
+        }
+        eprintln!("  worst error against a clean 1 kHz tone: {worst:.4}");
+
+        // Snapping to the nearest frame gives an error of roughly the step
+        // between samples -- about 0.065 for this tone. Interpolating is an
+        // order of magnitude closer.
+        assert!(
+            worst < 0.02,
+            "the resampled tone is {worst:.4} away from the real one, which is audible grit"
+        );
+    }
+
+    #[test]
+    fn a_device_at_the_engine_rate_is_not_resampled_at_all() {
+        // The common case, and it must stay exact: interpolating with a zero
+        // fraction has to reduce to a copy rather than to almost-a-copy.
+        let source = ring(&[0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8]);
+        let mut out = vec![0.0f32; 6];
+        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0, &playing(), &AtomicU64::new(0));
+        assert_eq!(out, vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6]);
     }
 
     #[test]
@@ -439,12 +524,22 @@ mod tests {
     fn a_device_at_a_different_rate_is_resampled() {
         // A 96 kHz device needs two output frames per source frame. Without
         // this the programme plays at half speed.
+        //
+        // The frame in between is the average of its neighbours, not the
+        // first one held twice. Holding is what this used to do, and on a
+        // device whose rate is not a neat multiple it drops and repeats
+        // samples in an irregular pattern -- grit over everything rather
+        // than a change of pitch.
         let source = ring(&[0.5, 0.5, 0.9, 0.9]);
         let mut out = vec![0.0f32; 8];
         fill(&mut out, 2, SAMPLE_RATE * 2, &source, 1.0, &playing(), &AtomicU64::new(0));
 
         assert_eq!(out[0], 0.5);
-        assert_eq!(out[2], 0.5, "the first frame should be held for two outputs");
+        assert!(
+            (out[2] - 0.7).abs() < 1e-6,
+            "the frame between 0.5 and 0.9 should be 0.7, not {}",
+            out[2]
+        );
         assert_eq!(out[4], 0.9);
     }
 

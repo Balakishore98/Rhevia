@@ -279,6 +279,13 @@ pub struct MediaSource {
     audio_produced: Arc<AtomicU64>,
     /// Counts pictures, which is how far through the file we are.
     frames_produced: Arc<AtomicU64>,
+    /// Times the mixer asked for sound and there was not enough, so silence
+    /// was handed over instead. Each one is a discontinuity in the middle of
+    /// the waveform, which is heard as a pop.
+    padded: Arc<AtomicU64>,
+    /// Times the buffer was trimmed because the decoder had run ahead. Each
+    /// one jumps the waveform, which is also heard as a pop.
+    trimmed: Arc<AtomicU64>,
     /// Set while the operator has it held.
     ///
     /// The reading threads stop taking from the pipe, ffmpeg fills it and
@@ -318,6 +325,8 @@ impl MediaSource {
         let running = Arc::new(AtomicBool::new(true));
         let audio_produced = Arc::new(AtomicU64::new(0));
         let frames_produced = Arc::new(AtomicU64::new(0));
+        let padded = Arc::new(AtomicU64::new(0));
+        let trimmed = Arc::new(AtomicU64::new(0));
         let paused = Arc::new(AtomicBool::new(false));
 
         let mut source = Self {
@@ -326,6 +335,8 @@ impl MediaSource {
             running,
             audio_produced,
             frames_produced,
+            padded,
+            trimmed,
             paused,
             children: Vec::new(),
             offset_seconds: 0.0,
@@ -518,6 +529,9 @@ impl MediaSource {
 
         if let Ok(mut buffer) = self.audio.lock() {
             let take = wanted.min(buffer.len());
+            if take < wanted {
+                self.padded.fetch_add(1, Ordering::Relaxed);
+            }
             out.extend(buffer.drain(..take));
 
             // A decoder that has run far ahead is trimmed back. Left alone it
@@ -527,10 +541,26 @@ impl MediaSource {
             if buffer.len() > MAX_BUFFERED {
                 let excess = buffer.len() - MAX_BUFFERED;
                 buffer.drain(..excess);
+                self.trimmed.fetch_add(1, Ordering::Relaxed);
             }
         }
         out.resize(wanted, 0.0);
         out
+    }
+
+    /// How often sound was handed over short, and how often the buffer was
+    /// jumped. Both are discontinuities in the waveform, and a discontinuity
+    /// is heard as a pop.
+    pub fn audio_faults(&self) -> (u64, u64) {
+        (
+            self.padded.load(Ordering::Relaxed),
+            self.trimmed.load(Ordering::Relaxed),
+        )
+    }
+
+    /// How much sound is waiting, in frames.
+    pub fn audio_buffered(&self) -> usize {
+        self.audio.lock().map(|b| b.len() / CHANNELS).unwrap_or(0)
     }
 
     /// Samples the audio thread has produced since opening.
@@ -760,6 +790,8 @@ mod tests {
             running: Arc::new(AtomicBool::new(false)),
             audio_produced: Arc::new(AtomicU64::new(0)),
             frames_produced: Arc::new(AtomicU64::new(0)),
+            padded: Arc::new(AtomicU64::new(0)),
+            trimmed: Arc::new(AtomicU64::new(0)),
             paused: Arc::new(AtomicBool::new(false)),
             children: Vec::new(),
             offset_seconds: 0.0,

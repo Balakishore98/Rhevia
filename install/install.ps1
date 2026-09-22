@@ -80,13 +80,26 @@ if ($running) {
     if (Get-Process -Name $names -ErrorAction SilentlyContinue) {
         throw "Rhevia is still running and will not stop. Close it and try again."
     }
-    # Windows can hold the image open for a moment after the process is gone.
-    Start-Sleep -Milliseconds 400
 }
 
 New-Item -ItemType Directory -Force -Path $InstallTo | Out-Null
 foreach ($exe in $binaries) {
-    Copy-Item (Join-Path $Source $exe) $InstallTo -Force
+    # Retried rather than preceded by a sleep. Windows can keep an image file
+    # open for a moment after the process that ran it has gone, and how long
+    # is not something to guess at -- guessing lost the race twice and left
+    # some binaries updated and others not.
+    $copied = $false
+    for ($try = 0; $try -lt 40 -and -not $copied; $try++) {
+        try {
+            Copy-Item (Join-Path $Source $exe) $InstallTo -Force -ErrorAction Stop
+            $copied = $true
+        } catch {
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    if (-not $copied) {
+        throw "$exe is still locked after ten seconds. Close Rhevia and try again."
+    }
     $size = [math]::Round((Get-Item (Join-Path $InstallTo $exe)).Length / 1MB, 1)
     Write-Host "  installed $exe ($size MB)"
 }

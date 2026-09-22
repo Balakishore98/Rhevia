@@ -36,6 +36,16 @@ const COMPACT_ROW_HEIGHT: f32 = COMPACT_STRIP_HEIGHT + 56.0;
 /// routing matrix below is drawn over the channel strips.
 const MIXER_ROW_HEIGHT: f32 = 372.0;
 
+/// How wide the routing column is on the audio page.
+///
+/// Wide enough for the master column plus a few buses without scrolling, and
+/// no wider: the channel's own processing shares the line with it, and that
+/// is what an operator reaches for most.
+const MATRIX_WIDTH: f32 = 560.0;
+
+/// How tall the routing-and-processing row is.
+const DSP_ROW_HEIGHT: f32 = 440.0;
+
 fn position(db: f32) -> f32 {
     ((db - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB)).clamp(0.0, 1.0)
 }
@@ -869,11 +879,10 @@ fn dsp_panel(ui: &mut Ui, index: usize, channel: &ChannelState, engine: &EngineH
 /// actually asks is "what is feeding the interpreter bus", and only a grid
 /// answers that by being looked at.
 fn routing_matrix(ui: &mut Ui, snapshot: &Snapshot, engine: &EngineHandle) {
-    const NAME_WIDTH: f32 = 150.0;
-    const CELL: f32 = 62.0;
+    const NAME_WIDTH: f32 = 128.0;
+    const CELL: f32 = 52.0;
 
     ui.horizontal(|ui| {
-        ui.add_space(20.0);
         ui.label(
             RichText::new("VISUAL CROSSPOINT ROUTING MATRIX")
                 .size(11.5)
@@ -1174,18 +1183,28 @@ pub fn full_view(
             ui.add_space(14.0);
             ui.separator();
             ui.add_space(10.0);
-            routing_matrix(ui, snapshot, engine);
-
-            ui.add_space(12.0);
-            ui.separator();
-            ui.add_space(10.0);
 
             if *selected >= snapshot.audio.len() {
                 *selected = 0;
             }
-            if let Some(channel) = snapshot.audio.get(*selected) {
+
+            // Routing on the left, the selected channel's processing on the
+            // right, on one line. Stacked, the whole page was taller than the
+            // screen and an operator had to scroll away from the matrix to
+            // reach the controls the matrix had just told them to reach for.
+            let channel = snapshot.audio.get(*selected).cloned();
+            ui.horizontal_top(|ui| {
+                ui.add_space(20.0);
+                ui.vertical(|ui| {
+                    ui.set_width(MATRIX_WIDTH);
+                    routing_matrix(ui, snapshot, engine);
+                });
+                ui.add_space(12.0);
+                theme::divider(ui, DSP_ROW_HEIGHT);
+                ui.add_space(12.0);
+                ui.vertical(|ui| {
+            if let Some(channel) = &channel {
                 ui.horizontal(|ui| {
-                    ui.add_space(20.0);
                     ui.label(
                         RichText::new(format!("CHANNEL DSP — {}", channel.name))
                             .size(11.5)
@@ -1233,6 +1252,8 @@ pub fn full_view(
                 ui.add_space(12.0);
                 plugin_panel(ui, *selected, channel, engine, plugins, scanning, rescan);
             }
+                });
+            });
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {

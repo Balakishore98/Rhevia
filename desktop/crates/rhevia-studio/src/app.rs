@@ -116,6 +116,8 @@ pub struct StudioApp {
     attach_to: Option<usize>,
     /// Which overlay slot the next input click fills, if any.
     assigning_overlay: Option<usize>,
+    /// Which overlay slot's arrangement is being chosen, if any.
+    overlay_layout_for: Option<usize>,
     /// The channel whose DSP is shown on the audio tab.
     selected_channel: usize,
     /// Playback devices, listed when the Settings tab is first looked at
@@ -124,6 +126,8 @@ pub struct StudioApp {
     cached_playback: Vec<rhevia_audio::MonitorDevice>,
     /// A device picked from the combo box, applied after it closes.
     pending_monitor: Option<String>,
+    /// A layer chosen from the combo box, applied after it closes.
+    pending_layer: Option<(usize, usize)>,
     /// How fast the window itself is being drawn.
     ///
     /// Separate from the engine's rate, and the one an operator actually
@@ -244,10 +248,11 @@ enum InputTab {
     Image,
     Title,
     Colour,
+    Layers,
 }
 
 impl InputTab {
-    const ALL: [InputTab; 9] = [
+    const ALL: [InputTab; 10] = [
         InputTab::Camera,
         InputTab::Ndi,
         InputTab::Display,
@@ -257,6 +262,7 @@ impl InputTab {
         InputTab::Image,
         InputTab::Title,
         InputTab::Colour,
+        InputTab::Layers,
     ];
 
     fn label(self) -> &'static str {
@@ -270,6 +276,7 @@ impl InputTab {
             InputTab::Image => "Image",
             InputTab::Title => "Title",
             InputTab::Colour => "Colour",
+            InputTab::Layers => "Layers (group)",
         }
     }
 
@@ -289,6 +296,11 @@ impl InputTab {
             InputTab::Image => "A still: holding slide, sponsor board, stinger graphic.",
             InputTab::Title => "A lower third, rendered here rather than in another application.",
             InputTab::Colour => "A flat colour or a bar pattern, for testing and for backgrounds.",
+            InputTab::Layers => {
+                "An empty input that other inputs are stacked into — a video with a \
+                 logo over it, taken to air as one thing. Add it, then open its SET \
+                 dialog to build the stack."
+            }
         }
     }
 }
@@ -329,12 +341,14 @@ impl StudioApp {
             device_scan: None,
             attach_to: None,
             assigning_overlay: None,
+            overlay_layout_for: None,
             selected_channel: 0,
             drawn_at: None,
             draw_fps: 0.0,
             draw_ms: 0.0,
             cached_playback: Vec::new(),
             pending_monitor: None,
+            pending_layer: None,
             settings: crate::settings::Settings::load(),
         }
     }
@@ -1272,13 +1286,58 @@ impl StudioApp {
                             self.assigning_overlay = Some(slot);
                         }
                     }
-                    response.on_hover_text(if assigned {
-                        "toggle on air"
-                    } else {
-                        "click, then pick an input"
+                    // Right-click opens where it sits, and closes it again, so
+                    // the row is there when it is wanted and gone when it is
+                    // not.
+                    if response.secondary_clicked() {
+                        self.overlay_layout_for =
+                            if self.overlay_layout_for == Some(slot) { None } else { Some(slot) };
+                    }
+                    response.on_hover_text(match snapshot.overlay_source[slot] {
+                        Some(input) => format!(
+                            "{} — {}, {}. Click to take it on air; right-click to change where it sits.",
+                            snapshot
+                                .inputs
+                                .get(input)
+                                .map(|i| i.name.as_str())
+                                .unwrap_or("?"),
+                            snapshot.overlay_mode[slot].label(),
+                            snapshot.overlay_mode[slot].hint(),
+                        ),
+                        None => "click, then pick an input".to_string(),
                     });
                 }
             });
+
+            // Where each slot draws. Shown for the slot being worked on
+            // rather than all four at once: four rows of five chips in this
+            // column would push the T-bar off the screen.
+            if let Some(slot) = self.overlay_layout_for.filter(|s| *s < 4) {
+                ui.add_space(3.0);
+                ui.label(
+                    RichText::new(format!("OVL {} SITS", slot + 1))
+                        .size(8.5)
+                        .color(theme::TEXT_FAINT),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                    for mode in engine::OverlayMode::ALL {
+                        let chosen = snapshot.overlay_mode[slot] == mode;
+                        if theme::chip(
+                            ui,
+                            mode.label(),
+                            chosen,
+                            theme::PREVIEW,
+                            Vec2::new(60.0, 20.0),
+                        )
+                        .on_hover_text(mode.hint())
+                        .clicked()
+                        {
+                            self.engine.send(Command::SetOverlayMode { slot, mode });
+                        }
+                    }
+                });
+            }
 
             ui.add_space(6.0);
             ui.label(RichText::new("T-BAR").size(8.5).color(theme::TEXT_FAINT));
@@ -1768,6 +1827,79 @@ impl StudioApp {
                         if self.cached_playback.is_empty() {
                             self.cached_playback = rhevia_audio::monitor_devices();
                         }
+
+                        // What the sound is actually doing, in numbers.
+                        // "The audio is crackling" and "the audio is fine"
+                        // are the same sentence until something counts the
+                        // faults, and every one of these is a discontinuity
+                        // in the waveform that is heard as a pop.
+                        ui.add_space(16.0);
+                        ui.label(RichText::new("AUDIO HEALTH").size(12.0).strong().color(theme::TEXT));
+                        ui.add_space(6.0);
+                        let faults = snapshot.audio_gaps
+                            + snapshot.audio_dropped
+                            + snapshot.audio_padded
+                            + snapshot.audio_trimmed;
+                        for (label, value, bad) in [
+                            (
+                                "Listening on",
+                                snapshot
+                                    .monitor
+                                    .clone()
+                                    .unwrap_or_else(|| "nothing".to_string()),
+                                snapshot.monitor.is_none(),
+                            ),
+                            (
+                                "Cushion",
+                                format!(
+                                    "{} frames · {:.0} ms",
+                                    snapshot.audio_buffered,
+                                    snapshot.audio_buffered as f32 / 48.0
+                                ),
+                                false,
+                            ),
+                            ("Card ran dry", snapshot.audio_gaps.to_string(), snapshot.audio_gaps > 0),
+                            (
+                                "Cushion spilled",
+                                snapshot.audio_dropped.to_string(),
+                                snapshot.audio_dropped > 0,
+                            ),
+                            (
+                                "Clip handed short",
+                                snapshot.audio_padded.to_string(),
+                                snapshot.audio_padded > 2,
+                            ),
+                            (
+                                "Clip buffer jumped",
+                                snapshot.audio_trimmed.to_string(),
+                                snapshot.audio_trimmed > 0,
+                            ),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{label:<20}"))
+                                        .font(theme::mono(11.0))
+                                        .color(theme::TEXT_FAINT),
+                                );
+                                ui.label(
+                                    RichText::new(value)
+                                        .font(theme::mono(11.0))
+                                        .color(if bad { theme::WARN } else { theme::TEXT }),
+                                );
+                            });
+                        }
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(if faults == 0 {
+                                "No faults since Rhevia started. A crackle heard with all \
+                                 of these at zero is coming from outside Rhevia — the \
+                                 device, its driver, or Windows mixing it with something else."
+                            } else {
+                                "Something above is not zero. Each one is a break in the sound."
+                            })
+                            .size(10.5)
+                            .color(if faults == 0 { theme::TEXT_DIM } else { theme::WARN }),
+                        );
 
                         ui.add_space(22.0);
                         ui.label(RichText::new("KEYBOARD").size(12.0).strong().color(theme::TEXT));
@@ -2366,6 +2498,27 @@ impl StudioApp {
                 false
             }
 
+            InputTab::Layers => {
+                ui.label(
+                    RichText::new(
+                        "Made empty and filled afterwards. Which inputs go into it, \
+                         where each one sits and in what order are all chosen in the \
+                         stack's own SET dialog, where they can be seen against the \
+                         picture they make.",
+                    )
+                    .size(10.5)
+                    .color(theme::TEXT_DIM),
+                );
+                ui.add_space(10.0);
+                if theme::button(ui, "Add layered input", theme::ACCENT, Vec2::new(150.0, 26.0))
+                    .clicked()
+                {
+                    self.engine
+                        .send(Command::AddLayeredSource { name: self.name_or("Layers") });
+                    return true;
+                }
+                false
+            }
             InputTab::Colour => {
                 // A handful of useful flats rather than a colour picker: these
                 // are the ones a show actually reaches for.
@@ -2391,6 +2544,206 @@ impl StudioApp {
                     }
                 }
                 false
+            }
+        }
+    }
+
+    /// Builds one input out of several, bottom of the stack first.
+    ///
+    /// Listed in drawing order rather than in the order they were added, and
+    /// labelled as such: "which one is on top" is the only question that
+    /// matters here, and a list that does not answer it by being looked at is
+    /// a list an operator has to experiment with during a service.
+    fn stack_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        layers: &[engine::StackLayer],
+        snapshot: &Snapshot,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("LAYERS").size(11.0).strong().color(theme::TEXT));
+            ui.label(
+                RichText::new(format!("{} of {}", layers.len(), engine::MAX_LAYERS))
+                    .font(theme::mono(9.5))
+                    .color(theme::TEXT_FAINT),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if layers.len() < engine::MAX_LAYERS {
+                    egui::ComboBox::from_id_salt(("add-layer", index))
+                        .selected_text(RichText::new("+ add layer").size(10.5))
+                        .width(140.0)
+                        .show_ui(ui, |ui| {
+                            for (other, info) in snapshot.inputs.iter().enumerate() {
+                                // A stack cannot be built out of itself.
+                                if other == index {
+                                    continue;
+                                }
+                                let label = format!("{} {}", other + 1, info.name);
+                                if ui.selectable_label(false, label).clicked() {
+                                    self.pending_layer = Some((index, other));
+                                }
+                            }
+                        });
+                }
+            });
+        });
+        // Applied outside the combo box, which holds a borrow while it is open.
+        if let Some((input, layer)) = self.pending_layer.take() {
+            self.engine.send(Command::AddLayer { input, layer });
+        }
+
+        if layers.is_empty() {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Empty. Add an input and it fills the frame; add another and it sits on top.")
+                    .size(10.5)
+                    .color(theme::TEXT_FAINT),
+            );
+            return;
+        }
+
+        ui.add_space(6.0);
+        // Top of the stack first, because that is what is seen first.
+        for at in (0..layers.len()).rev() {
+            let mut layer = layers[at];
+            let mut changed = false;
+            let name = snapshot
+                .inputs
+                .get(layer.input)
+                .map(|i| i.name.as_str())
+                .unwrap_or("missing");
+
+            egui::Frame::none()
+                .fill(theme::SURFACE_LOWEST)
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .rounding(Rounding::same(4.0_f32))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(if at + 1 == layers.len() { "TOP" } else { "   " })
+                                .font(theme::mono(9.0))
+                                .color(theme::ACCENT),
+                        );
+                        ui.label(
+                            RichText::new(format!("{} {name}", layer.input + 1))
+                                .size(11.0)
+                                .color(theme::TEXT),
+                        );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::chip(ui, "X", false, theme::WARN, Vec2::new(24.0, 19.0))
+                                .on_hover_text("take this layer out of the stack")
+                                .clicked()
+                            {
+                                self.engine.send(Command::RemoveLayer { input: index, at });
+                            }
+                            if theme::chip(ui, "\u{25BC}", false, theme::ACCENT, Vec2::new(24.0, 19.0))
+                                .on_hover_text("move down, behind the layer below")
+                                .clicked()
+                            {
+                                self.engine.send(Command::MoveLayer { input: index, at, up: false });
+                            }
+                            if theme::chip(ui, "\u{25B2}", false, theme::ACCENT, Vec2::new(24.0, 19.0))
+                                .on_hover_text("move up, in front of the layer above")
+                                .clicked()
+                            {
+                                self.engine.send(Command::MoveLayer { input: index, at, up: true });
+                            }
+                            if theme::chip(
+                                ui,
+                                if layer.visible { "ON" } else { "OFF" },
+                                layer.visible,
+                                theme::PREVIEW,
+                                Vec2::new(34.0, 19.0),
+                            )
+                            .on_hover_text("hide without removing")
+                            .clicked()
+                            {
+                                layer.visible = !layer.visible;
+                                changed = true;
+                            }
+                        });
+                    });
+
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                        for (label, x, y, w, h) in engine::StackLayer::PLACES {
+                            let here = (layer.x - x).abs() < 0.005
+                                && (layer.y - y).abs() < 0.005
+                                && (layer.width - w).abs() < 0.005
+                                && (layer.height - h).abs() < 0.005;
+                            if theme::chip(ui, label, here, theme::ACCENT, Vec2::new(54.0, 19.0))
+                                .clicked()
+                            {
+                                layer.x = x;
+                                layer.y = y;
+                                layer.width = w;
+                                layer.height = h;
+                                changed = true;
+                            }
+                        }
+                    });
+
+                    ui.add_space(4.0);
+                    // The presets cover most of it; these are for the rest.
+                    // As fractions of the frame, so a stack built at 1080p
+                    // still lines up if the production is run at another size.
+                    ui.horizontal(|ui| {
+                        for (label, value, range) in [
+                            ("X", &mut layer.x, -1.0..=1.0),
+                            ("Y", &mut layer.y, -1.0..=1.0),
+                            ("W", &mut layer.width, 0.05..=2.0),
+                            ("H", &mut layer.height, 0.05..=2.0),
+                        ] {
+                            ui.label(RichText::new(label).font(theme::mono(9.5)).color(theme::TEXT_FAINT));
+                            if ui
+                                .add(
+                                    egui::DragValue::new(value)
+                                        .speed(0.004)
+                                        .range(range)
+                                        .fixed_decimals(3),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("OPACITY").font(theme::mono(9.5)).color(theme::TEXT_FAINT));
+                        if ui
+                            .add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0).show_value(false))
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                        ui.label(
+                            RichText::new(format!("{:.0}%", layer.opacity * 100.0))
+                                .font(theme::mono(9.5))
+                                .color(theme::TEXT_DIM),
+                        );
+                        if theme::chip(
+                            ui,
+                            "KEEP SHAPE",
+                            layer.preserve_aspect,
+                            theme::PREVIEW,
+                            Vec2::new(82.0, 19.0),
+                        )
+                        .on_hover_text("letterbox inside the rectangle rather than stretching to fill it")
+                        .clicked()
+                        {
+                            layer.preserve_aspect = !layer.preserve_aspect;
+                            changed = true;
+                        }
+                    });
+                });
+            ui.add_space(4.0);
+
+            if changed {
+                self.engine.send(Command::SetLayer { input: index, at, layer });
             }
         }
     }
@@ -2429,6 +2782,13 @@ impl StudioApp {
                         input: index,
                         name: self.settings_name.clone(),
                     });
+                }
+
+                if let Some(layers) = &info.layers {
+                    ui.add_space(14.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    self.stack_editor(ui, index, layers, snapshot);
                 }
 
                 ui.add_space(14.0);

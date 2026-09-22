@@ -1083,3 +1083,94 @@ mod tests {
         assert!(dsp.is_active());
     }
 }
+
+#[cfg(test)]
+mod pops {
+    use super::*;
+
+    /// The biggest jump between one sample and the next.
+    ///
+    /// A pop is not a loud sample, it is a sudden one. A clean tone moves by
+    /// a predictable amount each step; anything that moves much further has
+    /// a discontinuity in it, and a discontinuity is what is heard as a
+    /// crack.
+    fn worst_step(samples: &[f32]) -> f32 {
+        samples
+            .windows(4)
+            .map(|w| (w[2] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    fn tone(frames: usize, hz: f32, amplitude: f32) -> AudioBuffer {
+        let mut samples = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let v = amplitude
+                * (std::f32::consts::TAU * hz * i as f32 / crate::mixer::SAMPLE_RATE as f32).sin();
+            samples.push(v);
+            samples.push(v);
+        }
+        AudioBuffer::from_samples(samples)
+    }
+
+    #[test]
+    fn a_clean_tone_comes_out_of_the_chain_clean() {
+        // Reported as a "cracker pop" over sound that is clean in the file,
+        // with the channel reporting itself clipped while peaking at -7 dB --
+        // which only happens if something in the chain is producing isolated
+        // spikes rather than raising the whole signal.
+        let mut chain = ChannelDsp::new();
+        let mut buffer = tone(crate::mixer::SAMPLE_RATE as usize / 2, 440.0, 0.45);
+        let before = worst_step(&buffer.samples);
+
+        // Processed in the blocks the engine uses, because state carried
+        // between blocks is where this kind of fault lives.
+        let block = 1600 * 2;
+        let mut out: Vec<f32> = Vec::with_capacity(buffer.samples.len());
+        for chunk in buffer.samples.chunks(block) {
+            let mut piece = AudioBuffer::from_samples(chunk.to_vec());
+            chain.process(&mut piece);
+            out.extend_from_slice(&piece.samples);
+        }
+        buffer.samples = out;
+
+        let after = worst_step(&buffer.samples);
+        let loudest = buffer.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let over = buffer.samples.iter().filter(|s| s.abs() >= 0.999).count();
+        eprintln!(
+            "  worst step {before:.4} in, {after:.4} out; loudest {loudest:.4}; \
+             {over} samples at full scale"
+        );
+
+        assert!(
+            over == 0,
+            "{over} samples came out at full scale from a tone that went in at 0.45"
+        );
+        assert!(
+            after < before * 1.5 + 0.01,
+            "the chain added a discontinuity: steps of {before:.4} went in, {after:.4} came out"
+        );
+    }
+
+    #[test]
+    fn the_chain_does_nothing_at_all_when_nothing_is_switched_on() {
+        // Whatever the defaults are, an untouched channel must hand back
+        // exactly what it was given. Anything else is processing an operator
+        // never asked for.
+        let mut chain = ChannelDsp::new();
+        let original = tone(4800, 440.0, 0.45);
+        let mut buffer = original.clone();
+        chain.process(&mut buffer);
+
+        let worst = original
+            .samples
+            .iter()
+            .zip(buffer.samples.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!("  active: {}, worst difference {worst:.6}", chain.is_active());
+        assert!(
+            worst < 1e-6,
+            "an untouched channel changed the sound by {worst:.6}"
+        );
+    }
+}

@@ -119,16 +119,30 @@ impl Frame {
         let x0 = x0.min(self.width - 1);
         let y0 = y0.min(self.height - 1);
 
-        let p00 = self.pixel(x0, y0).unwrap_or([0; 4]);
-        let p10 = self.pixel(x1, y0).unwrap_or([0; 4]);
-        let p01 = self.pixel(x0, y1).unwrap_or([0; 4]);
-        let p11 = self.pixel(x1, y1).unwrap_or([0; 4]);
+        // Indexed directly rather than through `pixel`, which hands back an
+        // Option per corner. This runs once per pixel of every scaled layer
+        // and twice per pixel of a moving transition -- four million times a
+        // frame at 1080p -- so the bounds check and the Option are worth
+        // taking out by hand.
+        let row0 = y0 * self.width * 4;
+        let row1 = y1 * self.width * 4;
+        let (i00, i10) = (row0 + x0 * 4, row0 + x1 * 4);
+        let (i01, i11) = (row1 + x0 * 4, row1 + x1 * 4);
+        let d = &self.data;
 
         let mut out = [0u8; 4];
         for c in 0..4 {
-            let top = p00[c] as f32 * (1.0 - tx) + p10[c] as f32 * tx;
-            let bottom = p01[c] as f32 * (1.0 - tx) + p11[c] as f32 * tx;
-            out[c] = (top * (1.0 - ty) + bottom * ty).round().clamp(0.0, 255.0) as u8;
+            let a = d[i00 + c] as f32;
+            let b = d[i10 + c] as f32;
+            let e = d[i01 + c] as f32;
+            let f = d[i11 + c] as f32;
+            let top = a + (b - a) * tx;
+            let bottom = e + (f - e) * tx;
+            // No rounding call and no clamp: interpolating between four
+            // values that are already 0..255 cannot leave that range, and
+            // adding a half before truncating is what rounding a
+            // non-negative number does.
+            out[c] = (top + (bottom - top) * ty + 0.5) as u8;
         }
         out
     }

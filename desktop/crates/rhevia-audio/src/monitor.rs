@@ -10,7 +10,7 @@
 //! operator deaf.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
@@ -25,6 +25,17 @@ use crate::mixer::{db_to_amplitude, CHANNELS, SAMPLE_RATE};
 /// the picture, which is worse than an occasional gap; shorter and an ordinary
 /// scheduling hiccup becomes a click.
 const MAX_BUFFERED_FRAMES: usize = SAMPLE_RATE as usize / 4;
+
+/// How much sound is held in hand before playing begins.
+///
+/// The engine hands over one block per tick and a tick is not perfectly
+/// even — the loop sleeps to fill the frame budget and the sleep rounds up.
+/// Playing the instant the first samples arrive means the ring is empty
+/// again by the next callback, and an empty ring is filled with silence:
+/// thirty tiny gaps a second, heard as a steady crackle over everything.
+/// Two ticks in hand rides out ordinary jitter and costs under a
+/// fifteenth of a second of delay.
+const PRIME_FRAMES: usize = SAMPLE_RATE as usize / 15;
 
 /// A playback device the operator can listen on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +69,16 @@ pub struct AudioMonitor {
     running: Arc<AtomicBool>,
     /// Linear amplitude, applied in the callback so a change is heard at once.
     gain: Arc<Mutex<f32>>,
+    /// False until there is a cushion of sound to play from, and again after
+    /// the cushion is exhausted. Held here only to keep it alive for the
+    /// callback, which is the one place that reads it.
+    #[allow(dead_code)]
+    flowing: Arc<AtomicBool>,
+    /// How many times the callback asked for sound and found none.
+    ///
+    /// Exposed because this is the difference between "the audio is fine" and
+    /// "the audio crackles", and it is not otherwise visible from outside.
+    starved: Arc<AtomicU64>,
     pub device_name: String,
     pub device_rate: u32,
     pub device_channels: u16,
@@ -73,10 +94,14 @@ impl AudioMonitor {
         let pending: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
         let running = Arc::new(AtomicBool::new(true));
         let gain = Arc::new(Mutex::new(1.0f32));
+        let playing = Arc::new(AtomicBool::new(false));
+        let gaps = Arc::new(AtomicU64::new(0));
 
         let source = Arc::clone(&pending);
         let alive = Arc::clone(&running);
         let level = Arc::clone(&gain);
+        let flowing = Arc::clone(&playing);
+        let starved = Arc::clone(&gaps);
         let wanted = device_name.map(|s| s.to_string());
         let (opened, opened_rx) = mpsc::channel::<Result<(String, u32, u16), String>>();
 
@@ -125,7 +150,7 @@ impl AudioMonitor {
                     &config.into(),
                     move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let amplitude = level.lock().map(|g| *g).unwrap_or(1.0);
-                        fill(out, channels as usize, rate, &source, amplitude);
+                        fill(out, channels as usize, rate, &source, amplitude, &flowing, &starved);
                     },
                     |e| tracing::warn!(error = %e, "monitor output error"),
                     None,
@@ -157,6 +182,8 @@ impl AudioMonitor {
                 pending,
                 running,
                 gain,
+                flowing: playing,
+                starved: gaps,
                 device_name,
                 device_rate,
                 device_channels,
@@ -170,6 +197,15 @@ impl AudioMonitor {
                 Err(CaptureError::Open("the playback device did not respond".into()))
             }
         }
+    }
+
+    /// How many times the device asked for sound and there was none ready.
+    ///
+    /// Each one is a gap, and gaps arriving at the tick rate are heard as a
+    /// crackle rather than as silence. Zero is the only acceptable number
+    /// once a show is running.
+    pub fn starved(&self) -> u64 {
+        self.starved.load(Ordering::Relaxed)
     }
 
     /// Hands a block of the master bus over to be played.
@@ -219,6 +255,8 @@ pub(crate) fn fill(
     device_rate: u32,
     source: &Arc<Mutex<VecDeque<f32>>>,
     gain: f32,
+    flowing: &AtomicBool,
+    starved: &AtomicU64,
 ) {
     out.fill(0.0);
     if device_channels == 0 {
@@ -227,6 +265,17 @@ pub(crate) fn fill(
 
     let Ok(mut pending) = source.lock() else { return };
     let frames = out.len() / device_channels;
+
+    // Wait until there is a cushion before starting, and wait again after
+    // running dry. Playing whatever has arrived the moment it arrives turns
+    // one gap into a gap in every callback, which is a crackle rather than a
+    // pause — and a crackle is the harder of the two to listen through.
+    if !flowing.load(Ordering::Relaxed) {
+        if pending.len() / CHANNELS < PRIME_FRAMES {
+            return;
+        }
+        flowing.store(true, Ordering::Relaxed);
+    }
 
     // How many source frames one output frame is worth. A device running at
     // 44.1 kHz needs 0.919 of a frame each time, and ignoring that plays the
@@ -239,7 +288,10 @@ pub(crate) fn fill(
         let at = index * CHANNELS;
         if at + 1 >= pending.len() {
             // Nothing left. Silence is better than repeating the last block,
-            // which sounds like a stutter rather than a gap.
+            // which sounds like a stutter rather than a gap. Counted, and the
+            // cushion rebuilt before playing resumes.
+            starved.fetch_add(1, Ordering::Relaxed);
+            flowing.store(false, Ordering::Relaxed);
             break;
         }
 
@@ -272,15 +324,91 @@ pub(crate) fn fill(
 mod tests {
     use super::*;
 
+    /// A monitor already past its priming, for tests about what it plays
+    /// rather than about when it starts.
+    fn playing() -> AtomicBool {
+        AtomicBool::new(true)
+    }
+
     fn ring(samples: &[f32]) -> Arc<Mutex<VecDeque<f32>>> {
         Arc::new(Mutex::new(samples.iter().copied().collect()))
+    }
+
+    #[test]
+    fn a_source_running_slightly_slow_is_not_played_as_a_crackle() {
+        // Reported as "pori pori" -- a steady crackle over sound that is
+        // clean in the file. The engine was handing over a fixed block per
+        // tick while running at 29.7 ticks a second, so the card was asked
+        // for 48,000 frames a second and given about 47,600. Every callback
+        // ran a little short, and a gap in every callback is a crackle.
+        //
+        // This feeds the monitor at that same deficit and counts the gaps.
+        const CALLBACK: usize = 480; // a hundredth of a second
+        let source = ring(&[]);
+        let flowing = AtomicBool::new(false);
+        let starved = AtomicU64::new(0);
+        let mut out = vec![0.0f32; CALLBACK * CHANNELS];
+
+        // Two hundred callbacks, fed 0.8% short each time.
+        let short = (CALLBACK as f64 * 0.992) as usize;
+        let mut played = 0;
+        for tick in 0..200 {
+            {
+                let mut pending = source.lock().unwrap();
+                for i in 0..short {
+                    let phase = (tick * short + i) as f32 * 0.01;
+                    pending.push_back(phase.sin());
+                    pending.push_back(phase.sin());
+                }
+            }
+            fill(&mut out, 2, SAMPLE_RATE, &source, 1.0, &flowing, &starved);
+            if out.iter().any(|&s| s != 0.0) {
+                played += 1;
+            }
+        }
+
+        let gaps = starved.load(Ordering::Relaxed);
+        eprintln!("  {gaps} gaps over 200 callbacks, {played} of them played");
+        // Falling behind by 0.8% has to cost something -- the sound cannot be
+        // invented -- but it must be a handful of pauses, not a gap in every
+        // callback. Before the cushion this was 199.
+        assert!(gaps < 20, "{gaps} gaps in 200 callbacks is a crackle, not a pause");
+        assert!(played > 150, "only {played} of 200 callbacks played anything");
+    }
+
+    #[test]
+    fn nothing_is_played_until_there_is_a_cushion_to_play_from() {
+        // Starting on the first samples that arrive empties the ring
+        // immediately, and then every callback after it runs dry.
+        let source = ring(&[0.5; 64]);
+        let flowing = AtomicBool::new(false);
+        let starved = AtomicU64::new(0);
+        let mut out = vec![0.0f32; 128];
+
+        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0, &flowing, &starved);
+        assert!(out.iter().all(|&s| s == 0.0), "played before it had anything in hand");
+        assert_eq!(
+            source.lock().unwrap().len(),
+            64,
+            "waiting should not consume what it is waiting for"
+        );
+
+        // Once the cushion is there, it plays.
+        {
+            let mut pending = source.lock().unwrap();
+            for _ in 0..PRIME_FRAMES * CHANNELS {
+                pending.push_back(0.5);
+            }
+        }
+        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0, &flowing, &starved);
+        assert!(out.iter().any(|&s| s != 0.0), "it never started playing");
     }
 
     #[test]
     fn a_stereo_device_at_the_engine_rate_gets_the_samples_unchanged() {
         let source = ring(&[0.1, 0.2, 0.3, 0.4]);
         let mut out = vec![0.0f32; 4];
-        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0);
+        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0, &playing(), &AtomicU64::new(0));
 
         assert_eq!(out, vec![0.1, 0.2, 0.3, 0.4]);
         assert_eq!(source.lock().unwrap().len(), 0, "everything played should be consumed");
@@ -290,7 +418,7 @@ mod tests {
     fn the_listening_level_is_applied() {
         let source = ring(&[1.0, 1.0]);
         let mut out = vec![0.0f32; 2];
-        fill(&mut out, 2, SAMPLE_RATE, &source, 0.5);
+        fill(&mut out, 2, SAMPLE_RATE, &source, 0.5, &playing(), &AtomicU64::new(0));
         assert_eq!(out, vec![0.5, 0.5]);
     }
 
@@ -300,7 +428,7 @@ mod tests {
         // gap, and the second is easier to diagnose.
         let source = ring(&[0.7, 0.7]);
         let mut out = vec![0.0f32; 8];
-        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0);
+        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0, &playing(), &AtomicU64::new(0));
 
         assert_eq!(out[0], 0.7);
         assert_eq!(out[1], 0.7);
@@ -313,7 +441,7 @@ mod tests {
         // this the programme plays at half speed.
         let source = ring(&[0.5, 0.5, 0.9, 0.9]);
         let mut out = vec![0.0f32; 8];
-        fill(&mut out, 2, SAMPLE_RATE * 2, &source, 1.0);
+        fill(&mut out, 2, SAMPLE_RATE * 2, &source, 1.0, &playing(), &AtomicU64::new(0));
 
         assert_eq!(out[0], 0.5);
         assert_eq!(out[2], 0.5, "the first frame should be held for two outputs");
@@ -325,7 +453,7 @@ mod tests {
         // 24 kHz takes every second source frame.
         let source = ring(&[0.1, 0.1, 0.2, 0.2, 0.3, 0.3, 0.4, 0.4]);
         let mut out = vec![0.0f32; 4];
-        fill(&mut out, 2, SAMPLE_RATE / 2, &source, 1.0);
+        fill(&mut out, 2, SAMPLE_RATE / 2, &source, 1.0, &playing(), &AtomicU64::new(0));
 
         // Half the rate takes every second source frame, so the second
         // output frame is the third source frame, not the second.
@@ -339,7 +467,7 @@ mod tests {
         // monitor is how a missing guest microphone goes unnoticed.
         let source = ring(&[1.0, 0.0]);
         let mut out = vec![0.0f32; 1];
-        fill(&mut out, 1, SAMPLE_RATE, &source, 1.0);
+        fill(&mut out, 1, SAMPLE_RATE, &source, 1.0, &playing(), &AtomicU64::new(0));
         assert_eq!(out[0], 0.5);
     }
 
@@ -347,7 +475,7 @@ mod tests {
     fn a_device_with_more_than_two_channels_is_filled_rather_than_left_half_silent() {
         let source = ring(&[0.3, 0.6]);
         let mut out = vec![0.0f32; 4];
-        fill(&mut out, 4, SAMPLE_RATE, &source, 1.0);
+        fill(&mut out, 4, SAMPLE_RATE, &source, 1.0, &playing(), &AtomicU64::new(0));
         assert_eq!(out, vec![0.3, 0.6, 0.3, 0.6]);
     }
 
@@ -355,7 +483,7 @@ mod tests {
     fn an_empty_buffer_produces_silence_and_does_not_panic() {
         let source = ring(&[]);
         let mut out = vec![0.5f32; 6];
-        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0);
+        fill(&mut out, 2, SAMPLE_RATE, &source, 1.0, &playing(), &AtomicU64::new(0));
         assert!(out.iter().all(|&s| s == 0.0));
     }
 
@@ -363,7 +491,7 @@ mod tests {
     fn a_device_reporting_no_channels_is_survived() {
         let source = ring(&[0.1, 0.2]);
         let mut out = vec![0.0f32; 4];
-        fill(&mut out, 0, SAMPLE_RATE, &source, 1.0);
+        fill(&mut out, 0, SAMPLE_RATE, &source, 1.0, &playing(), &AtomicU64::new(0));
         assert!(out.iter().all(|&s| s == 0.0));
     }
 

@@ -232,27 +232,148 @@ fn mix(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
     out
 }
 
-/// Walks every output pixel, handing the closure normalised coordinates.
-fn for_each_pixel<F>(out: &mut Frame, mut f: F)
-where
-    F: FnMut(f32, f32) -> [u8; 4],
-{
-    let (w, h) = (out.width, out.height);
-    for y in 0..h {
-        let v = (y as f32 + 0.5) / h as f32;
-        for x in 0..w {
-            let u = (x as f32 + 0.5) / w as f32;
-            let rgba = f(u, v);
-            let i = (y * w + x) * 4;
-            out.data[i..i + 4].copy_from_slice(&rgba);
+/// Reads a frame on the output's own grid.
+///
+/// Both sides of a transition are full renders at the production size, so an
+/// effect that does not move the picture asks for the pixel it is already
+/// standing on — and sampling spends four texel fetches and eight
+/// interpolations arriving back there. Deciding once, outside the loop,
+/// whether any of that is needed is what separates a two millisecond
+/// transition from a hundred and forty-four millisecond one.
+#[derive(Clone, Copy)]
+struct OnGrid<'a> {
+    frame: &'a Frame,
+    /// True when the frame lines up with the output pixel for pixel.
+    aligned: bool,
+}
+
+impl<'a> OnGrid<'a> {
+    fn new(frame: &'a Frame, width: usize, height: usize) -> Self {
+        let aligned = !frame.is_empty() && frame.width == width && frame.height == height;
+        Self { frame, aligned }
+    }
+
+    /// The pixel under output pixel `(x, y)`, whose coordinates are `(u, v)`.
+    #[inline]
+    fn at(&self, x: usize, y: usize, u: f32, v: f32) -> [u8; 4] {
+        if self.aligned {
+            let i = (y * self.frame.width + x) * 4;
+            let px = &self.frame.data[i..i + 4];
+            [px[0], px[1], px[2], px[3]]
+        } else {
+            sample_or_black(self.frame, u, v)
         }
     }
 }
 
-fn fade(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
-    for_each_pixel(out, |u, v| {
-        mix(sample_or_black(from, u, v), sample_or_black(to, u, v), p)
+/// Below this there is nothing to gain from handing the work out.
+const PARALLEL_FROM: usize = 128 * 128;
+
+/// At most this many threads, whatever the machine has.
+///
+/// Starting a thread costs tens of microseconds and this runs every frame of
+/// a transition. Past a handful the starting costs more than the extra hands
+/// save, and the engine has an encoder and several decoders to share the
+/// machine with.
+const MAX_BANDS: usize = 8;
+
+/// Walks every output pixel, handing the closure its position.
+///
+/// Split across threads by bands of rows. A transition is the most expensive
+/// thing the engine does — both arrangements composited in full and then
+/// blended — and it happens at the one moment an operator is watching
+/// closely. Every output pixel is independent of every other, so this is the
+/// rare case where the work divides perfectly.
+fn for_each_pixel<F>(out: &mut Frame, f: F)
+where
+    F: Fn(usize, usize, f32, f32) -> [u8; 4] + Sync,
+{
+    let (w, h) = (out.width, out.height);
+    if w == 0 || h == 0 {
+        return;
+    }
+
+    let row_bytes = w * 4;
+    let band = |data: &mut [u8], first_row: usize| {
+        for (row, line) in data.chunks_mut(row_bytes).enumerate() {
+            let y = first_row + row;
+            let v = (y as f32 + 0.5) / h as f32;
+            for x in 0..w {
+                let u = (x as f32 + 0.5) / w as f32;
+                line[x * 4..x * 4 + 4].copy_from_slice(&f(x, y, u, v));
+            }
+        }
+    };
+
+    if w * h < PARALLEL_FROM {
+        band(&mut out.data, 0);
+        return;
+    }
+
+    let bands = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, MAX_BANDS)
+        .min(h);
+    let rows_each = h.div_ceil(bands);
+
+    std::thread::scope(|scope| {
+        for (index, rows) in out.data.chunks_mut(rows_each * row_bytes).enumerate() {
+            let band = &band;
+            scope.spawn(move || band(rows, index * rows_each));
+        }
     });
+}
+
+fn fade(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
+    // The default effect and the one that matters most. When both sides are
+    // the same size as the output — which they are for every ordinary take —
+    // the blend is a straight walk down three byte arrays, with no
+    // coordinates, no sampling and nothing to decide per pixel.
+    let straight = !from.is_empty()
+        && !to.is_empty()
+        && from.width == out.width
+        && from.height == out.height
+        && to.width == out.width
+        && to.height == out.height;
+
+    if straight {
+        let inv = 1.0 - p;
+        let blend = |o: &mut [u8], a: &[u8], b: &[u8]| {
+            for ((o, &a), &b) in o.iter_mut().zip(a.iter()).zip(b.iter()) {
+                *o = (a as f32 * inv + b as f32 * p).round().clamp(0.0, 255.0) as u8;
+            }
+        };
+
+        if out.data.len() < PARALLEL_FROM * 4 {
+            blend(&mut out.data, &from.data, &to.data);
+            return;
+        }
+
+        // Split the same way the sampled path is. This is the default effect
+        // and the one taken most often, so it is worth every hand available.
+        let bands = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .clamp(1, MAX_BANDS);
+        let each = out.data.len().div_ceil(bands).next_multiple_of(4);
+        std::thread::scope(|scope| {
+            for ((o, a), b) in out
+                .data
+                .chunks_mut(each)
+                .zip(from.data.chunks(each))
+                .zip(to.data.chunks(each))
+            {
+                let blend = &blend;
+                scope.spawn(move || blend(o, a, b));
+            }
+        });
+        return;
+    }
+
+    let a = OnGrid::new(from, out.width, out.height);
+    let b = OnGrid::new(to, out.width, out.height);
+    for_each_pixel(out, |x, y, u, v| mix(a.at(x, y, u, v), b.at(x, y, u, v), p));
 }
 
 fn wipe(from: &Frame, to: &Frame, p: f32, out: &mut Frame, axis: Axis, reverse: bool) {
@@ -260,18 +381,20 @@ fn wipe(from: &Frame, to: &Frame, p: f32, out: &mut Frame, axis: Axis, reverse: 
     // and aliases badly once the stream has been through an encoder.
     const SOFTNESS: f32 = 0.01;
 
-    for_each_pixel(out, |u, v| {
+    let a = OnGrid::new(from, out.width, out.height);
+    let b = OnGrid::new(to, out.width, out.height);
+    for_each_pixel(out, |x, y, u, v| {
         let raw = if axis == Axis::Vertical { v } else { u };
         let position = if reverse { 1.0 - raw } else { raw };
         let blend = ((p - position) / SOFTNESS + 0.5).clamp(0.0, 1.0);
-        mix(sample_or_black(from, u, v), sample_or_black(to, u, v), blend)
+        mix(a.at(x, y, u, v), b.at(x, y, u, v), blend)
     });
 }
 
 fn slide(from: &Frame, to: &Frame, p: f32, out: &mut Frame, axis: Axis, reverse: bool) {
     let shift = if reverse { -p } else { p };
 
-    for_each_pixel(out, |u, v| {
+    for_each_pixel(out, |_x, _y, u, v| {
         let (mut su, mut sv) = (u, v);
         let coordinate = if axis == Axis::Vertical { &mut sv } else { &mut su };
         let moved = *coordinate + shift;
@@ -294,8 +417,9 @@ fn zoom(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
     let scale = p.max(0.001);
     let opacity = (p * 2.0).min(1.0);
 
-    for_each_pixel(out, |u, v| {
-        let background = sample_or_black(from, u, v);
+    let a = OnGrid::new(from, out.width, out.height);
+    for_each_pixel(out, |x, y, u, v| {
+        let background = a.at(x, y, u, v);
         let su = (u - 0.5) / scale + 0.5;
         let sv = (v - 0.5) / scale + 0.5;
         if !(0.0..1.0).contains(&su) || !(0.0..1.0).contains(&sv) {
@@ -309,7 +433,7 @@ fn cross_zoom(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
     let out_scale = 1.0 + p * 0.8;
     let in_scale = 0.6 + p * 0.4;
 
-    for_each_pixel(out, |u, v| {
+    for_each_pixel(out, |_x, _y, u, v| {
         let ou = (u - 0.5) / out_scale + 0.5;
         let ov = (v - 0.5) / out_scale + 0.5;
         let iu = (u - 0.5) / in_scale + 0.5;
@@ -327,8 +451,9 @@ fn fly(from: &Frame, to: &Frame, p: f32, out: &mut Frame, spin: f32) {
     let angle = spin * (1.0 - p);
     let (sin, cos) = angle.sin_cos();
 
-    for_each_pixel(out, |u, v| {
-        let background = sample_or_black(from, u, v);
+    let a = OnGrid::new(from, out.width, out.height);
+    for_each_pixel(out, |x, y, u, v| {
+        let background = a.at(x, y, u, v);
         let dx = (u - centre_x) / scale;
         let dy = (v - centre_y) / scale;
         let su = dx * cos - dy * sin + 0.5;
@@ -348,7 +473,7 @@ fn cube(from: &Frame, to: &Frame, p: f32, out: &mut Frame, pull_back: bool) {
         1.0
     };
 
-    for_each_pixel(out, |u, v| {
+    for_each_pixel(out, |_x, _y, u, v| {
         let sv = (v - 0.5) / squeeze + 0.5;
         if !(0.0..1.0).contains(&sv) {
             return [0, 0, 0, 255];
@@ -392,7 +517,7 @@ fn merge(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
     let out_scale = 1.0 + 0.12 * eased;
     let in_scale = 1.0 - 0.12 * (1.0 - eased);
 
-    for_each_pixel(out, |u, v| {
+    for_each_pixel(out, |_x, _y, u, v| {
         let ou = (u - 0.5) / out_scale + 0.5;
         let ov = (v - 0.5) / out_scale + 0.5;
         let iu = (u - 0.5) / in_scale + 0.5;
@@ -405,21 +530,24 @@ fn merge(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
 fn barn_door(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
     const SOFTNESS: f32 = 0.008;
 
-    for_each_pixel(out, |u, v| {
+    let a = OnGrid::new(from, out.width, out.height);
+    let b = OnGrid::new(to, out.width, out.height);
+    for_each_pixel(out, |x, y, u, v| {
         // Distance from the centre line: 0 in the middle, 1 at either edge.
         // The doors part outward, so the revealed band is everything closer to
         // the centre than the current progress.
         let distance = (u - 0.5).abs() * 2.0;
         let blend = ((p - distance) / SOFTNESS + 0.5).clamp(0.0, 1.0);
-        mix(sample_or_black(from, u, v), sample_or_black(to, u, v), blend)
+        mix(a.at(x, y, u, v), b.at(x, y, u, v), blend)
     });
 }
 
 /// The incoming shot rolls down over the outgoing one.
 fn roller_door(from: &Frame, to: &Frame, p: f32, out: &mut Frame) {
-    for_each_pixel(out, |u, v| {
+    let a = OnGrid::new(from, out.width, out.height);
+    for_each_pixel(out, |x, y, u, v| {
         if v > p {
-            return sample_or_black(from, u, v);
+            return a.at(x, y, u, v);
         }
         // The shutter shows the bottom of the incoming shot first, as though
         // it were being unrolled from above.
@@ -453,9 +581,11 @@ fn stinger(from: &Frame, to: &Frame, via: Option<&Frame>, p: f32, out: &mut Fram
     let coverage = if p < 0.5 { p * 2.0 } else { (1.0 - p) * 2.0 };
     let underneath = if p < 0.5 { from } else { to };
 
-    for_each_pixel(out, |u, v| {
-        let base = sample_or_black(underneath, u, v);
-        let cover_px = sample_or_black(cover, u, v);
+    let under = OnGrid::new(underneath, out.width, out.height);
+    let over = OnGrid::new(cover, out.width, out.height);
+    for_each_pixel(out, |x, y, u, v| {
+        let base = under.at(x, y, u, v);
+        let cover_px = over.at(x, y, u, v);
         // The cover's own alpha modulates it, so a graphic with transparency
         // works as a proper stinger rather than a solid wipe.
         let alpha = (cover_px[3] as f32 / 255.0) * coverage;
@@ -466,6 +596,60 @@ fn stinger(from: &Frame, to: &Frame, via: Option<&Frame>, p: f32, out: &mut Fram
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every effect, timed at the size a production actually runs at.
+    ///
+    /// Reported as lag and struggle taking a playing clip to air. A
+    /// transition composites both arrangements in full and blends them, and
+    /// the blend was sampling two 1080p frames per pixel to land back on the
+    /// pixel it started from: 144 ms a frame against a 33 ms budget, which
+    /// dropped the whole production to under six frames a second.
+    ///
+    /// The budget here is the blend alone. The two composites either side of
+    /// it have to come out of the same 33 ms, so this is held to half.
+    #[test]
+    #[ignore = "timing; run with --ignored"]
+    fn every_effect_blends_within_the_frame_budget() {
+        use std::time::Instant;
+
+        const W: usize = 1920;
+        const H: usize = 1080;
+        let budget_ms = 1000.0 / 30.0 / 2.0;
+
+        let from = Frame::filled(W, H, [40, 90, 160]);
+        let to = Frame::filled(W, H, [200, 70, 30]);
+        let via = Frame::filled(W, H, [10, 10, 10]);
+        let mut out = Frame::new(W, H);
+
+        let mut worst = (Transition::Cut, 0.0f64);
+        for kind in Transition::ALL {
+            if kind.is_instant() {
+                continue;
+            }
+            // Warmed, so the first run's page faults are not the measurement.
+            render(kind, &from, &to, Some(&via), 0.5, &mut out);
+
+            let runs = 5;
+            let start = Instant::now();
+            for i in 0..runs {
+                render(kind, &from, &to, Some(&via), 0.3 + i as f32 * 0.1, &mut out);
+            }
+            let each = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+            eprintln!("  {:<22} {each:6.2} ms", kind.label());
+            if each > worst.1 {
+                worst = (kind, each);
+            }
+        }
+
+        eprintln!("  worst: {} at {:.2} ms (budget {budget_ms:.1} ms)", worst.0.label(), worst.1);
+        assert!(
+            worst.1 < budget_ms as f64,
+            "{} takes {:.1} ms a frame, over half the {:.1} ms the engine has",
+            worst.0.label(),
+            worst.1,
+            1000.0 / 30.0
+        );
+    }
 
     fn red() -> Frame {
         Frame::filled(64, 36, [220, 30, 30])

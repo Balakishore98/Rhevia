@@ -296,6 +296,13 @@ pub struct Snapshot {
     pub monitor: Option<String>,
     /// Listening level in dB, which is not the master fader.
     pub monitor_gain_db: f32,
+    /// How many times the sound card asked for audio and found none ready.
+    ///
+    /// Each one is a gap, and gaps arriving at the tick rate are heard as a
+    /// crackle rather than as silence — which is how this was reported.
+    /// Surfaced so that "the audio is crackling" is a number rather than an
+    /// argument.
+    pub audio_gaps: u64,
     /// How many inputs are still opening.
     ///
     /// A camera can take seconds to answer. Saying so is the difference
@@ -722,6 +729,10 @@ fn run(
     let mut recorder: Option<(std::io::BufWriter<std::fs::File>, String, u64)> = None;
 
     let frame_budget = Duration::from_secs_f32(1.0 / TARGET_FPS);
+    // When audio was last generated, and the fraction of a sample carried
+    // over from that tick. Together these are the engine's audio clock.
+    let mut audio_clock = Instant::now();
+    let mut audio_owed: f64 = 0.0;
     let start = Instant::now();
     let mut frame_number: u64 = 0;
     let mut fps_window = Instant::now();
@@ -1261,10 +1272,28 @@ fn run(
         }
 
         // ---- audio ---------------------------------------------------------
-        // One video frame worth of audio per tick. Driving audio off the video
-        // clock keeps them locked together by construction; a separate audio
-        // clock would drift apart over a long show.
-        let audio_frames = (SAMPLE_RATE as f32 / TARGET_FPS) as usize;
+        // Measured in real time, not in ticks.
+        //
+        // A fixed block per tick looks like it locks sound to picture, and
+        // would if the loop ran at exactly thirty. It does not: the loop
+        // sleeps to fill the frame budget and that sleep rounds up, so a tick
+        // is nearer 33.6 ms than 33.3 and the engine hands the sound card
+        // about 47,600 samples for every 48,000 it asks for. The card fills
+        // the shortfall with silence thirty times a second, which is not
+        // heard as silence -- it is heard as a crackle over everything.
+        //
+        // So the sound card's clock wins, as it always must, and the block is
+        // however much real time has passed. The fraction of a sample left
+        // over is carried rather than dropped, or the rounding puts the drift
+        // straight back.
+        let now = Instant::now();
+        audio_owed += now.duration_since(audio_clock).as_secs_f64() * SAMPLE_RATE as f64;
+        audio_clock = now;
+        // After a stall, catch up over the following ticks rather than
+        // generating a second of sound in one go and blocking the picture.
+        audio_owed = audio_owed.min(SAMPLE_RATE as f64 / 4.0);
+        let audio_frames = audio_owed as usize;
+        audio_owed -= audio_frames as f64;
         // One DSP chain per channel. Grown here rather than at every add
         // site, so a chain can never be missing for a channel that exists.
         while dsp.len() < audio.channels.len() {
@@ -1729,6 +1758,7 @@ fn run(
             s.opening = opening;
             s.monitor = monitor.as_ref().map(|m| m.device_name.clone());
             s.monitor_gain_db = monitor_gain_db;
+            s.audio_gaps = monitor.as_ref().map(|m| m.starved()).unwrap_or(0);
             s.destinations = deliveries
                 .iter()
                 .map(|d| DestinationState {
@@ -2626,6 +2656,182 @@ mod tests {
             assert!(
                 snapshot.inputs.iter().all(|i| i.media.is_none()),
                 "a generated input is claiming to be playable"
+            );
+        }
+
+        #[test]
+        fn taking_a_playing_clip_to_air_does_not_stall_the_production() {
+            // Reported as lag and struggle when a playing video is taken from
+            // Preview to Program and back. A transition composites both
+            // arrangements in full and blends them, so it is the most
+            // expensive thing the engine ever does — and it happens at the
+            // exact moment an operator is watching.
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            let clip = fixture(
+                "cutover.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                    "-t", "30",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                ],
+            );
+
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Clip".into(),
+                path: clip.to_str().unwrap().to_string(),
+            });
+            let up = wait_for(&engine, Duration::from_secs(30), |s| {
+                s.inputs.iter().any(|i| i.media.is_some_and(|m| m.position_seconds > 0.3))
+            })
+            .expect("the clip never started playing");
+            let index = up.inputs.iter().position(|i| i.media.is_some()).unwrap();
+
+            /// Watches the engine closely for a while and reports the worst it saw.
+            fn watch(engine: &EngineHandle, seconds: f32) -> (f32, f32, f32) {
+                let deadline = Instant::now() + Duration::from_secs_f32(seconds);
+                let (mut worst_ms, mut worst_fps, mut total_ms, mut n) =
+                    (0.0f32, f32::MAX, 0.0f32, 0u32);
+                while Instant::now() < deadline {
+                    let s = engine.snapshot().stats;
+                    // The rate is smoothed and reads zero until it has
+                    // something to smooth, which is not a stall.
+                    if s.frames_rendered > 0 && s.fps > 0.0 {
+                        worst_ms = worst_ms.max(s.render_ms);
+                        worst_fps = worst_fps.min(s.fps);
+                        total_ms += s.render_ms;
+                        n += 1;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                (worst_ms, if n > 0 { worst_fps } else { 0.0 }, total_ms / n.max(1) as f32)
+            }
+
+            engine.send(Command::SetPreview(index));
+            std::thread::sleep(Duration::from_millis(500));
+            let (still_ms, still_fps, still_mean) = watch(&engine, 2.0);
+            eprintln!(
+                "  sitting in preview: {still_mean:.2} ms mean, {still_ms:.2} ms worst, \
+                 {still_fps:.1} fps worst"
+            );
+
+            // A one second fade, taken the way an operator takes it.
+            engine.send(Command::SetTransitionSeconds(1.0));
+            engine.send(Command::Auto);
+            let (fade_ms, fade_fps, fade_mean) = watch(&engine, 1.5);
+            eprintln!(
+                "  through the fade:   {fade_mean:.2} ms mean, {fade_ms:.2} ms worst, \
+                 {fade_fps:.1} fps worst"
+            );
+
+            let live = wait_for(&engine, Duration::from_secs(5), |s| s.program_input == index)
+                .expect("the clip never reached air");
+            assert!(live.program.as_ref().is_some_and(|f| !f.is_empty()));
+
+            // And back the other way, which is the half he mentioned second.
+            engine.send(Command::Auto);
+            let (back_ms, back_fps, back_mean) = watch(&engine, 1.5);
+            eprintln!(
+                "  and back again:     {back_mean:.2} ms mean, {back_ms:.2} ms worst, \
+                 {back_fps:.1} fps worst"
+            );
+
+            if cfg!(debug_assertions) {
+                eprintln!("  (debug build — the numbers are not judged here)");
+                return;
+            }
+
+            let budget = 1000.0 / TARGET_FPS;
+            for (what, worst, fps) in [
+                ("sitting still", still_ms, still_fps),
+                ("through the fade", fade_ms, fade_fps),
+                ("coming back", back_ms, back_fps),
+            ] {
+                assert!(
+                    worst < budget,
+                    "{what}: a frame took {worst:.1} ms of a {budget:.1} ms budget"
+                );
+                assert!(
+                    fps > TARGET_FPS * 0.9,
+                    "{what}: the production dropped to {fps:.1} fps"
+                );
+            }
+        }
+
+        #[test]
+        fn a_clip_plays_without_the_sound_card_ever_running_dry() {
+            // Reported as "pori pori" -- a steady crackle over sound that is
+            // clean in the file. The engine handed the card a fixed block per
+            // tick while running at 29.7 ticks a second, so it supplied about
+            // 47,600 frames a second against the 48,000 the card asked for.
+            // The card filled the shortfall with silence thirty times a
+            // second, and thirty tiny gaps a second is a crackle.
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            let clip = fixture(
+                "steady.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                    "-t", "20",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                ],
+            );
+
+            let engine = start();
+            let Some(_) = wait_for(&engine, Duration::from_secs(15), |s| s.monitor.is_some())
+            else {
+                eprintln!("SKIP: this machine has nothing to listen on");
+                return;
+            };
+
+            engine.send(Command::AddMediaSource {
+                name: "Clip".into(),
+                path: clip.to_str().unwrap().to_string(),
+            });
+            let up = wait_for(&engine, Duration::from_secs(25), |s| {
+                s.audio.iter().any(|c| c.name == "Clip" && c.peak_db > -40.0)
+                    && s.master.peak_db > -40.0
+            })
+            .expect("the clip never reached the master");
+            let index = up.inputs.iter().position(|i| i.media.is_some()).unwrap();
+            engine.send(Command::SetPreview(index));
+            engine.send(Command::Cut);
+
+            // Priming costs a gap or two at the very start, which is a pause
+            // before the first sound rather than a fault. Measured from after.
+            std::thread::sleep(Duration::from_secs(1));
+            let settled = engine.snapshot().audio_gaps;
+
+            std::thread::sleep(Duration::from_secs(6));
+            let after = engine.snapshot();
+            let gaps = after.audio_gaps - settled;
+
+            eprintln!(
+                "  {gaps} gaps in six seconds of playback, master {:.1} dB, on {}",
+                after.master.peak_db,
+                after.monitor.as_deref().unwrap_or("?")
+            );
+            assert!(
+                after.master.peak_db > -40.0,
+                "the clip stopped reaching the master: {:.1} dB",
+                after.master.peak_db
+            );
+            // A handful over six seconds would be an occasional pause. Before
+            // the clock was taken from real time this was hundreds.
+            assert!(
+                gaps < 10,
+                "{gaps} gaps in six seconds is a crackle, not an occasional pause"
             );
         }
 

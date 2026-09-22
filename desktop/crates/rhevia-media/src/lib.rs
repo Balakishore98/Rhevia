@@ -17,6 +17,7 @@
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use rhevia_engine::Frame;
@@ -257,8 +258,20 @@ pub fn looks_like_media(path: &str) -> bool {
 /// Video frames and audio samples are produced by background threads and
 /// collected without waiting, the same as every other source: a decoder that
 /// stalls costs a repeated frame, not the show.
+/// How many decoded pictures are held waiting for the compositor.
+///
+/// The decoder and the compositor both run at thirty a second and neither
+/// takes its clock from the other, so they drift in and out of phase. With
+/// room for only one picture, every time two are produced between two ticks
+/// one is thrown away and the next tick shows the previous one twice — which
+/// measured at four ticks in a hundred on an idle machine and is exactly what
+/// judder looks like. Three is enough to absorb that drift; it costs about a
+/// tenth of a second of delay on a file, which is nothing, and the queue
+/// filling up pushes back through the pipe so the decoder cannot run away.
+const QUEUED_FRAMES: usize = 3;
+
 pub struct MediaSource {
-    latest: Arc<Mutex<Option<Frame>>>,
+    pending: Arc<Mutex<VecDeque<Frame>>>,
     audio: Arc<Mutex<Vec<f32>>>,
     running: Arc<AtomicBool>,
     /// Counts what the audio thread has produced, so a caller can tell a
@@ -300,7 +313,7 @@ impl MediaSource {
             return Err(MediaError::Unreadable(path.to_string()));
         }
 
-        let latest: Arc<Mutex<Option<Frame>>> = Arc::new(Mutex::new(None));
+        let pending: Arc<Mutex<VecDeque<Frame>>> = Arc::new(Mutex::new(VecDeque::new()));
         let audio: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let running = Arc::new(AtomicBool::new(true));
         let audio_produced = Arc::new(AtomicU64::new(0));
@@ -308,7 +321,7 @@ impl MediaSource {
         let paused = Arc::new(AtomicBool::new(false));
 
         let mut source = Self {
-            latest,
+            pending,
             audio,
             running,
             audio_produced,
@@ -343,7 +356,7 @@ impl MediaSource {
                 height,
                 self.fps,
                 from,
-                Arc::clone(&self.latest),
+                Arc::clone(&self.pending),
                 Arc::clone(&self.running),
                 Arc::clone(&self.paused),
                 Arc::clone(&self.frames_produced),
@@ -388,6 +401,10 @@ impl MediaSource {
         if let Ok(mut buffer) = self.audio.lock() {
             buffer.clear();
         }
+        // Pictures from before the skip must not be shown after it.
+        if let Ok(mut queue) = self.pending.lock() {
+            queue.clear();
+        }
         self.audio_produced.store(0, Ordering::Relaxed);
         self.frames_produced.store(0, Ordering::Relaxed);
     }
@@ -403,6 +420,8 @@ impl MediaSource {
         if paused {
             // Whatever was already decoded ahead is dropped, so letting go
             // does not start with a burst of sound from before the pause.
+            // The pictures stay: the last one drawn is what should remain on
+            // screen, and the queued ones are the moments right after it.
             if let Ok(mut buffer) = self.audio.lock() {
                 buffer.clear();
             }
@@ -471,9 +490,21 @@ impl MediaSource {
         Ok(())
     }
 
-    /// The newest picture, if one has arrived since the last call.
+    /// The next picture to show, if one is waiting.
+    ///
+    /// Oldest first: a queue, not a mailbox. Taking the newest and dropping
+    /// the rest would put the judder straight back.
     pub fn take_frame(&self) -> Option<Frame> {
-        self.latest.lock().ok().and_then(|mut slot| slot.take())
+        self.pending.lock().ok().and_then(|mut queue| queue.pop_front())
+    }
+
+    /// How many pictures are waiting.
+    ///
+    /// Sitting at zero means the decoder is not keeping up and the
+    /// compositor is repeating pictures; sitting at the limit means it is
+    /// ahead and being held back, which is the healthy state.
+    pub fn queued(&self) -> usize {
+        self.pending.lock().map(|q| q.len()).unwrap_or(0)
     }
 
     /// Takes up to `frames` of interleaved stereo audio.
@@ -537,7 +568,7 @@ fn spawn_video(
     height: u32,
     fps: f32,
     from: f32,
-    latest: Arc<Mutex<Option<Frame>>>,
+    pending: Arc<Mutex<VecDeque<Frame>>>,
     running: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     produced: Arc<AtomicU64>,
@@ -605,8 +636,14 @@ fn spawn_video(
                 // Paused by not reading. ffmpeg fills the pipe, blocks, and
                 // the clip stands exactly where it was; the last picture
                 // stays on screen because nothing replaces it.
-                if paused.load(Ordering::Relaxed) {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+                //
+                // The same applies with the queue full: not reading is how
+                // the decoder is told to wait, and it costs nothing because
+                // ffmpeg is playing the file at real time anyway.
+                let wait = paused.load(Ordering::Relaxed)
+                    || pending.lock().map(|q| q.len() >= QUEUED_FRAMES).unwrap_or(false);
+                if wait {
+                    std::thread::sleep(std::time::Duration::from_millis(4));
                     continue;
                 }
                 // read_exact, not read: a pipe hands over whatever is ready,
@@ -615,12 +652,18 @@ fn spawn_video(
                     break;
                 }
                 produced.fetch_add(1, Ordering::Relaxed);
-                if let Ok(mut slot) = latest.lock() {
-                    *slot = Some(Frame {
+                if let Ok(mut queue) = pending.lock() {
+                    queue.push_back(Frame {
                         width: width as usize,
                         height: height as usize,
                         data: buffer.clone(),
                     });
+                    // Belt and braces: the check above races with the
+                    // compositor, and an unbounded queue on a long clip is
+                    // memory that never comes back.
+                    while queue.len() > QUEUED_FRAMES {
+                        queue.pop_front();
+                    }
                 }
             }
         })
@@ -712,7 +755,7 @@ mod tests {
     /// about it.
     fn detached(buffered: Vec<f32>) -> MediaSource {
         MediaSource {
-            latest: Arc::new(Mutex::new(None)),
+            pending: Arc::new(Mutex::new(VecDeque::new())),
             audio: Arc::new(Mutex::new(buffered)),
             running: Arc::new(AtomicBool::new(false)),
             audio_produced: Arc::new(AtomicU64::new(0)),

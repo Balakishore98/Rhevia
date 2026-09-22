@@ -315,6 +315,28 @@ fn difference(a: &rhevia_engine::Frame, b: &rhevia_engine::Frame) -> f32 {
     total as f32 / a.data.len() as f32
 }
 
+/// Takes pictures at the rate the compositor does, for a while.
+///
+/// A source holds a few decoded pictures ready so that jitter between the
+/// decoder's clock and the compositor's does not show as judder. The other
+/// side of that is back-pressure: with nothing taking them the queue fills,
+/// the decoder waits, and the clip stops advancing. That is correct — in
+/// Rhevia every input is drained every tick whether it is on air or not —
+/// but it means a test has to behave like the compositor to see the clip
+/// play at all.
+fn drain_for(source: &MediaSource, how_long: Duration) -> usize {
+    let tick = Duration::from_secs_f64(1.0 / FPS as f64);
+    let deadline = Instant::now() + how_long;
+    let mut taken = 0;
+    while Instant::now() < deadline {
+        if source.take_frame().is_some() {
+            taken += 1;
+        }
+        std::thread::sleep(tick);
+    }
+    taken
+}
+
 #[test]
 fn a_paused_clip_stops_where_it_is_and_carries_on_when_let_go() {
     if !rhevia_media::available() {
@@ -325,28 +347,26 @@ fn a_paused_clip_stops_where_it_is_and_carries_on_when_let_go() {
     let source = MediaSource::open(clip.to_str().unwrap(), WIDTH, HEIGHT, FPS)
         .expect("the clip should open");
 
-    let first = wait_for_frame(&source, Duration::from_secs(15)).expect("no first picture");
+    assert!(wait_for_frame(&source, Duration::from_secs(15)).is_some(), "no first picture");
     assert!(!source.paused(), "a clip should start playing");
+    drain_for(&source, Duration::from_millis(600));
 
     source.set_paused(true);
-    // Whatever was already in flight is drained, then nothing more should come.
-    std::thread::sleep(Duration::from_millis(400));
-    let held = wait_for_frame(&source, Duration::from_millis(300));
+    // Whatever was already decoded ahead is taken first — those are the
+    // moments immediately after the last one shown, and they should be shown
+    // before the clip settles.
+    drain_for(&source, Duration::from_millis(500));
     let at_pause = source.position_seconds();
 
-    std::thread::sleep(Duration::from_secs(1));
-    let after_waiting = wait_for_frame(&source, Duration::from_millis(300));
+    // Now nothing more should arrive, however long it is left.
+    let arrived = drain_for(&source, Duration::from_secs(1));
     let still_there = source.position_seconds();
 
     eprintln!(
         "  paused at {at_pause:.2}s, a second later {still_there:.2}s, \
-         new picture while held: {}",
-        after_waiting.is_some()
+         {arrived} new pictures while held"
     );
-    assert!(
-        after_waiting.is_none(),
-        "the clip kept decoding while it was supposed to be held"
-    );
+    assert_eq!(arrived, 0, "the clip kept decoding while it was supposed to be held");
     assert!(
         (still_there - at_pause).abs() < 0.1,
         "the position moved while paused: {at_pause:.2}s to {still_there:.2}s"
@@ -354,13 +374,12 @@ fn a_paused_clip_stops_where_it_is_and_carries_on_when_let_go() {
 
     source.set_paused(false);
     let moving = wait_for_frame(&source, Duration::from_secs(5)).expect("it never restarted");
-    std::thread::sleep(Duration::from_millis(600));
+    drain_for(&source, Duration::from_millis(800));
     let later = source.position_seconds();
     eprintln!("  let go, now at {later:.2}s");
     assert!(later > at_pause + 0.2, "letting go did not restart it");
 
     // And it really is a different picture, not the held one handed back.
-    let _ = (first, held);
     assert!(
         difference(&moving, &rhevia_engine::Frame::new(WIDTH as usize, HEIGHT as usize)) > 1.0,
         "the picture after resuming is blank"
@@ -378,6 +397,7 @@ fn skipping_forward_and_back_moves_the_clip_by_that_much() {
         .expect("the clip should open");
     wait_for_frame(&source, Duration::from_secs(15)).expect("no first picture");
 
+    drain_for(&source, Duration::from_millis(400));
     let before = source.position_seconds();
     source.skip(5.0).expect("skipping forward should work");
     wait_for_frame(&source, Duration::from_secs(10)).expect("nothing came back after the skip");
@@ -431,11 +451,11 @@ fn stop_cues_the_clip_at_the_beginning_and_holds_it() {
     let mut source = MediaSource::open(clip.to_str().unwrap(), WIDTH, HEIGHT, FPS)
         .expect("the clip should open");
     wait_for_frame(&source, Duration::from_secs(15)).expect("no first picture");
-    std::thread::sleep(Duration::from_secs(1));
+    drain_for(&source, Duration::from_secs(1));
     assert!(source.position_seconds() > 0.3, "the clip never started playing");
 
     source.stop().expect("stopping should work");
-    std::thread::sleep(Duration::from_millis(500));
+    drain_for(&source, Duration::from_millis(500));
 
     eprintln!(
         "  stopped: at {:.2}s, held: {}",
@@ -474,6 +494,7 @@ fn the_transport_leaves_no_decoders_behind() {
     for _ in 0..4 {
         abandoned.extend(source.decoder_pids());
         source.skip(2.0).expect("skipping should work");
+        drain_for(&source, Duration::from_millis(200));
     }
     let alive = source.decoder_pids();
     drop(source);

@@ -59,16 +59,29 @@ foreach ($exe in $binaries) {
 # A running copy holds its own file open, and the copy below then fails
 # halfway through — leaving some binaries updated and others not, which is
 # worse than not installing at all.
-$running = Get-Process -Name "rhevia-studio","rhevia-relay","rhevia-stream" -ErrorAction SilentlyContinue
+$names = @("rhevia-studio","rhevia-relay","rhevia-stream")
+$running = Get-Process -Name $names -ErrorAction SilentlyContinue
 if ($running) {
     Write-Host "  stopping $($running.Count) running instance(s) first" -ForegroundColor Yellow
-    $running | ForEach-Object {
-        $_.CloseMainWindow() | Out-Null
-    }
+    $running | ForEach-Object { $_.CloseMainWindow() | Out-Null }
     Start-Sleep -Seconds 2
-    Get-Process -Name "rhevia-studio","rhevia-relay","rhevia-stream" -ErrorAction SilentlyContinue |
+    Get-Process -Name $names -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
+
+    # Waited for, not slept past. Rhevia has cameras and decoders to shut
+    # down on the way out, so it can still hold its own file open a second
+    # after it was asked to stop -- and then the install fails halfway,
+    # which is the exact thing this block exists to prevent.
+    $waited = 0
+    while ((Get-Process -Name $names -ErrorAction SilentlyContinue) -and $waited -lt 100) {
+        Start-Sleep -Milliseconds 100
+        $waited++
+    }
+    if (Get-Process -Name $names -ErrorAction SilentlyContinue) {
+        throw "Rhevia is still running and will not stop. Close it and try again."
+    }
+    # Windows can hold the image open for a moment after the process is gone.
+    Start-Sleep -Milliseconds 400
 }
 
 New-Item -ItemType Directory -Force -Path $InstallTo | Out-Null

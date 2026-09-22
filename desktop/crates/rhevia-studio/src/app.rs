@@ -124,6 +124,18 @@ pub struct StudioApp {
     cached_playback: Vec<rhevia_audio::MonitorDevice>,
     /// A device picked from the combo box, applied after it closes.
     pending_monitor: Option<String>,
+    /// How fast the window itself is being drawn.
+    ///
+    /// Separate from the engine's rate, and the one an operator actually
+    /// sees: the production can be running at thirty and still look like a
+    /// slideshow if the interface cannot keep up drawing it. Reported rather
+    /// than assumed, because this is exactly the sort of thing that is easy
+    /// to be wrong about and impossible to argue with once measured.
+    drawn_at: Option<std::time::Instant>,
+    /// Smoothed frames a second for the window.
+    draw_fps: f32,
+    /// Smoothed milliseconds spent inside one repaint.
+    draw_ms: f32,
     /// What was chosen on the Settings tab, and written down.
     ///
     /// Held here rather than read back from disk while painting: the
@@ -318,6 +330,9 @@ impl StudioApp {
             attach_to: None,
             assigning_overlay: None,
             selected_channel: 0,
+            drawn_at: None,
+            draw_fps: 0.0,
+            draw_ms: 0.0,
             cached_playback: Vec::new(),
             pending_monitor: None,
             settings: crate::settings::Settings::load(),
@@ -382,6 +397,18 @@ impl StudioApp {
 
 impl eframe::App for StudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let entered = std::time::Instant::now();
+        if let Some(last) = self.drawn_at {
+            let gap = entered.duration_since(last).as_secs_f32();
+            if gap > 0.0 {
+                // Smoothed over about half a second. An instantaneous figure
+                // on a live readout is unreadable and a long average hides
+                // exactly the stutter this is here to show.
+                self.draw_fps += (1.0 / gap - self.draw_fps) * 0.08;
+            }
+        }
+        self.drawn_at = Some(entered);
+
         let snapshot = self.engine.snapshot();
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
@@ -451,6 +478,9 @@ impl eframe::App for StudioApp {
         }
 
         self.dialogs(ctx, &snapshot);
+
+        let spent = entered.elapsed().as_secs_f32() * 1000.0;
+        self.draw_ms += (spent - self.draw_ms) * 0.08;
     }
 }
 
@@ -616,6 +646,22 @@ impl StudioApp {
                         theme::PREVIEW
                     };
                     theme::readout(ui, "FPS", &format!("{:.1}", s.fps), fps_colour);
+
+                    // What the operator is actually watching. The engine can
+                    // be running at rate while the window draws at half of
+                    // it, and then the production looks like it is stuttering
+                    // when only the monitor of it is.
+                    let drawn_colour = if self.draw_fps < TARGET_FPS * 0.9 && self.draw_fps > 0.0 {
+                        theme::WARN
+                    } else {
+                        theme::PREVIEW
+                    };
+                    theme::readout(
+                        ui,
+                        "WINDOW",
+                        &format!("{:.0} fps · {:.1} ms", self.draw_fps, self.draw_ms),
+                        drawn_colour,
+                    );
 
                     // Eat the gap so the block that follows sits hard right,
                     // rather than trusting a nested layout to find the edge.

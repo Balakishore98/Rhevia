@@ -14,12 +14,31 @@ use eframe::egui::{
 };
 
 /* -- surfaces, darkest to lightest ------------------------------------- */
-pub const SURFACE_LOWEST: Color32 = Color32::from_rgb(0x0a, 0x0e, 0x17);
-pub const SURFACE: Color32 = Color32::from_rgb(0x0f, 0x13, 0x1c);
-pub const SURFACE_LOW: Color32 = Color32::from_rgb(0x18, 0x1c, 0x25);
-pub const SURFACE_CONTAINER: Color32 = Color32::from_rgb(0x1c, 0x20, 0x29);
-pub const SURFACE_HIGH: Color32 = Color32::from_rgb(0x26, 0x2a, 0x33);
-pub const SURFACE_HIGHEST: Color32 = Color32::from_rgb(0x31, 0x35, 0x3e);
+//
+// Six steps rather than four, and each one a little further apart than it
+// was. A panel that sits only two values away from the one behind it reads
+// as one flat sheet however carefully it is bordered, and a switcher is a
+// stack of panels — the depth is what tells an operator where one control
+// ends and the next begins.
+//
+// The whole set carries a trace of blue. A pure grey interface around a
+// picture makes the picture look tinted; a cool interface lets the picture
+// be the only warm thing on the screen.
+pub const SURFACE_LOWEST: Color32 = Color32::from_rgb(0x07, 0x0a, 0x11);
+pub const SURFACE: Color32 = Color32::from_rgb(0x0d, 0x11, 0x1a);
+pub const SURFACE_LOW: Color32 = Color32::from_rgb(0x14, 0x19, 0x24);
+pub const SURFACE_CONTAINER: Color32 = Color32::from_rgb(0x1a, 0x1f, 0x2b);
+pub const SURFACE_HIGH: Color32 = Color32::from_rgb(0x24, 0x2a, 0x38);
+pub const SURFACE_HIGHEST: Color32 = Color32::from_rgb(0x33, 0x3a, 0x4a);
+
+/// The line between one surface and the next.
+///
+/// Lighter than the surface above it rather than darker: on a dark interface
+/// a light edge reads as a raised panel and a dark edge as a gap, and these
+/// are panels.
+pub const EDGE: Color32 = Color32::from_rgb(0x2a, 0x31, 0x40);
+/// The edge of something that can be worked, when the pointer is over it.
+pub const EDGE_LIT: Color32 = Color32::from_rgb(0x44, 0x4e, 0x63);
 
 /* -- signal colours ------------------------------------------------------ */
 /// On air. Nothing else may use this.
@@ -32,6 +51,9 @@ pub const PREVIEW_DIM: Color32 = Color32::from_rgb(0x00, 0x53, 0x21);
 /// Active, selected, armed — never "live".
 pub const ACCENT: Color32 = Color32::from_rgb(0x4c, 0xd7, 0xf6);
 pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x00, 0x4e, 0x5c);
+/// A wash of the accent, for the fill behind something selected. Dark enough
+/// that ordinary text still reads on top of it.
+pub const ACCENT_WASH: Color32 = Color32::from_rgb(0x10, 0x2e, 0x38);
 /// Warnings and approaching-limit states.
 pub const WARN: Color32 = Color32::from_rgb(0xff, 0xb3, 0xad);
 
@@ -41,6 +63,45 @@ pub const TEXT_DIM: Color32 = Color32::from_rgb(0x8a, 0x91, 0xa4);
 pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x5b, 0x62, 0x74);
 /// For text sitting on a bright fill.
 pub const ON_BRIGHT: Color32 = Color32::from_rgb(0x10, 0x14, 0x1c);
+
+/// A colour moved towards white by `amount`.
+pub fn lift(colour: Color32, amount: f32) -> Color32 {
+    let mix = |c: u8| (c as f32 + (255.0 - c as f32) * amount.clamp(0.0, 1.0)) as u8;
+    Color32::from_rgb(mix(colour.r()), mix(colour.g()), mix(colour.b()))
+}
+
+/// A colour scaled towards black.
+pub fn dim(colour: Color32, factor: f32) -> Color32 {
+    let scale = |c: u8| (c as f32 * factor.clamp(0.0, 1.0)) as u8;
+    Color32::from_rgb(scale(colour.r()), scale(colour.g()), scale(colour.b()))
+}
+
+/// A heading, spaced out the way broadcast panels label their sections.
+///
+/// Letter-spaced small capitals rather than plain small text: it reads as a
+/// label for what follows rather than as a sentence someone forgot to
+/// finish, and it lets the heading be quiet without being hard to find.
+pub fn section(ui: &mut Ui, text: &str) {
+    let spaced: String = text
+        .chars()
+        .flat_map(|c| [c, '\u{2009}'])
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    ui.label(
+        RichText::new(spaced)
+            .size(10.5)
+            .strong()
+            .color(TEXT_DIM),
+    );
+}
+
+/// A hairline between two things, the full width of what it is dividing.
+pub fn rule(ui: &mut Ui) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());
+    ui.painter().rect_filled(rect, Rounding::ZERO, EDGE);
+}
 
 pub fn apply(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
@@ -56,17 +117,46 @@ pub fn apply(ctx: &egui::Context) {
 
     let w = &mut style.visuals.widgets;
     w.noninteractive.bg_fill = SURFACE_CONTAINER;
+    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, EDGE);
     w.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_DIM);
     w.inactive.bg_fill = SURFACE_HIGH;
+    w.inactive.bg_stroke = Stroke::new(1.0_f32, EDGE);
     w.inactive.rounding = Rounding::same(4.0_f32);
     w.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     w.hovered.bg_fill = SURFACE_HIGHEST;
+    w.hovered.bg_stroke = Stroke::new(1.0_f32, EDGE_LIT);
     w.hovered.rounding = Rounding::same(4.0_f32);
-    w.active.bg_fill = ACCENT_DIM;
+    w.hovered.expansion = 1.0;
+    w.active.bg_fill = ACCENT_WASH;
+    w.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
     w.active.rounding = Rounding::same(4.0_f32);
+    w.open.bg_fill = SURFACE_HIGH;
+    w.open.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    w.open.rounding = Rounding::same(4.0_f32);
 
-    style.spacing.item_spacing = Vec2::new(6.0, 5.0);
-    style.spacing.button_padding = Vec2::new(10.0, 5.0);
+    // Room to breathe. The old spacing was tuned to fit everything in; the
+    // cost was a wall of controls with nothing separating one group from the
+    // next.
+    style.spacing.item_spacing = Vec2::new(7.0, 6.0);
+    style.spacing.button_padding = Vec2::new(12.0, 6.0);
+    style.spacing.menu_margin = egui::Margin::same(6.0_f32);
+    style.spacing.slider_width = 150.0;
+    style.spacing.interact_size = Vec2::new(40.0, 22.0);
+
+    // A window that lifts off the page rather than sitting on it.
+    style.visuals.window_shadow = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 10.0),
+        blur: 28.0,
+        spread: 0.0,
+        color: Color32::from_black_alpha(160),
+    };
+    style.visuals.popup_shadow = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 5.0),
+        blur: 16.0,
+        spread: 0.0,
+        color: Color32::from_black_alpha(140),
+    };
+    style.visuals.window_stroke = Stroke::new(1.0_f32, EDGE_LIT);
 
     ctx.set_style(style);
 }
@@ -92,20 +182,42 @@ pub fn button(ui: &mut Ui, label: &str, colour: Color32, size: Vec2) -> Response
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let painter = ui.painter_at(rect);
 
-    let fill = if response.is_pointer_button_down_on() {
-        colour.gamma_multiply(0.7)
+    let held = response.is_pointer_button_down_on();
+    let fill = if held {
+        dim(colour, 0.78)
     } else if response.hovered() {
-        colour.gamma_multiply(1.2)
+        lift(colour, 0.12)
     } else {
         colour
     };
-    painter.rect_filled(rect, Rounding::same(4.0_f32), fill);
+    let rounding = Rounding::same(5.0_f32);
+
+    // A shadow under it while it is up, and none while it is down. That one
+    // difference is what makes a rectangle feel like a key being pressed
+    // rather than a rectangle changing colour.
+    if !held {
+        painter.rect_filled(
+            rect.translate(Vec2::new(0.0, 2.0)),
+            rounding,
+            Color32::from_black_alpha(70),
+        );
+    }
+    painter.rect_filled(rect, rounding, fill);
+    // Lit along the top, shaded along the bottom: the light is above, as it
+    // is on every physical panel an operator has used.
+    painter.line_segment(
+        [
+            egui::pos2(rect.min.x + 4.0, rect.min.y + 0.5),
+            egui::pos2(rect.max.x - 4.0, rect.min.y + 0.5),
+        ],
+        Stroke::new(1.0_f32, lift(fill, 0.28)),
+    );
 
     let luminance = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
     let text_colour = if luminance > 130.0 { ON_BRIGHT } else { TEXT };
 
     painter.text(
-        rect.center(),
+        rect.center() + Vec2::new(0.0, if held { 1.5 } else { 0.0 }),
         egui::Align2::CENTER_CENTER,
         label,
         font,
@@ -131,18 +243,40 @@ pub fn chip(ui: &mut Ui, label: &str, active: bool, colour: Color32, size: Vec2)
     // out of a chip however the text is measured.
     let painter = ui.painter_at(rect);
 
-    let (fill, border, text_colour) = if active {
-        (colour, colour, ON_BRIGHT)
+    // Four states, not two. A control that looks the same before and during
+    // a press gives no sign it was hit, and in a dark room during a service
+    // that is the difference between pressing once and pressing twice.
+    let held = response.is_pointer_button_down_on();
+    let (fill, border, text_colour) = if active && held {
+        (dim(colour, 0.82), colour, ON_BRIGHT)
+    } else if active {
+        (colour, lift(colour, 0.25), ON_BRIGHT)
+    } else if held {
+        (ACCENT_WASH, colour, TEXT)
     } else if response.hovered() {
-        (SURFACE_HIGHEST, colour, TEXT)
+        (SURFACE_HIGHEST, EDGE_LIT, TEXT)
     } else {
-        (SURFACE_HIGH, SURFACE_HIGHEST, TEXT_DIM)
+        (SURFACE_HIGH, EDGE, TEXT_DIM)
     };
 
-    painter.rect_filled(rect, Rounding::same(3.0_f32), fill);
-    painter.rect_stroke(rect, Rounding::same(3.0_f32), Stroke::new(1.0_f32, border));
+    let rounding = Rounding::same(4.0_f32);
+    painter.rect_filled(rect, rounding, fill);
+    // A highlight along the top edge. One pixel of a lighter colour is what
+    // makes a flat rectangle read as a raised key rather than a painted box.
+    if !active {
+        painter.line_segment(
+            [
+                egui::pos2(rect.min.x + 3.0, rect.min.y + 0.5),
+                egui::pos2(rect.max.x - 3.0, rect.min.y + 0.5),
+            ],
+            Stroke::new(1.0_f32, lift(fill, 0.10)),
+        );
+    }
+    painter.rect_stroke(rect, rounding, Stroke::new(1.0_f32, border));
     painter.text(
-        rect.center(),
+        // Pressed controls move down by a pixel, which is most of what makes
+        // a press feel like a press.
+        rect.center() + Vec2::new(0.0, if held { 1.0 } else { 0.0 }),
         egui::Align2::CENTER_CENTER,
         label,
         font,

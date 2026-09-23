@@ -4,7 +4,11 @@
 //! board or a stinger graphic gets on air, and a title is the lower third that
 //! every production needs and no switcher should make you leave to build.
 
-use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
+use ab_glyph::{Font, PxScale, ScaleFont};
+
+/// Re-exported so a caller can hold a font without depending on ab_glyph
+/// directly.
+pub use ab_glyph::FontVec;
 
 use crate::frame::Frame;
 

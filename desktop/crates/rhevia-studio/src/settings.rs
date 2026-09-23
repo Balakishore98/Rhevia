@@ -68,6 +68,97 @@ impl Resolution {
     }
 }
 
+/// What size the stream leaves at.
+///
+/// Separate from the production size on purpose. A church hall with a slow
+/// upload can run the production at 1080p — so the projector and the
+/// recording are full quality — and still send 720p to the internet, which
+/// is what most viewers are watching on a phone anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamSize {
+    /// For a connection that will not carry anything more. Watchable, and
+    /// far better than a 1080p stream that keeps stalling.
+    P360,
+    P480,
+    /// What most church streams should be. Half the upload of 1080p and
+    /// almost indistinguishable on a phone.
+    P720,
+    #[default]
+    P1080,
+    P1440,
+    /// Very few viewers can receive this and almost none can tell. Offered
+    /// because some productions genuinely need it.
+    P2160,
+}
+
+impl StreamSize {
+    pub const ALL: [StreamSize; 6] = [
+        StreamSize::P360,
+        StreamSize::P480,
+        StreamSize::P720,
+        StreamSize::P1080,
+        StreamSize::P1440,
+        StreamSize::P2160,
+    ];
+
+    pub fn size(self) -> (usize, usize) {
+        match self {
+            StreamSize::P360 => (640, 360),
+            StreamSize::P480 => (854, 480),
+            StreamSize::P720 => (1280, 720),
+            StreamSize::P1080 => (1920, 1080),
+            StreamSize::P1440 => (2560, 1440),
+            StreamSize::P2160 => (3840, 2160),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StreamSize::P360 => "360p",
+            StreamSize::P480 => "480p",
+            StreamSize::P720 => "720p",
+            StreamSize::P1080 => "1080p",
+            StreamSize::P1440 => "1440p",
+            StreamSize::P2160 => "2160p",
+        }
+    }
+
+    /// What the platforms ask for at this size, in kilobits a second.
+    ///
+    /// YouTube and Facebook publish ranges rather than numbers; these sit in
+    /// the middle of both, which is where a stream looks right without
+    /// wasting upload that a hall's connection may not have.
+    pub fn suggested_kbps(self) -> u32 {
+        match self {
+            StreamSize::P360 => 800,
+            StreamSize::P480 => 1500,
+            StreamSize::P720 => 3000,
+            StreamSize::P1080 => 6000,
+            StreamSize::P1440 => 12_000,
+            StreamSize::P2160 => 24_000,
+        }
+    }
+
+    /// The range worth offering. Below the floor the picture falls apart;
+    /// above the ceiling nothing improves and the upload is wasted.
+    pub fn kbps_range(self) -> (u32, u32) {
+        let suggested = self.suggested_kbps();
+        (suggested / 3, suggested * 5 / 2)
+    }
+
+    fn from_label(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.label() == text)
+    }
+}
+
+/// What the sound is encoded at.
+///
+/// 128 is transparent enough for speech and music together and is what most
+/// platforms re-encode to anyway; 64 is for a connection that needs every
+/// kilobit for the picture; 256 is for music that matters more than the
+/// picture does.
+pub const AUDIO_KBPS_CHOICES: [u32; 4] = [64, 96, 128, 192];
+
 /// Everything remembered between sessions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -81,13 +172,31 @@ pub struct Settings {
     /// an operator listening on a desk while Windows points at a headset
     /// hears nothing at all, and cannot tell that from a fault in Rhevia.
     pub monitor_device: Option<String>,
+    /// What size the stream leaves at, and what it is allowed to use.
+    /// Which display the programme is thrown onto full screen, by name.
+    ///
+    /// The projector in a hall is a second display with nothing on it but
+    /// the programme. Remembered by name so the same projector comes back
+    /// next Sunday without being chosen again.
+    pub output_display: Option<String>,
+    pub stream_size: StreamSize,
+    pub stream_kbps: u32,
+    pub audio_kbps: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         // Listening by default: someone who adds a video and hears nothing
         // has found a fault, not a preference.
-        Self { resolution: Resolution::default(), monitor: true, monitor_device: None }
+        Self {
+            resolution: Resolution::default(),
+            monitor: true,
+            monitor_device: None,
+            output_display: None,
+            stream_size: StreamSize::default(),
+            stream_kbps: StreamSize::default().suggested_kbps(),
+            audio_kbps: 128,
+        }
     }
 }
 
@@ -123,10 +232,18 @@ impl Settings {
             "# Rhevia. Resolution takes effect when Rhevia is restarted.\n\
              resolution = {}\n\
              monitor = {}\n\
-             monitor_device = {}\n",
+             monitor_device = {}\n\
+             output_display = {}\n\
+             stream_size = {}\n\
+             stream_kbps = {}\n\
+             audio_kbps = {}\n",
             self.resolution.label(),
             self.monitor,
-            self.monitor_device.as_deref().unwrap_or("default")
+            self.monitor_device.as_deref().unwrap_or("default"),
+            self.output_display.as_deref().unwrap_or("none"),
+            self.stream_size.label(),
+            self.stream_kbps,
+            self.audio_kbps
         )
     }
 
@@ -148,6 +265,27 @@ impl Settings {
                     }
                 }
                 "monitor" => settings.monitor = value.trim() != "false",
+                "output_display" => {
+                    settings.output_display = match value.trim() {
+                        "" | "none" => None,
+                        name => Some(name.to_string()),
+                    };
+                }
+                "stream_size" => {
+                    if let Some(size) = StreamSize::from_label(value.trim()) {
+                        settings.stream_size = size;
+                    }
+                }
+                "stream_kbps" => {
+                    if let Ok(kbps) = value.trim().parse() {
+                        settings.stream_kbps = kbps;
+                    }
+                }
+                "audio_kbps" => {
+                    if let Ok(kbps) = value.trim().parse() {
+                        settings.audio_kbps = kbps;
+                    }
+                }
                 "monitor_device" => {
                     // Taken whole: Windows names devices things like
                     // "Speakers (2- USB Audio = Device)", and splitting on
@@ -210,7 +348,12 @@ mod tests {
             for monitor in [true, false] {
                 for device in [None, Some("Speakers (Realtek(R) Audio)".to_string())] {
                     let settings =
-                        Settings { resolution, monitor, monitor_device: device.clone() };
+                        Settings {
+                            resolution,
+                            monitor,
+                            monitor_device: device.clone(),
+                            ..Settings::default()
+                        };
                     assert_eq!(Settings::parse(&settings.to_text()), settings);
                 }
             }
@@ -253,6 +396,52 @@ mod tests {
         // something rather than nothing.
         assert_eq!(Settings::parse("monitor_device = default\n").monitor_device, None);
         assert_eq!(Settings::parse("monitor_device =\n").monitor_device, None);
+    }
+
+    #[test]
+    fn a_stream_setting_survives_being_written_and_read_back() {
+        for size in StreamSize::ALL {
+            for audio in AUDIO_KBPS_CHOICES {
+                let settings = Settings {
+                    stream_size: size,
+                    stream_kbps: size.suggested_kbps(),
+                    audio_kbps: audio,
+                    ..Settings::default()
+                };
+                assert_eq!(Settings::parse(&settings.to_text()), settings);
+            }
+        }
+    }
+
+    #[test]
+    fn every_stream_size_is_even_and_gets_more_room_than_the_one_below() {
+        // H.264 encodes in macroblocks and refuses odd sizes, and a bigger
+        // picture at the same bitrate looks worse than the smaller one did.
+        let mut previous = 0;
+        for size in StreamSize::ALL {
+            let (w, h) = size.size();
+            assert_eq!(w % 2, 0, "{} is odd", size.label());
+            assert_eq!(h % 2, 0, "{} is odd", size.label());
+            assert!(
+                size.suggested_kbps() > previous,
+                "{} is not given more room than the size below it",
+                size.label()
+            );
+            previous = size.suggested_kbps();
+        }
+    }
+
+    #[test]
+    fn the_suggested_bitrate_is_inside_the_range_offered() {
+        for size in StreamSize::ALL {
+            let (low, high) = size.kbps_range();
+            let suggested = size.suggested_kbps();
+            assert!(
+                low < suggested && suggested < high,
+                "{}: {suggested} is not inside {low}..{high}",
+                size.label()
+            );
+        }
     }
 
     #[test]

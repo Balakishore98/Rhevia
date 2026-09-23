@@ -47,6 +47,13 @@ pub struct Mixer {
     inputs: Vec<Input>,
     compositor: Compositor,
     encoder: H264Encoder,
+    /// The programme scaled to whatever the stream is leaving at.
+    ///
+    /// The production and the stream are different sizes on purpose: a hall
+    /// can run 1080p for the projector and the recording while sending 720p
+    /// to the internet. When the two match this is the same picture and
+    /// scaling into it is a copy.
+    for_encoder: Frame,
     stats: MixStats,
     /// Scratch for the outgoing and incoming pictures during a transition, and
     /// the blended result. Kept here so a transition allocates nothing per
@@ -74,12 +81,29 @@ impl Mixer {
             inputs,
             compositor: Compositor::new(settings.width, settings.height),
             encoder: H264Encoder::new(settings)?,
+            for_encoder: Frame::new(settings.width, settings.height),
             stats: MixStats::default(),
             outgoing: Frame::new(settings.width, settings.height),
             incoming: Frame::new(settings.width, settings.height),
             blended: Frame::new(settings.width, settings.height),
             blended_is_current: false,
         })
+    }
+
+    /// Rebuilds the encoder at a new size or bitrate.
+    ///
+    /// Everything already sent stays as it was; what follows is encoded the
+    /// new way. A viewer joining mid-show gets the new settings, and one
+    /// already watching sees a new keyframe.
+    pub fn set_encoder(&mut self, settings: EncoderSettings) -> Result<(), MixError> {
+        self.encoder = H264Encoder::new(settings)?;
+        self.for_encoder = Frame::new(settings.width, settings.height);
+        Ok(())
+    }
+
+    /// What size the stream is leaving at.
+    pub fn encoder_size(&self) -> (usize, usize) {
+        (self.for_encoder.width, self.for_encoder.height)
     }
 
     pub fn input_count(&self) -> usize {
@@ -167,7 +191,8 @@ impl Mixer {
         // encoder because the borrow checker cannot see that the two do not
         // overlap. One frame copy per output; the GPU path removes it.
         let program = self.render(scene).clone();
-        let bitstream = self.encoder.encode(&program)?;
+        program.scale_into(&mut self.for_encoder);
+        let bitstream = self.encoder.encode(&self.for_encoder)?;
         if !bitstream.is_empty() {
             self.stats.frames_encoded += 1;
             self.stats.bytes_encoded += bitstream.len() as u64;
@@ -237,7 +262,8 @@ impl Mixer {
         let program = self
             .render_transition(from, to, kind, progress, stinger_input)
             .clone();
-        let bitstream = self.encoder.encode(&program)?;
+        program.scale_into(&mut self.for_encoder);
+        let bitstream = self.encoder.encode(&self.for_encoder)?;
         if !bitstream.is_empty() {
             self.stats.frames_encoded += 1;
             self.stats.bytes_encoded += bitstream.len() as u64;

@@ -67,6 +67,22 @@ pub enum Command {
     SetOverlaySource { slot: usize, input: usize },
     /// Chooses where an overlay slot draws.
     SetOverlayMode { slot: usize, mode: OverlayMode },
+    /// Chooses how an overlay arrives and leaves.
+    SetOverlayAnimation { slot: usize, animation: OverlayAnimation },
+    /// Puts a still image over the programme, always, wherever it is chosen
+    /// to sit. A church logo in the corner of every shot.
+    SetWatermark { path: String },
+    ClearWatermark,
+    SetWatermarkLook { corner: usize, scale: f32, opacity: f32 },
+    /// The strap of text that crawls along the foot of the frame.
+    SetTicker { text: String, on: bool },
+    SetTickerLook { speed: f32, background: [u8; 3], colour: [u8; 3] },
+    /// Changes what the stream leaves at.
+    ///
+    /// Takes effect on the next frame rather than the next show: an operator
+    /// who finds the upload cannot carry 1080p halfway through a service
+    /// needs to drop to 720p without going off air.
+    SetStreamQuality { size: crate::settings::StreamSize, kbps: u32, audio_kbps: u32 },
     /// Puts an overlay on or off air. Overlays sit above the transition, so
     /// a lower third survives a cut underneath it — which is the whole point.
     ToggleOverlay(usize),
@@ -319,6 +335,98 @@ impl OverlayMode {
     }
 }
 
+/// How an overlay arrives and leaves.
+///
+/// A lower third that appears between one frame and the next looks like a
+/// fault. Every broadcast graphic moves on and moves off, and it is the
+/// movement that makes it read as deliberate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverlayAnimation {
+    /// Straight on, straight off. For a graphic that has to be exact.
+    Cut,
+    /// Fades up and down. Works for anything, including a full-screen shot.
+    Fade,
+    /// Slides in from the left. The usual move for a lower third.
+    #[default]
+    SlideLeft,
+    /// Slides in from the right.
+    SlideRight,
+    /// Rises from the bottom. For a strap along the foot of the frame.
+    SlideUp,
+    /// Wipes open from the leading edge, like a bar being drawn.
+    Wipe,
+}
+
+impl OverlayAnimation {
+    pub const ALL: [OverlayAnimation; 6] = [
+        OverlayAnimation::Cut,
+        OverlayAnimation::Fade,
+        OverlayAnimation::SlideLeft,
+        OverlayAnimation::SlideRight,
+        OverlayAnimation::SlideUp,
+        OverlayAnimation::Wipe,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OverlayAnimation::Cut => "CUT",
+            OverlayAnimation::Fade => "FADE",
+            OverlayAnimation::SlideLeft => "IN \u{2190}",
+            OverlayAnimation::SlideRight => "IN \u{2192}",
+            OverlayAnimation::SlideUp => "IN \u{2191}",
+            OverlayAnimation::Wipe => "WIPE",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            OverlayAnimation::Cut => "straight on and straight off",
+            OverlayAnimation::Fade => "fades up and down — works for anything",
+            OverlayAnimation::SlideLeft => "slides in from the left, the usual lower third",
+            OverlayAnimation::SlideRight => "slides in from the right",
+            OverlayAnimation::SlideUp => "rises from the bottom of the frame",
+            OverlayAnimation::Wipe => "opens from the leading edge, like a bar being drawn",
+        }
+    }
+
+    /// Turns progress into what the layer should look like.
+    ///
+    /// Eased rather than linear. A graphic that starts and stops abruptly
+    /// reads as a jump however long it takes; easing is most of what
+    /// separates a broadcast graphic from a moving rectangle.
+    fn apply(self, progress: f32, rect: Rect, width: f32) -> (Rect, f32) {
+        let p = progress.clamp(0.0, 1.0);
+        // Smoothstep in, and the same curve out.
+        let eased = p * p * (3.0 - 2.0 * p);
+        match self {
+            OverlayAnimation::Cut => (rect, if p > 0.5 { 1.0 } else { 0.0 }),
+            OverlayAnimation::Fade => (rect, eased),
+            OverlayAnimation::SlideLeft => {
+                let travel = (rect.x + rect.width) * (1.0 - eased);
+                (Rect { x: rect.x - travel, ..rect }, eased.min(1.0))
+            }
+            OverlayAnimation::SlideRight => {
+                let travel = (width - rect.x) * (1.0 - eased);
+                (Rect { x: rect.x + travel, ..rect }, eased.min(1.0))
+            }
+            OverlayAnimation::SlideUp => {
+                let travel = rect.height * 1.6 * (1.0 - eased);
+                (Rect { y: rect.y + travel, ..rect }, eased.min(1.0))
+            }
+            OverlayAnimation::Wipe => {
+                // Grows from the leading edge, so the bar appears to be drawn.
+                (Rect { width: rect.width * eased.max(0.001), ..rect }, 1.0)
+            }
+        }
+    }
+}
+
+/// How long an overlay takes to arrive or leave.
+///
+/// Fast enough not to hold up a service, slow enough to read as a move
+/// rather than a glitch. Broadcast lower thirds sit around here.
+pub const OVERLAY_ANIMATION_SECONDS: f32 = 0.45;
+
 /// The arrangement each slot starts out in.
 ///
 /// All four full-screen, which is the thing that was asked for and the more
@@ -436,6 +544,11 @@ pub struct Snapshot {
     pub overlay_on: [bool; 4],
     /// Where each slot draws when it is on.
     pub overlay_mode: [OverlayMode; 4],
+    /// How each slot arrives and leaves.
+    pub overlay_animation: [OverlayAnimation; 4],
+    /// Where each slot is between off and on, 0 to 1. Mid-way means it is
+    /// still moving.
+    pub overlay_progress: [f32; 4],
     /// Every destination currently being fed, in the order they were added.
     pub destinations: Vec<DestinationState>,
     /// The name the programme is being published under over NDI, if it is.
@@ -453,6 +566,17 @@ pub struct Snapshot {
     pub audio_dropped: u64,
     /// How much sound is waiting to be played, in frames.
     pub audio_buffered: usize,
+    /// What the stream is leaving at, and what it is allowed to use.
+    pub stream_size: crate::settings::StreamSize,
+    pub stream_kbps: u32,
+    pub stream_audio_kbps: u32,
+    /// What it is actually using, measured over the last few seconds.
+    ///
+    /// Not the same number as the one it was told to use: an encoder spends
+    /// less than its allowance on an easy picture and overshoots on a hard
+    /// one, and what matters to a hall's connection is what is really going
+    /// out of the door.
+    pub stream_measured_kbps: f32,
     /// How many times the sound card asked for audio and found none ready.
     ///
     /// Each one is a gap, and gaps arriving at the tick rate are heard as a
@@ -784,6 +908,19 @@ fn run(
         keyframe_interval: (TARGET_FPS as u32) * 2,
     };
     let mut mixer = Mixer::new(settings)?;
+    {
+        // Built for the stream's own size from the start, so going live does
+        // not change what has already been recorded.
+        let chosen = crate::settings::Settings::load();
+        let (w, h) = chosen.stream_size.size();
+        let _ = mixer.set_encoder(EncoderSettings {
+            width: w,
+            height: h,
+            bitrate_bps: chosen.stream_kbps * 1000,
+            fps: TARGET_FPS,
+            keyframe_interval: (TARGET_FPS * 2.0) as u32,
+        });
+    }
     let mut audio = AudioMixer::new();
     // Fed from the master bus every tick, so the integrated figure covers the
     // whole session rather than only the part that was streamed.
@@ -828,24 +965,32 @@ fn run(
     let mut dragging_transition = false;
     let mut sources: Vec<SourceSlot> = Vec::new();
 
+    // The first two mixer inputs belong to the always-on graphics and are
+    // never handed to a source. They are held at the bottom deliberately:
+    // removing an input shifts every index above it, and graphics that moved
+    // when an operator closed a camera would end up drawing whatever took
+    // their place.
+    mixer.set_input_name(WATERMARK_INPUT, "Watermark");
+    mixer.set_input_name(TICKER_INPUT, "Ticker");
+
     // Two sources up front so the window is never an empty grid.
     sources.push(SourceSlot {
         source: Source::Bars,
-        mixer_input: 0,
+        mixer_input: 2,
         audio: None,
         settings: InputSettings::default(),
         needs_push: true,
     });
-    mixer.set_input_name(0, "Colour Bars");
+    mixer.set_input_name(2, "Colour Bars");
     audio.add_channel("Colour Bars");
     sources.push(SourceSlot {
         source: Source::Colour([20, 90, 160]),
-        mixer_input: 1,
+        mixer_input: 3,
         audio: None,
         settings: InputSettings::default(),
         needs_push: true,
     });
-    mixer.set_input_name(1, "Blue");
+    mixer.set_input_name(3, "Blue");
     audio.add_channel("Blue");
     for (rgb, name) in [
         ([150, 30, 60], "Magenta"),
@@ -878,6 +1023,32 @@ fn run(
     let mut overlay_source: [Option<usize>; 4] = [None; 4];
     let mut overlay_on = [false; 4];
     let mut overlay_mode = default_overlay_modes();
+    let mut overlay_animation = [OverlayAnimation::default(); 4];
+    // Where each slot is between off and on. Animated towards its switch
+    // rather than following it, which is what makes it a move.
+    let mut overlay_progress = [0.0f32; 4];
+    let mut watermark: Option<Frame> = None;
+    let mut watermark_path = String::new();
+    let mut watermark_corner = 1usize;
+    let mut watermark_scale = 0.12f32;
+    let mut watermark_opacity = 0.75f32;
+    let mut ticker_text = String::new();
+    let mut ticker_on = false;
+    let mut ticker_speed = 120.0f32;
+    let mut ticker_background = [12u8, 18, 32];
+    let mut ticker_colour = [235u8, 238, 245];
+    let mut ticker_strip: Option<Frame> = None;
+    let mut ticker_offset = 0.0f32;
+    let chosen = crate::settings::Settings::load();
+    let mut stream_size = chosen.stream_size;
+    let mut stream_kbps = chosen.stream_kbps;
+    let mut stream_audio_kbps = chosen.audio_kbps;
+    // What is really leaving, smoothed over a few seconds. An encoder spends
+    // less than its allowance on an easy picture and overshoots on a hard
+    // one, and what a hall's connection has to carry is the real number.
+    let mut measured_kbps = 0.0f32;
+    let mut measured_bytes = 0u64;
+    let mut measured_since = Instant::now();
     let mut ftb = false;
     let mut transition_kind = Transition::Fade;
     // Loaded once. A title that cannot find a face is reported rather than
@@ -1080,6 +1251,73 @@ fn run(
                         if at < layers.len() && to < layers.len() {
                             layers.swap(at, to);
                         }
+                    }
+                }
+                Command::SetStreamQuality { size, kbps, audio_kbps } => {
+                    let (w, h) = size.size();
+                    let kbps = kbps.clamp(size.kbps_range().0, size.kbps_range().1);
+                    if let Err(e) = mixer.set_encoder(EncoderSettings {
+                        width: w,
+                        height: h,
+                        bitrate_bps: kbps * 1000,
+                        fps: TARGET_FPS,
+                        keyframe_interval: (TARGET_FPS * 2.0) as u32,
+                    }) {
+                        stream_error = Some(format!("could not change the stream quality: {e}"));
+                    } else {
+                        stream_size = size;
+                        stream_kbps = kbps;
+                        stream_audio_kbps = audio_kbps;
+                        // Anything already watching needs a picture it can
+                        // decode from, and the new encoder's first frame is
+                        // one whether it is asked for or not -- asked for so
+                        // that is true of the recording as well.
+                        mixer.request_keyframe();
+                        let mut chosen = crate::settings::Settings::load();
+                        chosen.stream_size = size;
+                        chosen.stream_kbps = kbps;
+                        chosen.audio_kbps = audio_kbps;
+                        chosen.save();
+                    }
+                }
+                Command::SetOverlayAnimation { slot, animation } => {
+                    if slot < 4 {
+                        overlay_animation[slot] = animation;
+                    }
+                }
+                Command::SetWatermark { path } => match rhevia_engine::load_image(&path) {
+                    Ok(frame) => {
+                        watermark_path = path;
+                        watermark = Some(frame);
+                    }
+                    Err(e) => stream_error = Some(format!("could not load the watermark: {e}")),
+                },
+                Command::ClearWatermark => {
+                    watermark = None;
+                    watermark_path.clear();
+                }
+                Command::SetWatermarkLook { corner, scale, opacity } => {
+                    watermark_corner = corner.min(3);
+                    watermark_scale = scale.clamp(0.02, 0.5);
+                    watermark_opacity = opacity.clamp(0.05, 1.0);
+                }
+                Command::SetTicker { text, on } => {
+                    if text != ticker_text {
+                        ticker_text = text;
+                        // Re-drawn only when the words change; scrolling it is
+                        // a matter of where it is read from, not of redrawing
+                        // the letters thirty times a second.
+                        ticker_strip = None;
+                        ticker_offset = 0.0;
+                    }
+                    ticker_on = on && !ticker_text.trim().is_empty();
+                }
+                Command::SetTickerLook { speed, background, colour } => {
+                    ticker_speed = speed.clamp(20.0, 600.0);
+                    if background != ticker_background || colour != ticker_colour {
+                        ticker_background = background;
+                        ticker_colour = colour;
+                        ticker_strip = None;
                     }
                 }
                 Command::SetOverlayMode { slot, mode } => {
@@ -1479,7 +1717,7 @@ fn run(
                     }
                 }
                 Command::StartStream { url, key } => {
-                    match open_delivery(&url, &key) {
+                    match open_delivery(&url, &key, stream_audio_kbps) {
                         Ok(d) => {
                             deliveries.push(d);
                             stream_error = None;
@@ -1737,6 +1975,79 @@ fn run(
             }
         }
 
+        // ---- graphics ------------------------------------------------------
+        // Each slot walks towards its switch rather than following it.
+        let step = frame_budget.as_secs_f32() / OVERLAY_ANIMATION_SECONDS;
+        for slot in 0..4 {
+            let want = if overlay_on[slot] && overlay_source[slot].is_some() { 1.0 } else { 0.0 };
+            if overlay_progress[slot] < want {
+                overlay_progress[slot] = (overlay_progress[slot] + step).min(want);
+            } else if overlay_progress[slot] > want {
+                overlay_progress[slot] = (overlay_progress[slot] - step).max(want);
+            }
+        }
+
+        // The watermark occupies a reserved mixer input rather than a place
+        // in the matrix: it is not a source an operator cuts to, it is
+        // something that is simply always there.
+        let watermark_layer = watermark.as_ref().and_then(|mark| {
+            let slot = WATERMARK_INPUT;
+            let _ = mixer.push_frame(slot, mark.clone());
+            let (w, h) = (OUTPUT_WIDTH() as f32, OUTPUT_HEIGHT() as f32);
+            // Scaled by height against the frame, keeping its own shape, so a
+            // wide logo and a square one both come out the size they look.
+            let height = h * watermark_scale;
+            let width = height * (mark.width.max(1) as f32 / mark.height.max(1) as f32);
+            let margin = w * 0.025;
+            let (x, y) = match watermark_corner {
+                0 => (margin, margin),
+                1 => (w - width - margin, margin),
+                2 => (margin, h - height - margin),
+                _ => (w - width - margin, h - height - margin),
+            };
+            let mut layer = Layer::new(slot, Rect::new(x, y, width, height));
+            layer.opacity = watermark_opacity;
+            layer.preserve_aspect = true;
+            Some(layer)
+        });
+
+        // The ticker is drawn once and then scrolled by reading a moving
+        // window out of it. Re-rendering the letters thirty times a second
+        // to move them sideways would cost more than the programme does.
+        if ticker_on && ticker_strip.is_none() {
+            if let Some(font) = font.as_ref() {
+                ticker_strip = Some(render_ticker(
+                    font,
+                    &ticker_text,
+                    OUTPUT_WIDTH(),
+                    OUTPUT_HEIGHT(),
+                    ticker_background,
+                    ticker_colour,
+                ));
+            }
+        }
+        let ticker_layer = if ticker_on {
+            ticker_strip.as_ref().and_then(|strip| {
+                let slot = TICKER_INPUT;
+                let (w, h) = (OUTPUT_WIDTH(), OUTPUT_HEIGHT());
+                let band = ticker_band(h);
+                ticker_offset += ticker_speed * frame_budget.as_secs_f32();
+                // Wrapped so the text runs round for as long as it is wanted.
+                let loop_width = (strip.width - w) as f32;
+                if loop_width > 0.0 && ticker_offset >= loop_width {
+                    ticker_offset -= loop_width;
+                }
+                let window = crop(strip, ticker_offset as usize, w, band);
+                let _ = mixer.push_frame(slot, window);
+                Some(Layer::new(
+                    slot,
+                    Rect::new(0.0, (h - band) as f32, w as f32, band as f32),
+                ))
+            })
+        } else {
+            None
+        };
+
         // ---- scene ---------------------------------------------------------
         let program_slot = sources.get(program_input).map(|s| s.mixer_input).unwrap_or(0);
         let preview_slot = sources.get(preview_input).map(|s| s.mixer_input).unwrap_or(0);
@@ -1792,15 +2103,36 @@ fn run(
             // Overlays sit above the transition, so a lower third stays put
             // while the shot underneath it changes. Present in both sides of a
             // transition, which makes them hold still through the blend.
-            for (slot, on) in overlay_on.iter().enumerate() {
-                if !on {
+            for slot in 0..4 {
+                // Drawn while it is still on its way in or out, which is the
+                // whole point of animating it.
+                if overlay_progress[slot] <= 0.0 {
                     continue;
                 }
                 if let Some(source_index) = overlay_source[slot] {
                     if let Some(source) = sources.get(source_index) {
-                        scene.push(layer_for(source.mixer_input, overlay_mode[slot].rect()));
+                        let (rect, opacity) = overlay_animation[slot].apply(
+                            overlay_progress[slot],
+                            overlay_mode[slot].rect(),
+                            OUTPUT_WIDTH() as f32,
+                        );
+                        let mut layer = layer_for(source.mixer_input, rect);
+                        layer.opacity = opacity;
+                        scene.push(layer);
                     }
                 }
+            }
+
+            // Always-on graphics, above every overlay: a watermark that
+            // disappears when a lower third comes up is not a watermark, and
+            // a ticker that does is not a ticker.
+            // Cloned rather than moved: this closure builds both sides of a
+            // transition, so it runs twice.
+            if let Some(mark) = watermark_layer.clone() {
+                scene.push(mark);
+            }
+            if let Some(strip) = ticker_layer.clone() {
+                scene.push(strip);
             }
             scene
         };
@@ -1863,6 +2195,14 @@ fn run(
             }
         };
         let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
+
+        measured_bytes += encoded.len() as u64;
+        let window = measured_since.elapsed().as_secs_f32();
+        if window >= 2.0 {
+            measured_kbps = measured_bytes as f32 * 8.0 / 1000.0 / window;
+            measured_bytes = 0;
+            measured_since = Instant::now();
+        }
 
         // ---- record --------------------------------------------------------
         // Annex-B straight to disk. Remuxable to MP4 with a stream copy, and
@@ -2034,6 +2374,10 @@ fn run(
             s.audio_gaps = monitor.as_ref().map(|m| m.starved()).unwrap_or(0);
             s.audio_dropped = monitor.as_ref().map(|m| m.dropped()).unwrap_or(0);
             s.audio_buffered = monitor.as_ref().map(|m| m.buffered_frames()).unwrap_or(0);
+            s.stream_size = stream_size;
+            s.stream_kbps = stream_kbps;
+            s.stream_audio_kbps = stream_audio_kbps;
+            s.stream_measured_kbps = measured_kbps;
             let (padded, trimmed) = sources
                 .iter()
                 .filter_map(|slot| match &slot.source {
@@ -2056,6 +2400,8 @@ fn run(
             s.layout = layout;
             s.overlay_source = overlay_source;
             s.overlay_mode = overlay_mode;
+            s.overlay_animation = overlay_animation;
+            s.overlay_progress = overlay_progress;
             s.overlay_on = overlay_on;
             s.ftb = ftb;
             s.transition_kind = transition_kind;
@@ -2176,7 +2522,7 @@ pub fn redact_rtmp(url: &str) -> String {
     }
 }
 
-fn open_delivery(url: &str, key: &str) -> anyhow::Result<Delivery> {
+fn open_delivery(url: &str, key: &str, audio_kbps: u32) -> anyhow::Result<Delivery> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -2213,7 +2559,7 @@ fn open_delivery(url: &str, key: &str) -> anyhow::Result<Delivery> {
 
     // A failed audio encoder must not stop the stream: video only is far
     // better than nothing, and the operator is told in the status line.
-    let audio = match rhevia_output::AacEncoder::new(SAMPLE_RATE, 2, 128_000) {
+    let audio = match rhevia_output::AacEncoder::new(SAMPLE_RATE, 2, audio_kbps * 1000) {
         Ok(encoder) => Some(encoder),
         Err(e) => {
             tracing::warn!(error = %e, "streaming without audio");
@@ -2424,6 +2770,100 @@ fn downscale(frame: &Frame, width: usize, height: usize) -> Frame {
             let s = source_base + column * 4;
             let d = dest_base + x * 4;
             out.data[d..d + 4].copy_from_slice(&frame.data[s..s + 4]);
+        }
+    }
+    out
+}
+
+/// The mixer inputs the always-on graphics draw from.
+///
+/// Reserved at the bottom so that removing a source, which shifts every
+/// index above it, can never move them.
+const WATERMARK_INPUT: usize = 0;
+const TICKER_INPUT: usize = 1;
+
+/// How tall the ticker strip is.
+///
+/// A twelfth of the frame. Broadcast straps sit near this; taller starts
+/// covering the shot, shorter and the words are unreadable on a phone.
+fn ticker_band(height: usize) -> usize {
+    (height / 12).max(24)
+}
+
+/// Draws the ticker text once, wider than the frame, ready to be scrolled.
+///
+/// The text is followed by a gap and then repeated, so that reading a window
+/// out of it and wrapping round produces a continuous crawl rather than a
+/// message that runs off and leaves an empty bar behind it.
+fn render_ticker(
+    font: &rhevia_engine::FontVec,
+    text: &str,
+    width: usize,
+    height: usize,
+    background: [u8; 3],
+    colour: [u8; 3],
+) -> Frame {
+    let band = ticker_band(height);
+    let message = text.trim();
+    // Enough copies to fill something wider than the frame, so there is
+    // always text arriving from the right.
+    let estimated = (message.chars().count() as f32 * band as f32 * 0.5) as usize;
+    let one = estimated.max(width / 2) + width / 4;
+    let copies = (width * 2 / one.max(1)).max(2) + 1;
+
+    let strip_width = one * copies;
+    let mut strip = Frame::filled(strip_width, band, background);
+
+    let style = TitleStyle {
+        text: message.to_string(),
+        subtitle: String::new(),
+        size: 0.62,
+        colour,
+        subtitle_colour: colour,
+        background,
+        background_alpha: 0,
+        lower_third: false,
+        accent: background,
+    };
+    let piece = rhevia_engine::render_title(font, &style, one, band);
+
+    for copy in 0..copies {
+        let at = copy * one;
+        for y in 0..band {
+            let from = y * one * 4;
+            let to = y * strip_width * 4 + at * 4;
+            let run = one.min(strip_width - at) * 4;
+            // The rendered piece is drawn over the background rather than
+            // replacing it, so the bar stays solid behind the letters.
+            for i in 0..run {
+                let alpha = piece.data[from + (i / 4) * 4 + 3] as u32;
+                if i % 4 == 3 {
+                    strip.data[to + i] = 255;
+                } else if alpha > 0 {
+                    let over = piece.data[from + i] as u32;
+                    let under = strip.data[to + i] as u32;
+                    strip.data[to + i] =
+                        ((over * alpha + under * (255 - alpha)) / 255) as u8;
+                }
+            }
+        }
+    }
+    strip
+}
+
+/// A window out of a wider frame, wrapping round at the end.
+fn crop(source: &Frame, from_x: usize, width: usize, height: usize) -> Frame {
+    let mut out = Frame::new(width, height);
+    if source.is_empty() || source.width == 0 {
+        return out;
+    }
+    let rows = height.min(source.height);
+    for y in 0..rows {
+        for x in 0..width {
+            let sx = (from_x + x) % source.width;
+            let s = (y * source.width + sx) * 4;
+            let d = (y * width + x) * 4;
+            out.data[d..d + 4].copy_from_slice(&source.data[s..s + 4]);
         }
     }
     out
@@ -3310,10 +3750,13 @@ mod tests {
 
             engine.send(Command::SetOverlaySource { slot: 0, input: amber });
             engine.send(Command::ToggleOverlay(0));
+            // Waited until it has finished arriving: overlays animate on now,
+            // and sampling halfway through a move measures the move.
             let covered = wait_for(&engine, Duration::from_secs(10), |s| {
-                s.overlay_on[0] && s.program.as_ref().is_some_and(|f| !f.is_empty())
+                s.overlay_progress[0] >= 1.0
+                    && s.program.as_ref().is_some_and(|f| !f.is_empty())
             })
-            .expect("the overlay never came on");
+            .expect("the overlay never finished coming on");
             let frame = covered.program.as_ref().unwrap();
 
             let middle = patch(frame, 0.4, 0.4, 0.2, 0.2);
@@ -3400,6 +3843,171 @@ mod tests {
                     channel.name, channel.peak_db, channel.clipped
                 );
             }
+        }
+
+        #[test]
+        fn an_overlay_moves_on_rather_than_appearing() {
+            // A lower third that arrives between one frame and the next looks
+            // like a fault. What makes a graphic read as deliberate is that
+            // it moves, so this checks it is actually somewhere in between
+            // for a while rather than jumping from off to on.
+            let engine = start();
+            let up = wait_for(&engine, Duration::from_secs(10), |s| s.inputs.len() >= 5)
+                .expect("too few inputs");
+            let amber = up.inputs.iter().position(|i| i.name == "Amber").unwrap();
+
+            engine.send(Command::SetOverlaySource { slot: 0, input: amber });
+            engine.send(Command::SetOverlayAnimation {
+                slot: 0,
+                animation: OverlayAnimation::SlideLeft,
+            });
+            engine.send(Command::ToggleOverlay(0));
+
+            // Caught partway. Sampled fast, because the whole move is under
+            // half a second by design.
+            let mut seen_between = false;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                let p = engine.snapshot().overlay_progress[0];
+                if p > 0.05 && p < 0.95 {
+                    seen_between = true;
+                }
+                if p >= 1.0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            assert!(seen_between, "the overlay went from off to on with no move in between");
+
+            let settled =
+                wait_for(&engine, Duration::from_secs(3), |s| s.overlay_progress[0] >= 1.0);
+            assert!(settled.is_some(), "the overlay never finished arriving");
+
+            // And it leaves the same way rather than vanishing.
+            engine.send(Command::ToggleOverlay(0));
+            let mut leaving = false;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                let p = engine.snapshot().overlay_progress[0];
+                if p > 0.05 && p < 0.95 {
+                    leaving = true;
+                }
+                if p <= 0.0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            eprintln!("  moved on and off rather than appearing: {seen_between} / {leaving}");
+            assert!(leaving, "the overlay vanished instead of leaving");
+        }
+
+        /// How dark a pixel is, for finding the ticker's bar against bright
+        /// colour bars behind it.
+        fn is_strip(frame: &Frame, x: usize, y: usize) -> bool {
+            let i = (y * frame.width + x) * 4;
+            frame.data[i] < 70 && frame.data[i + 1] < 80 && frame.data[i + 2] < 100
+        }
+
+        #[test]
+        fn a_ticker_crawls_along_the_foot_of_the_frame() {
+            // A strap of text that does not move is a caption. What makes it
+            // a ticker is that it travels, so this reads the bottom of the
+            // programme twice and checks it changed.
+            let engine = start();
+            let up = wait_for(&engine, Duration::from_secs(10), |s| s.inputs.len() >= 5)
+                .expect("too few inputs");
+            // A flat bright shot behind it. Colour bars have a dark ramp
+            // along their bottom edge, which is exactly where the strip goes
+            // and would be mistaken for it.
+            let amber = up.inputs.iter().position(|i| i.name == "Amber").unwrap();
+            engine.send(Command::SetPreview(amber));
+            engine.send(Command::Cut);
+            let first = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.program_input == amber && s.program.as_ref().is_some_and(|f| !f.is_empty())
+            })
+            .expect("no programme");
+            let height = first.program.as_ref().unwrap().height;
+            let band = height - ticker_band(height) / 2;
+
+            engine.send(Command::SetTicker {
+                text: "WELCOME TO THE SUNDAY SERVICE  ·  9952978141  ·  ICA CHENNAI".into(),
+                on: true,
+            });
+
+            let with_strip = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.program
+                    .as_ref()
+                    .is_some_and(|f| (0..f.width).step_by(19).any(|x| is_strip(f, x, band)))
+            })
+            .expect("the ticker never appeared along the bottom");
+
+            fn sample(frame: &Frame, y: usize) -> Vec<u8> {
+                let row = y * frame.width * 4;
+                (0..frame.width).step_by(7).map(|x| frame.data[row + x * 4]).collect()
+            }
+            let before = sample(with_strip.program.as_ref().unwrap(), band);
+            std::thread::sleep(Duration::from_millis(500));
+            let after = sample(engine.snapshot().program.as_ref().expect("no programme"), band);
+
+            let moved = before.iter().zip(after.iter()).filter(|(a, b)| a != b).count();
+            eprintln!("  {moved} of {} points along the strip changed", before.len());
+            assert!(moved > 0, "the ticker is drawn but standing still");
+
+            engine.send(Command::SetTicker { text: String::new(), on: false });
+            let gone = wait_for(&engine, Duration::from_secs(5), |s| {
+                s.program
+                    .as_ref()
+                    .is_some_and(|f| (0..f.width).step_by(19).all(|x| !is_strip(f, x, band)))
+            });
+            assert!(gone.is_some(), "the ticker stayed up after being turned off");
+        }
+
+        #[test]
+        fn a_watermark_sits_over_everything_and_stays_there() {
+            // A mark that disappears when the shot changes is not a
+            // watermark. It is drawn above every overlay and stays put
+            // through a cut.
+            let engine = start();
+            let up = wait_for(&engine, Duration::from_secs(10), |s| s.inputs.len() >= 5)
+                .expect("too few inputs");
+
+            let path = std::env::temp_dir().join("rhevia-watermark-test.png");
+            let mut mark = image::RgbaImage::new(64, 64);
+            for px in mark.pixels_mut() {
+                *px = image::Rgba([255, 0, 255, 255]);
+            }
+            mark.save(&path).expect("could not write the test mark");
+
+            engine.send(Command::SetWatermark { path: path.to_str().unwrap().to_string() });
+            engine.send(Command::SetWatermarkLook { corner: 3, scale: 0.2, opacity: 1.0 });
+
+            let magenta = |f: &Frame| {
+                let px = patch(f, 0.88, 0.85, 0.04, 0.04);
+                px[0] > 150 && px[1] < 90 && px[2] > 150
+            };
+            let marked = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.program.as_ref().is_some_and(|f| magenta(f))
+            });
+            assert!(marked.is_some(), "the watermark never appeared in the corner");
+
+            let green = up.inputs.iter().position(|i| i.name == "Green").unwrap();
+            engine.send(Command::SetPreview(green));
+            engine.send(Command::Cut);
+            wait_for(&engine, Duration::from_secs(5), |s| s.program_input == green)
+                .expect("the cut never happened");
+            std::thread::sleep(Duration::from_millis(250));
+
+            let frame = engine.snapshot().program.clone().expect("no programme");
+            let px = patch(&frame, 0.88, 0.85, 0.04, 0.04);
+            eprintln!("  after cutting to another shot the corner is {px:?}");
+            assert!(magenta(&frame), "the watermark came off when the shot changed: {px:?}");
+
+            engine.send(Command::ClearWatermark);
+            let cleared = wait_for(&engine, Duration::from_secs(5), |s| {
+                s.program.as_ref().is_some_and(|f| !magenta(f))
+            });
+            assert!(cleared.is_some(), "the watermark stayed after being cleared");
+            let _ = std::fs::remove_file(&path);
         }
 
         #[test]

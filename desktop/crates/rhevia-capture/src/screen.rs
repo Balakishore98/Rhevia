@@ -28,6 +28,12 @@ pub struct Target {
     pub is_monitor: bool,
     pub width: u32,
     pub height: u32,
+    /// Where a monitor sits on the desktop, in the coordinates Windows lays
+    /// the displays out in. Needed to put a window on a particular screen —
+    /// "the projector" is a position, not a name, as far as the window
+    /// manager is concerned. Zero for a window rather than a monitor.
+    pub x: i32,
+    pub y: i32,
 }
 
 /// Every monitor currently attached.
@@ -38,6 +44,8 @@ pub fn monitors() -> Result<Vec<Target>, CaptureError> {
         .map(|m| Target {
             name: m.name().unwrap_or_else(|_| "Display".into()),
             is_monitor: true,
+            x: m.x().unwrap_or(0),
+            y: m.y().unwrap_or(0),
             width: m.width().unwrap_or(0),
             height: m.height().unwrap_or(0),
         })
@@ -63,7 +71,7 @@ pub fn windows() -> Result<Vec<Target>, CaptureError> {
         if width == 0 || height == 0 {
             continue;
         }
-        out.push(Target { name: title, is_monitor: false, width, height });
+        out.push(Target { name: title, is_monitor: false, x: 0, y: 0, width, height });
     }
     Ok(out)
 }
@@ -197,6 +205,8 @@ mod tests {
         let missing = Target {
             name: "no-such-display-12345".into(),
             is_monitor: true,
+            x: 0,
+            y: 0,
             width: 1920,
             height: 1080,
         };

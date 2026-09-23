@@ -97,6 +97,70 @@ impl Frame {
         self.data.resize(width * height * 4, 0);
     }
 
+    /// Draws this frame into `out` at whatever size `out` already is.
+    ///
+    /// Box filtered on the way down rather than sampled: shrinking a 1080p
+    /// picture to 360p by taking one pixel in three throws away nine tenths
+    /// of the detail and turns every edge into a staircase that an encoder
+    /// then spends its bitrate describing. Averaging the pixels that are
+    /// being dropped is what makes a small stream look like a small picture
+    /// rather than a broken one.
+    pub fn scale_into(&self, out: &mut Frame) {
+        if self.is_empty() || out.is_empty() {
+            return;
+        }
+        if self.width == out.width && self.height == out.height {
+            out.data.copy_from_slice(&self.data);
+            return;
+        }
+
+        let (ow, oh) = (out.width, out.height);
+        // How many source pixels each output pixel covers. Below one this is
+        // an enlargement and there is nothing to average, so it samples.
+        let sx = self.width as f32 / ow as f32;
+        let sy = self.height as f32 / oh as f32;
+
+        if sx <= 1.0 || sy <= 1.0 {
+            for y in 0..oh {
+                let v = (y as f32 + 0.5) / oh as f32;
+                for x in 0..ow {
+                    let u = (x as f32 + 0.5) / ow as f32;
+                    let px = self.sample(u, v);
+                    let i = (y * ow + x) * 4;
+                    out.data[i..i + 4].copy_from_slice(&px);
+                }
+            }
+            return;
+        }
+
+        for y in 0..oh {
+            let y0 = (y as f32 * sy) as usize;
+            let y1 = (((y + 1) as f32 * sy) as usize).clamp(y0 + 1, self.height);
+            for x in 0..ow {
+                let x0 = (x as f32 * sx) as usize;
+                let x1 = (((x + 1) as f32 * sx) as usize).clamp(x0 + 1, self.width);
+
+                let mut total = [0u32; 4];
+                let mut n = 0u32;
+                for sy in y0..y1 {
+                    let row = sy * self.width * 4;
+                    for sx in x0..x1 {
+                        let i = row + sx * 4;
+                        for c in 0..4 {
+                            total[c] += self.data[i + c] as u32;
+                        }
+                        n += 1;
+                    }
+                }
+                let n = n.max(1);
+                let i = (y * ow + x) * 4;
+                for c in 0..4 {
+                    out.data[i + c] = (total[c] / n) as u8;
+                }
+            }
+        }
+    }
+
     /// Bilinear sample at normalised coordinates, clamped at the edges.
     ///
     /// Bilinear rather than nearest because a switcher scales constantly —

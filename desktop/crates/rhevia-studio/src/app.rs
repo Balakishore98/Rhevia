@@ -128,6 +128,18 @@ pub struct StudioApp {
     pending_monitor: Option<String>,
     /// A layer chosen from the combo box, applied after it closes.
     pending_layer: Option<(usize, usize)>,
+    /// A display chosen from the combo box, applied after it closes. An
+    /// empty string means off.
+    pending_display: Option<String>,
+    /// The always-on graphics, as the panel that drives them holds them.
+    watermark_path: String,
+    watermark_corner: usize,
+    watermark_scale: f32,
+    watermark_opacity: f32,
+    ticker_text: String,
+    ticker_on: bool,
+    ticker_speed: f32,
+    ticker_background: [u8; 3],
     /// How fast the window itself is being drawn.
     ///
     /// Separate from the engine's rate, and the one an operator actually
@@ -349,6 +361,15 @@ impl StudioApp {
             cached_playback: Vec::new(),
             pending_monitor: None,
             pending_layer: None,
+            pending_display: None,
+            watermark_path: String::new(),
+            watermark_corner: 1,
+            watermark_scale: 0.12,
+            watermark_opacity: 0.75,
+            ticker_text: String::new(),
+            ticker_on: false,
+            ticker_speed: 120.0,
+            ticker_background: [12, 18, 32],
             settings: crate::settings::Settings::load(),
         }
     }
@@ -362,6 +383,83 @@ impl StudioApp {
     /// repaint, sixty times a second, for a picture arriving thirty times a
     /// second. Half that work was wasted and the other half was competing
     /// with the engine for the same memory bandwidth.
+    /// Throws the programme onto another display, full screen and bare.
+    ///
+    /// A hall's projector is a second display with nothing on it but the
+    /// programme -- no menus, no borders and nothing that can be clicked by
+    /// accident. Drawn from the same picture the Program monitor shows, so
+    /// what the congregation sees is what is going to air rather than a
+    /// second render that could drift from it.
+    fn display_output(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
+        let Some(wanted) = self.settings.output_display.clone() else { return };
+        let Some(target) = self.cached_monitors.iter().find(|m| m.name == wanted).cloned()
+        else {
+            // Unplugged, or not looked for yet. Asked for once rather than
+            // on every repaint.
+            if self.cached_monitors.is_empty() {
+                self.refresh_devices();
+            }
+            return;
+        };
+
+        let texture = snapshot
+            .program
+            .as_ref()
+            .and_then(|f| self.texture(ctx, "display-out", f));
+        let picture = snapshot
+            .program
+            .as_ref()
+            .map(|f| (f.width as f32, f.height as f32))
+            .unwrap_or((16.0, 9.0));
+
+        let id = egui::ViewportId::from_hash_of("rhevia-display-out");
+        let builder = egui::ViewportBuilder::default()
+            .with_title("Rhevia Programme")
+            .with_decorations(false)
+            .with_position(egui::pos2(target.x as f32, target.y as f32))
+            .with_inner_size(egui::vec2(target.width as f32, target.height as f32))
+            .with_fullscreen(true)
+            .with_taskbar(false);
+
+        let mut closed = false;
+        ctx.show_viewport_immediate(id, builder, |ctx, _| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(egui::Color32::BLACK))
+                .show(ctx, |ui| {
+                    if let Some(texture) = texture {
+                        // Letterboxed, never stretched: a 16:9 programme on a
+                        // 16:10 projector has to keep its shape, or every
+                        // face on the screen is the wrong width.
+                        let space = ui.available_size();
+                        let scale = (space.x / picture.0).min(space.y / picture.1);
+                        let at = Rect::from_center_size(
+                            ui.available_rect_before_wrap().center(),
+                            Vec2::new(picture.0 * scale, picture.1 * scale),
+                        );
+                        ui.painter().image(
+                            texture,
+                            at,
+                            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                    // Escape gets out. A bare full-screen window on a
+                    // projector with no way back is a trap.
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        closed = true;
+                    }
+                });
+            if ctx.input(|i| i.viewport().close_requested()) {
+                closed = true;
+            }
+        });
+
+        if closed {
+            self.settings.output_display = None;
+            self.settings.save();
+        }
+    }
+
     /// Starts listening on a device, and remembers it for next time.
     fn choose_monitor(&mut self, device: Option<String>) {
         self.settings.monitor_device = device.clone();
@@ -492,6 +590,7 @@ impl eframe::App for StudioApp {
         }
 
         self.dialogs(ctx, &snapshot);
+        self.display_output(ctx, &snapshot);
 
         let spent = entered.elapsed().as_secs_f32() * 1000.0;
         self.draw_ms += (spent - self.draw_ms) * 0.08;
@@ -1337,6 +1436,31 @@ impl StudioApp {
                         }
                     }
                 });
+                ui.add_space(3.0);
+                ui.label(
+                    RichText::new(format!("OVL {} MOVES", slot + 1))
+                        .size(8.5)
+                        .color(theme::TEXT_FAINT),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                    for animation in engine::OverlayAnimation::ALL {
+                        let chosen = snapshot.overlay_animation[slot] == animation;
+                        if theme::chip(
+                            ui,
+                            animation.label(),
+                            chosen,
+                            theme::ACCENT,
+                            Vec2::new(60.0, 20.0),
+                        )
+                        .on_hover_text(animation.hint())
+                        .clicked()
+                        {
+                            self.engine
+                                .send(Command::SetOverlayAnimation { slot, animation });
+                        }
+                    }
+                });
             }
 
             ui.add_space(6.0);
@@ -1394,6 +1518,347 @@ impl StudioApp {
         });
     }
 
+    /// The two graphics that are simply always there.
+    ///
+    /// A watermark and a ticker are not sources an operator cuts to and not
+    /// overlays they take on and off. They belong to the programme itself,
+    /// which is why they live here rather than in the input matrix.
+    fn graphics(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
+        ui.label(RichText::new("ON-SCREEN GRAPHICS").size(12.0).strong().color(theme::TEXT));
+        ui.add_space(10.0);
+
+        // ---- watermark ----------------------------------------------------
+        ui.label(RichText::new("WATERMARK").size(10.5).strong().color(theme::TEXT_DIM));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if theme::button(ui, "Choose image", theme::ACCENT, Vec2::new(116.0, 24.0))
+                .on_hover_text("a PNG with transparency is what a logo should be")
+                .clicked()
+            {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Image", &["png", "jpg", "jpeg", "webp", "bmp", "gif"])
+                    .pick_file()
+                {
+                    if let Some(path) = path.to_str() {
+                        self.watermark_path = path.to_string();
+                        self.engine
+                            .send(Command::SetWatermark { path: path.to_string() });
+                    }
+                }
+            }
+            if !self.watermark_path.is_empty() {
+                if theme::chip(ui, "OFF", false, theme::WARN, Vec2::new(40.0, 22.0))
+                    .on_hover_text("take the watermark off the programme")
+                    .clicked()
+                {
+                    self.watermark_path.clear();
+                    self.engine.send(Command::ClearWatermark);
+                }
+                ui.label(
+                    RichText::new(
+                        std::path::Path::new(&self.watermark_path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                    )
+                    .font(theme::mono(10.0))
+                    .color(theme::TEXT_DIM),
+                );
+            }
+        });
+
+        if !self.watermark_path.is_empty() {
+            ui.add_space(6.0);
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("CORNER").font(theme::mono(9.5)).color(theme::TEXT_FAINT));
+                for (index, label) in
+                    ["UPPER L", "UPPER R", "LOWER L", "LOWER R"].into_iter().enumerate()
+                {
+                    if theme::chip(
+                        ui,
+                        label,
+                        self.watermark_corner == index,
+                        theme::ACCENT,
+                        Vec2::new(60.0, 20.0),
+                    )
+                    .clicked()
+                    {
+                        self.watermark_corner = index;
+                        changed = true;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("SIZE  ").font(theme::mono(9.5)).color(theme::TEXT_FAINT));
+                if ui
+                    .add(egui::Slider::new(&mut self.watermark_scale, 0.03..=0.35).show_value(false))
+                    .changed()
+                {
+                    changed = true;
+                }
+                ui.label(
+                    RichText::new(format!("{:.0}% of frame height", self.watermark_scale * 100.0))
+                        .font(theme::mono(9.5))
+                        .color(theme::TEXT_DIM),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("FADE  ").font(theme::mono(9.5)).color(theme::TEXT_FAINT));
+                if ui
+                    .add(
+                        egui::Slider::new(&mut self.watermark_opacity, 0.05..=1.0)
+                            .show_value(false),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+                ui.label(
+                    RichText::new(format!("{:.0}%", self.watermark_opacity * 100.0))
+                        .font(theme::mono(9.5))
+                        .color(theme::TEXT_DIM),
+                );
+            });
+            if changed {
+                self.engine.send(Command::SetWatermarkLook {
+                    corner: self.watermark_corner,
+                    scale: self.watermark_scale,
+                    opacity: self.watermark_opacity,
+                });
+            }
+        }
+
+        // ---- ticker -------------------------------------------------------
+        ui.add_space(14.0);
+        ui.label(RichText::new("TICKER").size(10.5).strong().color(theme::TEXT_DIM));
+        ui.add_space(4.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "The strap that crawls along the foot of the frame. Service times, \
+                     a phone number, a welcome — whatever has to be readable without \
+                     covering the shot.",
+                )
+                .size(10.5)
+                .color(theme::TEXT_DIM),
+            )
+            .wrap(),
+        );
+        ui.add_space(6.0);
+        let typed = ui
+            .add(
+                egui::TextEdit::singleline(&mut self.ticker_text)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("WELCOME  ·  EVERY SUNDAY 7:50 AM  ·  9952978141"),
+            )
+            .changed();
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let on = self.ticker_on;
+            if theme::chip(
+                ui,
+                if on { "ON AIR" } else { "OFF" },
+                on,
+                theme::PROGRAM,
+                Vec2::new(70.0, 24.0),
+            )
+            .on_hover_text("put the strap up, or take it down")
+            .clicked()
+            {
+                self.ticker_on = !on;
+                self.engine.send(Command::SetTicker {
+                    text: self.ticker_text.clone(),
+                    on: self.ticker_on,
+                });
+            }
+            ui.label(RichText::new("SPEED").font(theme::mono(9.5)).color(theme::TEXT_FAINT));
+            if ui
+                .add(egui::Slider::new(&mut self.ticker_speed, 40.0..=400.0).show_value(false))
+                .changed()
+            {
+                self.engine.send(Command::SetTickerLook {
+                    speed: self.ticker_speed,
+                    background: self.ticker_background,
+                    colour: [235, 238, 245],
+                });
+            }
+            ui.label(
+                RichText::new(format!("{:.0} px/s", self.ticker_speed))
+                    .font(theme::mono(9.5))
+                    .color(theme::TEXT_DIM),
+            );
+        });
+        if typed && self.ticker_on {
+            self.engine.send(Command::SetTicker {
+                text: self.ticker_text.clone(),
+                on: true,
+            });
+        }
+        let _ = snapshot;
+    }
+
+    /// What the stream leaves at, and what that costs.
+    ///
+    /// The numbers are the point. "Will 1080p work on our connection" is the
+    /// question every hall asks, and it cannot be answered by a dropdown that
+    /// says 1080p — it needs the megabits a second written next to it, and
+    /// the headroom a connection needs on top.
+    fn stream_quality(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
+        use crate::settings::{StreamSize, AUDIO_KBPS_CHOICES};
+
+        ui.label(RichText::new("STREAM QUALITY").size(12.0).strong().color(theme::TEXT));
+        ui.label(
+            RichText::new(
+                "Separate from the production size. The hall can run 1080p for the \
+                 projector and the recording while the internet gets 720p — which is \
+                 what most people are watching on a phone anyway.",
+            )
+            .size(10.5)
+            .color(theme::TEXT_DIM),
+        );
+        ui.add_space(10.0);
+
+        let mut size = snapshot.stream_size;
+        let mut kbps = snapshot.stream_kbps;
+        let mut audio = snapshot.stream_audio_kbps;
+        let mut changed = false;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+            for choice in StreamSize::ALL {
+                let (w, h) = choice.size();
+                if theme::chip(ui, choice.label(), size == choice, theme::ACCENT, Vec2::new(58.0, 24.0))
+                    .on_hover_text(format!(
+                        "{w} x {h}, usually about {:.1} Mb/s",
+                        choice.suggested_kbps() as f32 / 1000.0
+                    ))
+                    .clicked()
+                {
+                    size = choice;
+                    // The bitrate follows the size unless it has been moved
+                    // deliberately: a 1080p picture at a 360p bitrate looks
+                    // worse than 360p did, which is the trap in offering the
+                    // choice at all.
+                    kbps = choice.suggested_kbps();
+                    changed = true;
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+        let (low, high) = size.kbps_range();
+        kbps = kbps.clamp(low, high);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("PICTURE").font(theme::mono(10.0)).color(theme::TEXT_FAINT));
+            if ui
+                .add(
+                    egui::Slider::new(&mut kbps, low..=high)
+                        .show_value(false)
+                        .step_by(100.0),
+                )
+                .changed()
+            {
+                changed = true;
+            }
+            ui.label(
+                RichText::new(format!("{:.1} Mb/s", kbps as f32 / 1000.0))
+                    .font(theme::mono(11.0))
+                    .color(theme::TEXT),
+            );
+            if kbps != size.suggested_kbps()
+                && theme::chip(ui, "SUGGESTED", false, theme::PREVIEW, Vec2::new(76.0, 19.0))
+                    .on_hover_text(format!(
+                        "back to {:.1} Mb/s, which is what the platforms ask for at {}",
+                        size.suggested_kbps() as f32 / 1000.0,
+                        size.label()
+                    ))
+                    .clicked()
+            {
+                kbps = size.suggested_kbps();
+                changed = true;
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("SOUND  ").font(theme::mono(10.0)).color(theme::TEXT_FAINT));
+            for choice in AUDIO_KBPS_CHOICES {
+                if theme::chip(
+                    ui,
+                    &format!("{choice}k"),
+                    audio == choice,
+                    theme::ACCENT,
+                    Vec2::new(46.0, 20.0),
+                )
+                .on_hover_text(match choice {
+                    64 => "for a connection that needs every kilobit for the picture",
+                    96 => "speech is fine here; music starts to thin out",
+                    128 => "transparent for speech and music together — the usual choice",
+                    _ => "for music that matters more than the picture does",
+                })
+                .clicked()
+                {
+                    audio = choice;
+                    changed = true;
+                }
+            }
+        });
+
+        // ---- what it costs ------------------------------------------------
+        ui.add_space(12.0);
+        let total = (kbps + audio) as f32 / 1000.0;
+        // Platforms and every guide say the same thing: leave headroom. A
+        // connection running at exactly its limit drops frames the moment
+        // anything else on the network wants a share.
+        let needed = total * 1.5;
+        egui::Frame::none()
+            .fill(theme::SURFACE_LOWEST)
+            .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+            .rounding(Rounding::same(5.0_f32))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{total:.1} Mb/s"))
+                            .size(20.0)
+                            .strong()
+                            .color(theme::ACCENT),
+                    );
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("leaving this machine, picture and sound together")
+                                .size(10.5)
+                                .color(theme::TEXT_DIM),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "Needs about {needed:.1} Mb/s of upload to be safe, \
+                                 and about {:.0} MB for every hour on air.",
+                                total * 450.0
+                            ))
+                            .size(10.5)
+                            .color(theme::TEXT_DIM),
+                        );
+                    });
+                });
+                if snapshot.streaming {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "Actually going out: {:.1} Mb/s of picture right now.",
+                            snapshot.stream_measured_kbps / 1000.0
+                        ))
+                        .font(theme::mono(10.5))
+                        .color(theme::PREVIEW),
+                    );
+                }
+            });
+
+        if changed {
+            self.engine.send(Command::SetStreamQuality { size, kbps, audio_kbps: audio });
+        }
+    }
+
     fn stream_view(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
         egui::CentralPanel::default()
             .frame(theme::panel(theme::SURFACE))
@@ -1404,6 +1869,16 @@ impl StudioApp {
                     ui.add_space(24.0);
                     ui.vertical(|ui| {
                         ui.set_max_width(560.0);
+                        self.graphics(ui, snapshot);
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(14.0);
+
+                        self.stream_quality(ui, snapshot);
+                        ui.add_space(18.0);
+                        ui.separator();
+                        ui.add_space(14.0);
+
                         ui.label(
                             RichText::new("STREAM DESTINATION").size(12.0).strong().color(theme::TEXT),
                         );
@@ -1826,6 +2301,86 @@ impl StudioApp {
                         }
                         if self.cached_playback.is_empty() {
                             self.cached_playback = rhevia_audio::monitor_devices();
+                        }
+
+                        // The projector. A hall runs one, and it is the
+                        // reason a second display exists on that machine.
+                        ui.add_space(16.0);
+                        ui.label(
+                            RichText::new("PROGRAMME OUT TO A DISPLAY")
+                                .size(12.0)
+                                .strong()
+                                .color(theme::TEXT),
+                        );
+                        ui.add_space(4.0);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "Throws the programme full screen onto another display                                      with nothing else on it, for a projector or a foldback                                      monitor. Escape on that screen closes it again.",
+                                )
+                                .size(10.5)
+                                .color(theme::TEXT_DIM),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            let shown = self
+                                .settings
+                                .output_display
+                                .clone()
+                                .unwrap_or_else(|| "Off".to_string());
+                            egui::ComboBox::from_id_salt("output-display")
+                                .selected_text(RichText::new(shown).size(11.0))
+                                .width(300.0)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(
+                                            self.settings.output_display.is_none(),
+                                            "Off",
+                                        )
+                                        .clicked()
+                                    {
+                                        self.pending_display = Some(String::new());
+                                    }
+                                    for display in &self.cached_monitors {
+                                        let chosen = self.settings.output_display.as_deref()
+                                            == Some(display.name.as_str());
+                                        let label = format!(
+                                            "{}  ({} x {})",
+                                            display.name, display.width, display.height
+                                        );
+                                        if ui.selectable_label(chosen, label).clicked() {
+                                            self.pending_display = Some(display.name.clone());
+                                        }
+                                    }
+                                });
+                            if ui
+                                .button(RichText::new("Refresh").size(10.5))
+                                .on_hover_text("look for displays plugged in since Rhevia started")
+                                .clicked()
+                            {
+                                self.refresh_devices();
+                            }
+                        });
+                        // Applied outside the combo box, which holds a borrow
+                        // of self while it is open.
+                        if let Some(name) = self.pending_display.take() {
+                            self.settings.output_display =
+                                Some(name).filter(|n| !n.is_empty());
+                            self.settings.save();
+                        }
+                        if self.cached_monitors.is_empty() {
+                            self.refresh_devices();
+                        } else if self.cached_monitors.len() < 2 {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(
+                                    "Only one display is attached, so this would cover the                                      controls. Plug in a projector or a second screen.",
+                                )
+                                .size(10.5)
+                                .color(theme::TEXT_FAINT),
+                            );
                         }
 
                         // What the sound is actually doing, in numbers.

@@ -838,17 +838,16 @@ impl StudioApp {
 
     fn tab_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("tabs")
-            .exact_height(34.0)
-            .frame(theme::panel(theme::SURFACE))
+            .exact_height(32.0)
+            .frame(theme::panel(theme::SURFACE_LOWEST))
             .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
+                    ui.add_space(14.0);
                     for (tab, label) in Tab::ALL {
-                        let active = self.tab == tab;
-                        if theme::chip(ui, label, active, theme::ACCENT, theme::chip_size(ui, label, 24.0)).clicked() {
+                        if theme::tab(ui, label, self.tab == tab).clicked() {
                             self.tab = tab;
                         }
-                        ui.add_space(4.0);
                     }
                 });
             });

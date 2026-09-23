@@ -64,6 +64,28 @@ pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x5b, 0x62, 0x74);
 /// For text sitting on a bright fill.
 pub const ON_BRIGHT: Color32 = Color32::from_rgb(0x10, 0x14, 0x1c);
 
+/// Draws a raised panel: a shadow beneath, a fill, and a lit top edge.
+///
+/// Every card in the interface is one of these, so they all catch the light
+/// from the same direction. Getting that wrong in one place is what makes an
+/// interface feel assembled rather than designed.
+pub fn raise(painter: &egui::Painter, rect: Rect, rounding: Rounding, fill: Color32, edge: Color32) {
+    painter.rect_filled(
+        rect.translate(Vec2::new(0.0, 3.0)),
+        rounding,
+        Color32::from_black_alpha(90),
+    );
+    painter.rect_filled(rect, rounding, fill);
+    painter.line_segment(
+        [
+            egui::pos2(rect.min.x + rounding.nw, rect.min.y + 0.5),
+            egui::pos2(rect.max.x - rounding.ne, rect.min.y + 0.5),
+        ],
+        Stroke::new(1.0_f32, lift(fill, 0.09)),
+    );
+    painter.rect_stroke(rect, rounding, Stroke::new(1.0_f32, edge));
+}
+
 /// A colour moved towards white by `amount`.
 pub fn lift(colour: Color32, amount: f32) -> Color32 {
     let mix = |c: u8| (c as f32 + (255.0 - c as f32) * amount.clamp(0.0, 1.0)) as u8;
@@ -231,6 +253,60 @@ pub fn button(ui: &mut Ui, label: &str, colour: Color32, size: Vec2) -> Response
 }
 
 /// A small outlined button, for dense rows of secondary actions.
+/// A tab in the main bar.
+///
+/// Underlined rather than boxed. A row of filled boxes is a row of buttons
+/// and reads as four things to press; an underline says "you are here", which
+/// is what a tab is for. The underline is also where the eye goes back to
+/// after looking at a picture, so it is the thing worth making unmistakable.
+pub fn tab(ui: &mut Ui, label: &str, active: bool) -> Response {
+    let font = FontId::proportional(12.0);
+    let size = Vec2::new(text_width(ui, label, &font) + 26.0, 30.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let painter = ui.painter_at(rect);
+
+    if active {
+        painter.rect_filled(
+            rect,
+            Rounding { nw: 5.0_f32, ne: 5.0_f32, sw: 0.0_f32, se: 0.0_f32 },
+            SURFACE_LOW,
+        );
+    } else if response.hovered() {
+        painter.rect_filled(
+            rect,
+            Rounding { nw: 5.0_f32, ne: 5.0_f32, sw: 0.0_f32, se: 0.0_f32 },
+            SURFACE_CONTAINER,
+        );
+    }
+
+    painter.text(
+        rect.center() - Vec2::new(0.0, 1.0),
+        egui::Align2::CENTER_CENTER,
+        label,
+        font,
+        if active {
+            TEXT
+        } else if response.hovered() {
+            TEXT_DIM
+        } else {
+            TEXT_FAINT
+        },
+    );
+
+    if active {
+        let underline = Rect::from_min_size(
+            egui::pos2(rect.min.x + 6.0, rect.max.y - 2.5),
+            Vec2::new(rect.width() - 12.0, 2.5),
+        );
+        painter.rect_filled(underline, Rounding::same(1.5_f32), ACCENT);
+    }
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
 pub fn chip(ui: &mut Ui, label: &str, active: bool, colour: Color32, size: Vec2) -> Response {
     let font = FontId::proportional((size.y * 0.46).clamp(9.0, 12.0));
     // The requested size is a minimum, not a promise. A label that does not
@@ -294,8 +370,19 @@ pub fn readout(ui: &mut Ui, label: &str, value: &str, colour: Color32) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
         ui.add_space(9.0);
-        ui.label(RichText::new(label).size(8.5).color(TEXT_FAINT));
-        ui.label(RichText::new(value).font(mono(12.0)).color(colour));
+        ui.label(
+            RichText::new(
+                label
+                    .chars()
+                    .flat_map(|c| [c, '\u{2009}'])
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string(),
+            )
+            .size(8.5)
+            .color(TEXT_FAINT),
+        );
+        ui.label(RichText::new(value).font(mono(12.5)).color(colour));
     });
     ui.add_space(16.0);
 }
@@ -430,17 +517,35 @@ pub fn monitor(
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         let painter = ui.painter();
 
-        painter.rect_filled(rect, Rounding::same(5.0_f32), SURFACE_LOWEST);
+        let rounding = Rounding::same(6.0_f32);
+        raise(painter, rect, rounding, SURFACE_LOWEST, EDGE);
 
-        let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 24.0));
+        let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 26.0));
         painter.rect_filled(
             header,
-            Rounding { nw: 5.0_f32, ne: 5.0_f32, sw: 0.0_f32, se: 0.0_f32 },
+            Rounding { nw: 6.0_f32, ne: 6.0_f32, sw: 0.0_f32, se: 0.0_f32 },
             SURFACE_CONTAINER,
+        );
+        // A tally stripe down the leading edge of the header, as a rack of
+        // monitors has. The colour reads from across a room without the bar
+        // competing with the picture for brightness.
+        painter.rect_filled(
+            Rect::from_min_size(header.min, Vec2::new(3.0, header.height())),
+            Rounding { nw: 6.0_f32, ne: 0.0_f32, sw: 0.0_f32, se: 0.0_f32 },
+            accent,
         );
         // A dot rather than a filled bar: the picture stays the brightest
         // thing, and the colour still reads at a glance.
-        painter.circle_filled(header.left_center() + Vec2::new(12.0, 0.0), 4.0, accent);
+        painter.circle_filled(header.left_center() + Vec2::new(14.0, 0.0), 3.5, accent);
+        // The hairline under the header, so it reads as a bar rather than as
+        // part of the picture.
+        painter.line_segment(
+            [
+                egui::pos2(header.min.x, header.max.y - 0.5),
+                egui::pos2(header.max.x, header.max.y - 0.5),
+            ],
+            Stroke::new(1.0_f32, EDGE),
+        );
         // The badge is measured first, because the title has to fit in what
         // is left over. Drawing the title at its natural length ran it
         // straight through the badge on any source with a long name.
@@ -449,8 +554,8 @@ pub fn monitor(
             .map(|b| text_width(ui, b, &badge_font) + 14.0)
             .unwrap_or(0.0);
 
-        let title_font = FontId::proportional(11.5);
-        let title_start = 24.0;
+        let title_font = FontId::proportional(12.0);
+        let title_start = 26.0;
         let title_room = header.width() - title_start - badge_width - 16.0;
         painter.text(
             header.left_center() + Vec2::new(title_start, 0.0),
@@ -475,9 +580,9 @@ pub fn monitor(
             );
         }
 
-        let footer_height = 20.0;
+        let footer_height = 22.0;
         let body = Rect::from_min_max(
-            rect.min + Vec2::new(0.0, 24.0),
+            rect.min + Vec2::new(0.0, 26.0),
             rect.max - Vec2::new(0.0, footer_height),
         );
         painter.rect_filled(body, Rounding::ZERO, Color32::BLACK);
@@ -502,8 +607,15 @@ pub fn monitor(
         let foot = Rect::from_min_max(egui::pos2(rect.min.x, body.max.y), rect.max);
         painter.rect_filled(
             foot,
-            Rounding { nw: 0.0_f32, ne: 0.0_f32, sw: 5.0_f32, se: 5.0_f32 },
+            Rounding { nw: 0.0_f32, ne: 0.0_f32, sw: 6.0_f32, se: 6.0_f32 },
             SURFACE_CONTAINER,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(foot.min.x, foot.min.y + 0.5),
+                egui::pos2(foot.max.x, foot.min.y + 0.5),
+            ],
+            Stroke::new(1.0_f32, EDGE),
         );
         let footer_font = mono(9.5);
         painter.text(
@@ -514,7 +626,10 @@ pub fn monitor(
             TEXT_FAINT,
         );
 
-        painter.rect_stroke(rect, Rounding::same(5.0_f32), Stroke::new(1.0_f32, accent));
+        // The tally frame, two pixels rather than one. This is the single
+        // thing an operator checks before every take, and a hairline is not
+        // enough to see it from the desk.
+        painter.rect_stroke(rect, rounding, Stroke::new(2.0_f32, accent));
     });
 }
 
@@ -541,9 +656,12 @@ pub fn input_picture(
         (SURFACE_HIGHEST, "IDLE")
     };
 
-    painter.rect_filled(rect, Rounding::same(4.0_f32), SURFACE_LOWEST);
+    let rounding = Rounding::same(5.0_f32);
+    // Lifted when the pointer is over it, so the grid answers back.
+    let body_fill = if response.hovered() { SURFACE_LOW } else { SURFACE_LOWEST };
+    raise(painter, rect, rounding, body_fill, if response.hovered() { EDGE_LIT } else { EDGE });
 
-    let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 19.0));
+    let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 21.0));
     let header_fill = if on_program {
         PROGRAM_DIM
     } else if on_preview {
@@ -553,13 +671,13 @@ pub fn input_picture(
     };
     painter.rect_filled(
         header,
-        Rounding { nw: 4.0_f32, ne: 4.0_f32, sw: 0.0_f32, se: 0.0_f32 },
+        Rounding { nw: 5.0_f32, ne: 5.0_f32, sw: 0.0_f32, se: 0.0_f32 },
         header_fill,
     );
 
     // The index, boxed, so "cut to three" maps to something visible.
-    let number = Rect::from_min_size(header.min + Vec2::new(4.0, 3.5), Vec2::new(13.0, 12.0));
-    painter.rect_filled(number, Rounding::same(2.0_f32), tally);
+    let number = Rect::from_min_size(header.min + Vec2::new(5.0, 4.0), Vec2::new(14.0, 13.0));
+    painter.rect_filled(number, Rounding::same(3.0_f32), tally);
     painter.text(
         number.center(),
         egui::Align2::CENTER_CENTER,
@@ -571,8 +689,8 @@ pub fn input_picture(
     // gets whatever is left and is shortened to fit rather than running over.
     let badge_font = FontId::proportional(8.5);
     let badge_width = text_width(ui, badge, &badge_font);
-    let name_font = FontId::proportional(10.5);
-    let name_start = 22.0;
+    let name_font = FontId::proportional(11.0);
+    let name_start = 25.0;
     let name_room = header.width() - name_start - badge_width - 12.0;
 
     painter.text(
@@ -591,7 +709,7 @@ pub fn input_picture(
     );
 
     let picture = Rect::from_min_max(
-        rect.min + Vec2::new(0.0, 19.0),
+        rect.min + Vec2::new(0.0, 21.0),
         rect.max - Vec2::new(0.0, 14.0),
     );
     if let Some(texture) = texture {

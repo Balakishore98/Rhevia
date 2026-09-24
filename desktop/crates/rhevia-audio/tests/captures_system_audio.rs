@@ -31,6 +31,18 @@ fn peak(samples: &[f32]) -> f32 {
 /// rather than its own tone.
 static SPEAKERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Whether tests are allowed to make a noise on this machine's speakers.
+///
+/// These prove something that can only be proved by playing sound through a
+/// real device and capturing what comes back. Worth running before shipping;
+/// not worth running every time anyone types `cargo test`, which means beeps
+/// out of the speakers of whoever is sitting at the machine.
+///
+/// Set `RHEVIA_AUDIBLE_TESTS=1` to run them.
+fn may_make_a_noise() -> bool {
+    std::env::var("RHEVIA_AUDIBLE_TESTS").is_ok_and(|v| v != "0")
+}
+
 fn take_speakers() -> std::sync::MutexGuard<'static, ()> {
     // Poisoning only means an earlier test panicked; the speakers are still
     // usable and every later test should still run.
@@ -77,6 +89,10 @@ fn play_tone() -> Option<cpal::Stream> {
 
 #[test]
 fn a_tone_played_on_the_speakers_comes_back_through_loopback() {
+    if !may_make_a_noise() {
+        eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+        return;
+    }
     let _speakers = take_speakers();
     // Playback starts first. A render endpoint that nothing is using goes
     // idle, and an idle endpoint delivers no loopback packets at all. It is
@@ -133,6 +149,10 @@ fn a_tone_played_on_the_speakers_comes_back_through_loopback() {
 
 #[test]
 fn what_is_captured_is_the_tone_and_not_noise() {
+    if !may_make_a_noise() {
+        eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+        return;
+    }
     let _speakers = take_speakers();
     // A format read wrongly still produces loud samples — it produces a
     // buzz. This checks the captured audio is actually a smooth 440 Hz tone,
@@ -189,6 +209,10 @@ fn what_is_captured_is_the_tone_and_not_noise() {
 
 #[test]
 fn a_capture_stops_when_it_is_dropped() {
+    if !may_make_a_noise() {
+        eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+        return;
+    }
     let sink: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let capture = match LoopbackCapture::open(None, Arc::clone(&sink)) {
         Ok(capture) => capture,
@@ -213,6 +237,10 @@ fn a_capture_stops_when_it_is_dropped() {
 
 #[test]
 fn every_playback_device_can_be_named_and_chosen() {
+    if !may_make_a_noise() {
+        eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+        return;
+    }
     let devices = rhevia_audio::list_output_devices();
     if devices.is_empty() {
         eprintln!("SKIP: no playback devices");

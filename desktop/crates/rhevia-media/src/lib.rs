@@ -88,7 +88,7 @@ pub fn available() -> bool {
         _ => {}
     }
 
-    let found = quietly("ffmpeg")
+    let found = quietly(tool("ffmpeg"))
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -99,6 +99,51 @@ pub fn available() -> bool {
 
     FFMPEG.store(if found { 1 } else { 2 }, Ordering::Relaxed);
     found
+}
+
+/// Where Rhevia keeps a copy of ffmpeg it brought with it.
+///
+/// Set by the studio at startup when it has unpacked its own. Held here
+/// rather than passed to every call because the alternative is threading a
+/// path through four unrelated functions to say one thing.
+static OWN_FFMPEG: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// Tells this crate to use the copy of ffmpeg in `directory`.
+///
+/// Looked at before PATH, so a machine that already has ffmpeg installed
+/// still gets the version Rhevia was tested against rather than whatever
+/// happens to be there.
+pub fn use_own_ffmpeg(directory: impl Into<std::path::PathBuf>) {
+    if let Ok(mut own) = OWN_FFMPEG.lock() {
+        *own = Some(directory.into());
+    }
+    forget_availability();
+}
+
+/// The full path to one of the tools, preferring Rhevia's own copy.
+///
+/// Falls back to the bare name, which lets Windows search PATH — so a
+/// machine with ffmpeg already installed keeps working whether or not
+/// Rhevia brought one.
+fn tool(name: &str) -> std::ffi::OsString {
+    if let Ok(own) = OWN_FFMPEG.lock() {
+        if let Some(directory) = own.as_ref() {
+            let candidate = directory.join(format!("{name}.exe"));
+            if candidate.exists() {
+                return candidate.into_os_string();
+            }
+            let candidate = directory.join(name);
+            if candidate.exists() {
+                return candidate.into_os_string();
+            }
+        }
+    }
+    name.into()
+}
+
+/// Which copy of ffmpeg is being used, for the interface to report.
+pub fn ffmpeg_in_use() -> String {
+    tool("ffmpeg").to_string_lossy().to_string()
 }
 
 /// Starts a helper without letting Windows open a console for it.
@@ -135,7 +180,7 @@ pub fn probe(path: &str) -> Result<MediaInfo, MediaError> {
         return Err(MediaError::Missing(path.to_string()));
     }
 
-    let output = quietly("ffprobe")
+    let output = quietly(tool("ffprobe"))
         .args([
             "-hide_banner",
             "-loglevel",
@@ -603,7 +648,7 @@ fn spawn_video(
     paused: Arc<AtomicBool>,
     produced: Arc<AtomicU64>,
 ) -> Result<Child, MediaError> {
-    let mut child = quietly("ffmpeg")
+    let mut child = quietly(tool("ffmpeg"))
         .args([
             "-hide_banner",
             "-loglevel",
@@ -711,7 +756,7 @@ fn spawn_audio(
     paused: Arc<AtomicBool>,
     produced: Arc<AtomicU64>,
 ) -> Result<Child, MediaError> {
-    let mut child = quietly("ffmpeg")
+    let mut child = quietly(tool("ffmpeg"))
         .args(["-hide_banner", "-loglevel", "error", "-stream_loop", "-1", "-re"])
         .args(["-ss", &format!("{from:.3}")])
         .arg("-i")

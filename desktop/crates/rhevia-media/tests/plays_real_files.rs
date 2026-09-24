@@ -25,11 +25,24 @@ fn workdir() -> PathBuf {
 /// Builds a short clip in `container`, with or without sound.
 fn make(name: &str, args: &[&str]) -> PathBuf {
     let path = workdir().join(name);
+    // Built once and kept. These are seconds of encoded video each, and
+    // rebuilding them every run puts several encoders on the machine at the
+    // same time as the decoders under test. The recipe is written beside the
+    // file so changing a clip's arguments still rebuilds it.
+    let recipe = workdir().join(format!("{name}.recipe"));
+    let wanted = args.join(" ");
+    let usable = path.metadata().map(|m| m.len() > 0).unwrap_or(false)
+        && std::fs::read_to_string(&recipe).map(|r| r == wanted).unwrap_or(false);
+    if usable {
+        return path;
+    }
+
     let mut command = Command::new("ffmpeg");
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
     command.args(args);
     let status = command.arg(&path).status().expect("ffmpeg should run");
     assert!(status.success(), "could not build {name}");
+    let _ = std::fs::write(&recipe, wanted);
     path
 }
 

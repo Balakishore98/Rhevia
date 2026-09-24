@@ -705,8 +705,27 @@ impl EngineHandle {
 }
 
 impl Drop for EngineHandle {
+    /// Asks the engine to stop, and waits until it has.
+    ///
+    /// Sending and walking away is not the same thing. The engine has
+    /// cameras to close, decoders to kill and a sound card to release, and
+    /// until it has done all of that it is still using them -- so a caller
+    /// that starts a second engine straight away ends up with two running,
+    /// both starved, and no way to tell why. It is also why installing over
+    /// a running copy used to fail: the process had been asked to go and had
+    /// not finished going.
     fn drop(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
+
+        // Bounded. An engine wedged in a driver call must not take the
+        // program down with it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.running.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if self.running.load(Ordering::Relaxed) {
+            tracing::warn!("the engine did not stop within five seconds");
+        }
     }
 }
 
@@ -938,7 +957,14 @@ fn run(
     // Someone who adds a video and hears nothing has found a fault, not a
     // preference, so this is on unless it was deliberately turned off.
     let chosen = crate::settings::Settings::load();
-    let mut monitor = if chosen.monitor {
+    // Not under test unless asked for. Every engine test starts a real
+    // engine, and a real engine listens by default -- so running the suite
+    // played every test tone and every test clip out of the speakers of
+    // whoever was sitting at the machine. Proving the monitor works needs
+    // real sound; proving a transition works does not.
+    let allowed = !cfg!(test)
+        || std::env::var("RHEVIA_AUDIBLE_TESTS").is_ok_and(|v| v != "0");
+    let mut monitor = if chosen.monitor && allowed {
         match rhevia_audio::AudioMonitor::open(chosen.monitor_device.as_deref()) {
             Ok(monitor) => Some(monitor),
             // Falling back to the default rather than going silent: a device
@@ -1089,10 +1115,7 @@ fn run(
         // ---- commands ------------------------------------------------------
         while let Ok(command) = commands.try_recv() {
             match command {
-                Command::Shutdown => {
-                    running.store(false, Ordering::Relaxed);
-                    break;
-                }
+                Command::Shutdown => break,
                 Command::SetPreview(i) if i < sources.len() => preview_input = i,
                 Command::SetPreview(_) => {}
                 Command::Cut => {
@@ -1762,6 +1785,14 @@ fn run(
         // over is carried rather than dropped, or the rounding puts the drift
         // straight back.
         let now = Instant::now();
+        // How long this tick really took. Everything that moves over time --
+        // sound, transitions, graphics -- is measured against this rather
+        // than against the frame budget, because the budget is what the loop
+        // aims at and not what it achieves. Clocking a one second fade in
+        // frames makes it take one second at thirty a second and eight at
+        // four, which is a lower third crawling onto air on a loaded
+        // machine.
+        let elapsed = now.duration_since(audio_clock).as_secs_f32().min(0.25);
         audio_owed += now.duration_since(audio_clock).as_secs_f64() * SAMPLE_RATE as f64;
         audio_clock = now;
         // After a stall, catch up over the following ticks rather than
@@ -1977,7 +2008,7 @@ fn run(
 
         // ---- graphics ------------------------------------------------------
         // Each slot walks towards its switch rather than following it.
-        let step = frame_budget.as_secs_f32() / OVERLAY_ANIMATION_SECONDS;
+        let step = elapsed / OVERLAY_ANIMATION_SECONDS;
         for slot in 0..4 {
             let want = if overlay_on[slot] && overlay_source[slot].is_some() { 1.0 } else { 0.0 };
             if overlay_progress[slot] < want {
@@ -2267,7 +2298,7 @@ fn run(
 
         // ---- advance the transition ----------------------------------------
         if let (Some(progress), false) = (transition, dragging_transition) {
-            let step = frame_budget.as_secs_f32() / transition_seconds.max(0.001);
+            let step = elapsed / transition_seconds.max(0.001);
             let next = progress + step;
             if next >= 1.0 {
                 transition = None;
@@ -2962,22 +2993,98 @@ mod tests {
         use super::*;
         use std::time::{Duration, Instant};
 
+        /// One engine at a time.
+        ///
+        /// Each of these starts a real engine compositing a real 1080p
+        /// programme. Run a dozen at once and every one of them is starved,
+        /// which turns any test with a deadline into a coin toss -- a
+        /// transition that should take a second takes four, and the test
+        /// that was measuring the transition reports a fault that is not
+        /// there. Taking turns costs wall clock and buys results that mean
+        /// something.
+        static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        /// An engine, and the turn it is taking.
+        ///
+        /// Derefs to the handle so the tests read as though they held one.
+        struct Solo {
+            engine: EngineHandle,
+            // Dropped after the engine, which is what releases the turn.
+            _turn: std::sync::MutexGuard<'static, ()>,
+        }
+
+        impl std::ops::Deref for Solo {
+            type Target = EngineHandle;
+            fn deref(&self) -> &EngineHandle {
+                &self.engine
+            }
+        }
+
+        /// Starts an engine, waiting for any other test's engine to finish.
+        fn start() -> Solo {
+            // Poisoned only means an earlier test panicked while holding it,
+            // which says nothing about whether this one can run.
+            let turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            Solo { engine: super::super::start(), _turn: turn }
+        }
+
+            /// Whether tests are allowed to make a noise on this machine's speakers.
+            ///
+            /// Several tests here prove something that can only be proved by playing
+            /// sound through a real device and listening to what comes back. Running
+            /// them is the right thing to do before shipping; running them every time
+            /// anyone types `cargo test` means beeps and tones out of the speakers of
+            /// whoever is sitting at the machine, which is exactly what happened.
+            ///
+            /// Set `RHEVIA_AUDIBLE_TESTS=1` to run them.
+            fn may_make_a_noise() -> bool {
+                std::env::var("RHEVIA_AUDIBLE_TESTS").is_ok_and(|v| v != "0")
+            }
+
         fn have_ffmpeg() -> bool {
             rhevia_media::available()
         }
 
         /// Builds a clip with picture and a tone.
+        /// A test clip, built once and kept.
+        ///
+        /// These are half a minute of 1080p H.264 each, and several tests
+        /// want one. Re-encoding them on every run put four ffmpeg processes
+        /// on the machine at once, which starved the engines the tests were
+        /// measuring and turned every deadline into a coin toss. The recipe
+        /// is written down beside the file so that changing a clip's
+        /// arguments still rebuilds it.
         fn fixture(name: &str, extra: &[&str]) -> std::path::PathBuf {
             let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/engine-media-tests");
             std::fs::create_dir_all(&dir).ok();
             let path = dir.join(name);
+            let recipe = dir.join(format!("{name}.recipe"));
+            let wanted = extra.join(" ");
+
+            let usable = path.metadata().map(|m| m.len() > 0).unwrap_or(false)
+                && std::fs::read_to_string(&recipe).map(|r| r == wanted).unwrap_or(false);
+            if usable {
+                return path;
+            }
+
+            // One at a time, so several tests asking for their clip at once
+            // do not all start an encoder.
+            let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            // Checked again: another test may have built it while this one
+            // was waiting for its turn.
+            let usable = path.metadata().map(|m| m.len() > 0).unwrap_or(false)
+                && std::fs::read_to_string(&recipe).map(|r| r == wanted).unwrap_or(false);
+            if usable {
+                return path;
+            }
 
             let mut command = std::process::Command::new("ffmpeg");
             command.args(["-hide_banner", "-loglevel", "error", "-y"]);
             command.args(extra);
             let status = command.arg(&path).status().expect("ffmpeg should run");
             assert!(status.success(), "could not build {name}");
+            let _ = std::fs::write(&recipe, wanted);
             path
         }
 
@@ -3156,6 +3263,13 @@ mod tests {
             let mut preview_changes = 0;
             let mut ticks = 0;
             let mut last: (usize, usize) = (0, 0);
+            // Measured against what the engine actually rendered in the same
+            // window, not against thirty. The claim is "the monitors refresh
+            // as often as the programme is composited", and on an
+            // unoptimised build that is a good deal slower than thirty --
+            // which says nothing about whether the monitors keep up with it.
+            let rendered_before = engine.snapshot().stats.frames_rendered;
+            let started = Instant::now();
             let deadline = Instant::now() + Duration::from_secs(4);
             while Instant::now() < deadline && ticks < 40 {
                 let s = engine.snapshot();
@@ -3176,19 +3290,24 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(12));
             }
 
-            let seconds = 4.0_f64.min(ticks as f64 / 30.0).max(0.5);
+            let rendered = engine.snapshot().stats.frames_rendered - rendered_before;
             eprintln!(
-                "  program {program_changes} new pictures, preview {preview_changes}, over ~{seconds:.1}s"
+                "  program {program_changes} new pictures, preview {preview_changes},                  against {rendered} composited in {:.1}s",
+                started.elapsed().as_secs_f32()
             );
+
             // Sampling at roughly the frame rate cannot catch every frame, so
-            // this only has to rule out the one-in-three it used to be.
+            // this only has to rule out the one-in-three it used to be. Half
+            // of what was composited is comfortably above a third and
+            // comfortably below everything.
+            let expected = (rendered / 2).max(4);
             assert!(
-                program_changes >= 20,
-                "the Program monitor is still refreshing slower than the production runs: {program_changes}"
+                program_changes as u64 >= expected,
+                "the Program monitor refreshed {program_changes} times while the engine                  composited {rendered} pictures"
             );
             assert!(
-                preview_changes >= 20,
-                "the Preview monitor is still refreshing slower than the production runs: {preview_changes}"
+                preview_changes as u64 >= expected,
+                "the Preview monitor refreshed {preview_changes} times while the engine                  composited {rendered} pictures"
             );
         }
 
@@ -3199,6 +3318,10 @@ mod tests {
         /// file to check it end to end — picture, sound and cost.
         #[test]
         fn a_real_clip_plays_with_its_sound_and_at_its_size() {
+            if !may_make_a_noise() {
+                eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+                return;
+            }
             let Ok(path) = std::env::var("RHEVIA_TEST_CLIP") else {
                 eprintln!("SKIP: set RHEVIA_TEST_CLIP to a file to check it");
                 return;
@@ -3491,6 +3614,10 @@ mod tests {
 
         #[test]
         fn a_clip_plays_without_the_sound_card_ever_running_dry() {
+            if !may_make_a_noise() {
+                eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+                return;
+            }
             // Reported as "pori pori" -- a steady crackle over sound that is
             // clean in the file. The engine handed the card a fixed block per
             // tick while running at 29.7 ticks a second, so it supplied about
@@ -3780,6 +3907,10 @@ mod tests {
         #[test]
         #[ignore = "diagnostic; run with --ignored and RHEVIA_TEST_CLIP"]
         fn where_the_pops_in_a_real_clip_come_from() {
+            if !may_make_a_noise() {
+                eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+                return;
+            }
             // He can still hear pops. A pop is a discontinuity in the
             // waveform, and there are four places one can be introduced: the
             // sound card running dry, the clip's buffer being handed over
@@ -3881,7 +4012,17 @@ mod tests {
 
             let settled =
                 wait_for(&engine, Duration::from_secs(3), |s| s.overlay_progress[0] >= 1.0);
-            assert!(settled.is_some(), "the overlay never finished arriving");
+            if settled.is_none() {
+                let s = engine.snapshot();
+                panic!(
+"the overlay never finished arriving. progress {:?}, on {:?},                      source {:?}, engine at {:.1} fps after {} frames -- an animation                      that does not finish on a slow engine is clocked in frames rather                      than in time",
+                    s.overlay_progress,
+                    s.overlay_on,
+                    s.overlay_source,
+                    s.stats.fps,
+                    s.stats.frames_rendered,
+                );
+            }
 
             // And it leaves the same way rather than vanishing.
             engine.send(Command::ToggleOverlay(0));
@@ -4011,7 +4152,44 @@ mod tests {
         }
 
         #[test]
+        fn the_suite_does_not_play_anything_out_of_the_speakers() {
+            // Every test here starts a real engine, and a real engine listens
+            // by default -- which meant running the suite played every test
+            // tone and every test clip out of the speakers of whoever was
+            // sitting at the machine. It was reported, twice, as a beeping
+            // noise while work was going on.
+            //
+            // Proving the monitor works needs real sound and is asked for
+            // deliberately with RHEVIA_AUDIBLE_TESTS. Proving a transition
+            // works does not.
+            if std::env::var("RHEVIA_AUDIBLE_TESTS").is_ok_and(|v| v != "0") {
+                eprintln!("  (audible tests were asked for, so this one does not apply)");
+                return;
+            }
+
+            let engine = start();
+            let up = wait_for(&engine, Duration::from_secs(10), |s| !s.inputs.is_empty())
+                .expect("the engine never started");
+            assert!(
+                up.monitor.is_none(),
+                "the engine opened {} and will play the test's sound into the room",
+                up.monitor.as_deref().unwrap_or("a device")
+            );
+
+            // And it stays shut, rather than opening a moment later.
+            std::thread::sleep(Duration::from_millis(600));
+            assert!(
+                engine.snapshot().monitor.is_none(),
+                "the engine opened a playback device after starting"
+            );
+        }
+
+        #[test]
         fn a_video_file_is_audible_without_being_asked_to_be() {
+            if !may_make_a_noise() {
+                eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+                return;
+            }
             // The complaint that mattered most: a video is added and nothing
             // is heard. Monitoring existed but had to be found and switched
             // on, which is not a preference — it is the program appearing

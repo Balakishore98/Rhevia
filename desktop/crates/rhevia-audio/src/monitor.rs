@@ -355,6 +355,19 @@ pub(crate) fn fill(
 mod tests {
     use super::*;
 
+        /// Whether tests are allowed to make a noise on this machine's speakers.
+        ///
+        /// Several tests here prove something that can only be proved by playing
+        /// sound through a real device and listening to what comes back. Running
+        /// them is the right thing to do before shipping; running them every time
+        /// anyone types `cargo test` means beeps and tones out of the speakers of
+        /// whoever is sitting at the machine, which is exactly what happened.
+        ///
+        /// Set `RHEVIA_AUDIBLE_TESTS=1` to run them.
+        fn may_make_a_noise() -> bool {
+            std::env::var("RHEVIA_AUDIBLE_TESTS").is_ok_and(|v| v != "0")
+        }
+
     /// A monitor already past its priming, for tests about what it plays
     /// rather than about when it starts.
     fn playing() -> AtomicBool {
@@ -611,6 +624,10 @@ mod tests {
 
     #[test]
     fn the_device_actually_takes_the_sound_rather_than_just_accepting_it() {
+        if !may_make_a_noise() {
+            eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+            return;
+        }
         // The difference between sound arriving at a device and sound coming
         // out of it cannot be heard from here, but it can be measured: a
         // device that is really playing drains what it is given. One that is
@@ -647,6 +664,10 @@ mod tests {
 
     #[test]
     fn the_default_device_opens_and_reports_itself() {
+        if !may_make_a_noise() {
+            eprintln!("SKIP: would play sound; set RHEVIA_AUDIBLE_TESTS=1 to run it");
+            return;
+        }
         match AudioMonitor::open(None) {
             Ok(monitor) => {
                 assert!(!monitor.device_name.is_empty());

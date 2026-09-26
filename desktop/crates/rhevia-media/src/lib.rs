@@ -176,11 +176,30 @@ pub fn forget_availability() {
 
 /// Asks ffprobe what is in a file.
 pub fn probe(path: &str) -> Result<MediaInfo, MediaError> {
-    if !std::path::Path::new(path).exists() {
+    probe_kind(path, Kind::File)
+}
+
+/// Asks ffprobe what is in a file or at an address.
+///
+/// A live source is given a deadline. A camera that is switched off does not
+/// refuse the connection, it simply never answers, and without a timeout the
+/// operator gets a program that has stopped responding rather than a message
+/// saying the camera is not there.
+pub fn probe_kind(path: &str, kind: Kind) -> Result<MediaInfo, MediaError> {
+    if kind == Kind::File && !std::path::Path::new(path).exists() {
         return Err(MediaError::Missing(path.to_string()));
     }
 
-    let output = quietly(tool("ffprobe"))
+    let mut command = quietly(tool("ffprobe"));
+    if kind == Kind::Live {
+        // Only what this protocol understands, plus a deadline. A camera
+        // that is switched off does not refuse the connection, it simply
+        // never answers, and without a timeout the operator gets a program
+        // that has stopped responding rather than a message.
+        command.args(live_options(path));
+        command.args(["-analyzeduration", "3000000", "-probesize", "2000000"]);
+    }
+    let output = command
         .args([
             "-hide_banner",
             "-loglevel",
@@ -298,6 +317,65 @@ pub fn looks_like_media(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a source is a file on disk or something arriving live.
+///
+/// A file has a length, loops when it reaches the end, and can be scrubbed.
+/// A camera on the far side of a network has none of those: it has no end to
+/// loop at, nothing to seek to, and it can drop and come back. Telling them
+/// apart matters because the flags ffmpeg needs are opposite -- a live source
+/// asked to loop tries to replay a stream that is still arriving, and a file
+/// asked to reconnect sits waiting for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    File,
+    Live,
+}
+
+/// True for an address rather than a path.
+///
+/// Anything with one of these in front of it is somewhere else: an IP camera
+/// on the wall, a phone running an RTSP app on the same network, another
+/// machine publishing over SRT.
+pub fn looks_like_a_stream(target: &str) -> bool {
+    let lower = target.trim().to_lowercase();
+    ["rtsp://", "rtmp://", "rtmps://", "srt://", "udp://", "rtp://", "http://", "https://"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+}
+
+/// The options a live address needs, which depend on what kind it is.
+///
+/// ffmpeg's options belong to the protocol that defines them, and it refuses
+/// to start when handed one that does not apply: `-reconnect` belongs to
+/// HTTP, `-rtsp_transport` to RTSP. Passing the whole set to every address
+/// made ffmpeg exit immediately on a UDP source, so the input appeared, said
+/// it was live, and never produced a picture.
+fn live_options(address: &str) -> Vec<String> {
+    let lower = address.trim().to_lowercase();
+    let mut options: Vec<String> = Vec::new();
+
+    if lower.starts_with("rtsp://") {
+        // Over a home network UDP loses packets in ways that look like a
+        // broken camera, so ask for TCP.
+        options.extend(["-rtsp_transport".into(), "tcp".into()]);
+    }
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        // A phone that loses Wi-Fi for a moment should come back rather than
+        // leave a dead input on the grid.
+        options.extend([
+            "-reconnect".into(),
+            "1".into(),
+            "-reconnect_streamed".into(),
+            "1".into(),
+            "-reconnect_delay_max".into(),
+            "4".into(),
+        ]);
+    }
+    // Every live source wants the newest picture rather than a tidy one.
+    options.extend(["-fflags".into(), "nobuffer".into(), "-flags".into(), "low_delay".into()]);
+    options
+}
+
 /// A playing media file.
 ///
 /// Video frames and audio samples are produced by background threads and
@@ -316,6 +394,8 @@ pub fn looks_like_media(path: &str) -> bool {
 const QUEUED_FRAMES: usize = 3;
 
 pub struct MediaSource {
+    /// A file, or something arriving live.
+    pub kind: Kind,
     pending: Arc<Mutex<VecDeque<Frame>>>,
     audio: Arc<Mutex<Vec<f32>>>,
     running: Arc<AtomicBool>,
@@ -357,10 +437,34 @@ impl MediaSource {
     /// programme size: scaling in the decoder is far cheaper than scaling
     /// every frame in the compositor afterwards.
     pub fn open(path: &str, width: u32, height: u32, fps: f32) -> Result<Self, MediaError> {
+        Self::open_kind(path, width, height, fps, Kind::File)
+    }
+
+    /// Opens something arriving live: an IP camera, a phone, another machine.
+    ///
+    /// The address is handed to ffmpeg exactly as a path would be, because to
+    /// ffmpeg they are the same thing. What differs is the pacing and the
+    /// looping, which is what `Kind` decides.
+    pub fn open_stream(
+        address: &str,
+        width: u32,
+        height: u32,
+        fps: f32,
+    ) -> Result<Self, MediaError> {
+        Self::open_kind(address, width, height, fps, Kind::Live)
+    }
+
+    fn open_kind(
+        path: &str,
+        width: u32,
+        height: u32,
+        fps: f32,
+        kind: Kind,
+    ) -> Result<Self, MediaError> {
         if !available() {
             return Err(MediaError::NoFfmpeg);
         }
-        let info = probe(path)?;
+        let info = probe_kind(path, kind)?;
         if !info.has_video && !info.has_audio {
             return Err(MediaError::Unreadable(path.to_string()));
         }
@@ -375,6 +479,7 @@ impl MediaSource {
         let paused = Arc::new(AtomicBool::new(false));
 
         let mut source = Self {
+            kind,
             pending,
             audio,
             running,
@@ -412,6 +517,7 @@ impl MediaSource {
                 height,
                 self.fps,
                 from,
+                self.kind,
                 Arc::clone(&self.pending),
                 Arc::clone(&self.running),
                 Arc::clone(&self.paused),
@@ -422,6 +528,7 @@ impl MediaSource {
             children.push(spawn_audio(
                 &self.path,
                 from,
+                self.kind,
                 Arc::clone(&self.audio),
                 Arc::clone(&self.running),
                 Arc::clone(&self.paused),
@@ -520,6 +627,13 @@ impl MediaSource {
     /// Past the end wraps to the start and before the start clamps to it,
     /// which is what skipping back five seconds at two seconds in should do.
     pub fn seek(&mut self, to: f32) -> Result<(), MediaError> {
+        // Nothing to seek to. A live source has no past to go back to and no
+        // future to skip into; restarting it at a position would simply
+        // reconnect and start again from now, which is not what was asked
+        // for and would drop the picture on the way.
+        if self.kind == Kind::Live {
+            return Ok(());
+        }
         let to = match self.duration_seconds() {
             Some(d) => to.rem_euclid(d),
             None => to.max(0.0),
@@ -540,6 +654,9 @@ impl MediaSource {
     /// Back to the beginning and held there, the way a stop button behaves on
     /// a player: the clip is cued, not unloaded.
     pub fn stop(&mut self) -> Result<(), MediaError> {
+        if self.kind == Kind::Live {
+            return Ok(());
+        }
         self.stop_decoders();
         self.start_decoders(0.0)?;
         self.paused.store(true, Ordering::Relaxed);
@@ -643,30 +760,42 @@ fn spawn_video(
     height: u32,
     fps: f32,
     from: f32,
+    kind: Kind,
     pending: Arc<Mutex<VecDeque<Frame>>>,
     running: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     produced: Arc<AtomicU64>,
 ) -> Result<Child, MediaError> {
-    let mut child = quietly(tool("ffmpeg"))
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            // Loops the file, which is what a holding clip or a sting wants.
-            "-stream_loop",
-            "-1",
-            // Paced at real time. Without this ffmpeg decodes as fast as it
-            // can and the clip plays at several hundred frames a second.
-            "-re",
-            // Before -i, so ffmpeg seeks the file rather than decoding
-            // everything up to the point and throwing it away. It lands on
-            // the nearest key frame, which is close enough for a skip and an
-            // order of magnitude faster than being exact.
-            "-ss",
-            &format!("{from:.3}"),
-            "-i",
-        ])
+    let mut command = quietly(tool("ffmpeg"));
+    command.args(["-hide_banner", "-loglevel", "error"]);
+    match kind {
+        Kind::File => {
+            command.args([
+                // Loops, which is what a holding clip or a sting wants.
+                "-stream_loop",
+                "-1",
+                // Paced at real time. Without this ffmpeg decodes as fast as
+                // it can and the clip plays at several hundred frames a
+                // second.
+                "-re",
+                // Before -i, so ffmpeg seeks the file rather than decoding
+                // everything up to the point and throwing it away. It lands
+                // on the nearest key frame, which is close enough for a skip
+                // and an order of magnitude faster than being exact.
+                "-ss",
+                &format!("{from:.3}"),
+            ]);
+        }
+        Kind::Live => {
+            // The opposite of a file in every respect. There is no end to
+            // loop at and nothing to seek to, and the source paces itself --
+            // asking ffmpeg to pace it as well makes it fall behind and never
+            // catch up.
+            command.args(live_options(path));
+        }
+    }
+    let mut child = command
+        .arg("-i")
         .arg(path)
         .args([
             "-an",
@@ -751,14 +880,23 @@ fn spawn_video(
 fn spawn_audio(
     path: &str,
     from: f32,
+    kind: Kind,
     audio: Arc<Mutex<Vec<f32>>>,
     running: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     produced: Arc<AtomicU64>,
 ) -> Result<Child, MediaError> {
-    let mut child = quietly(tool("ffmpeg"))
-        .args(["-hide_banner", "-loglevel", "error", "-stream_loop", "-1", "-re"])
-        .args(["-ss", &format!("{from:.3}")])
+    let mut command = quietly(tool("ffmpeg"));
+    command.args(["-hide_banner", "-loglevel", "error"]);
+    match kind {
+        Kind::File => {
+            command.args(["-stream_loop", "-1", "-re", "-ss", &format!("{from:.3}")]);
+        }
+        Kind::Live => {
+            command.args(live_options(path));
+        }
+    }
+    let mut child = command
         .arg("-i")
         .arg(path)
         .args([
@@ -830,6 +968,7 @@ mod tests {
     /// about it.
     fn detached(buffered: Vec<f32>) -> MediaSource {
         MediaSource {
+            kind: Kind::File,
             pending: Arc::new(Mutex::new(VecDeque::new())),
             audio: Arc::new(Mutex::new(buffered)),
             running: Arc::new(AtomicBool::new(false)),

@@ -135,6 +135,8 @@ pub struct StudioApp {
     /// A display chosen from the combo box, applied after it closes. An
     /// empty string means off.
     pending_display: Option<String>,
+    /// The address being typed on the stream tab.
+    stream_address: String,
     /// The always-on graphics, as the panel that drives them holds them.
     watermark_path: String,
     watermark_corner: usize,
@@ -264,11 +266,12 @@ enum InputTab {
     Image,
     Title,
     Colour,
+    Stream,
     Layers,
 }
 
 impl InputTab {
-    const ALL: [InputTab; 10] = [
+    const ALL: [InputTab; 11] = [
         InputTab::Camera,
         InputTab::Ndi,
         InputTab::Display,
@@ -278,6 +281,7 @@ impl InputTab {
         InputTab::Image,
         InputTab::Title,
         InputTab::Colour,
+        InputTab::Stream,
         InputTab::Layers,
     ];
 
@@ -292,6 +296,7 @@ impl InputTab {
             InputTab::Image => "Image",
             InputTab::Title => "Title",
             InputTab::Colour => "Colour",
+            InputTab::Stream => "Stream / Phone",
             InputTab::Layers => "Layers (group)",
         }
     }
@@ -312,6 +317,10 @@ impl InputTab {
             InputTab::Image => "A still: holding slide, sponsor board, stinger graphic.",
             InputTab::Title => "A lower third, rendered here rather than in another application.",
             InputTab::Colour => "A flat colour or a bar pattern, for testing and for backgrounds.",
+            InputTab::Stream => {
+                "A camera somewhere else on the network: a phone, an IP camera, \
+                 or another machine publishing a stream."
+            }
             InputTab::Layers => {
                 "An empty input that other inputs are stacked into — a video with a \
                  logo over it, taken to air as one thing. Add it, then open its SET \
@@ -366,6 +375,7 @@ impl StudioApp {
             pending_monitor: None,
             pending_layer: None,
             pending_display: None,
+            stream_address: String::new(),
             watermark_path: String::new(),
             watermark_corner: 1,
             watermark_scale: 0.12,
@@ -1231,6 +1241,29 @@ impl StudioApp {
             ui.add_space(TRANSPORT_HEIGHT);
             return;
         };
+
+        // Something arriving live has no transport. There is nothing to
+        // rewind to and no end to stop at, and offering buttons that cannot
+        // do anything is worse than offering none.
+        if media.live {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("\u{25CF} LIVE")
+                        .font(theme::mono(11.0))
+                        .color(theme::PROGRAM),
+                );
+                ui.label(
+                    RichText::new(format!(
+                        "receiving for {}",
+                        theme::clock(media.position_seconds)
+                    ))
+                    .font(theme::mono(10.5))
+                    .color(theme::TEXT_DIM),
+                );
+            });
+            return;
+        }
 
         ui.add_space(4.0);
         theme::position_bar(ui, media.position_seconds, media.duration_seconds, width);
@@ -2607,7 +2640,7 @@ impl StudioApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
-        self.title_editor(ctx);
+        self.title_editor(ctx, snapshot);
         self.input_settings(ctx, snapshot);
 
         self.input_select(ctx, snapshot);
@@ -3149,6 +3182,92 @@ impl StudioApp {
                 false
             }
 
+            InputTab::Stream => {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "Anything ffmpeg can open: RTSP from an IP camera or a phone \
+                             app, SRT or RTMP from another machine, an HLS or MJPEG feed. \
+                             It is treated as live — there is nothing to rewind to — and \
+                             it reconnects on its own if it drops.",
+                        )
+                        .size(10.5)
+                        .color(theme::TEXT_DIM),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(10.0);
+
+                ui.label(RichText::new("ADDRESS").size(10.5).color(theme::TEXT_DIM));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.stream_address)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("rtsp://192.168.1.50:8554/live"),
+                );
+                ui.add_space(8.0);
+
+                // The phone case, written out. It is the question that gets
+                // asked, and the answer is three lines of setup that nobody
+                // should have to go and look up.
+                egui::Frame::none()
+                    .fill(theme::SURFACE_LOWEST)
+                    .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+                    .rounding(Rounding::same(4.0_f32))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new("USING A PHONE AS A CAMERA")
+                                .size(9.5)
+                                .strong()
+                                .color(theme::ACCENT),
+                        );
+                        ui.add_space(4.0);
+                        for line in [
+                            "1.  Put the phone on the same Wi-Fi as this machine.",
+                            "2.  Install an RTSP camera app — IP Webcam on Android, or \
+                                 Larix Broadcaster on either — and start it.",
+                            "3.  The app shows an address. Type it above and add it.",
+                            "",
+                            "NDI works too, and better: the NDI HX Camera app puts the \
+                             phone straight on the NDI tab with no address to type.",
+                        ] {
+                            if line.is_empty() {
+                                ui.add_space(4.0);
+                            } else {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(line).size(10.0).color(theme::TEXT_DIM),
+                                    )
+                                    .wrap(),
+                                );
+                            }
+                        }
+                    });
+
+                ui.add_space(10.0);
+                let usable = rhevia_media::looks_like_a_stream(&self.stream_address);
+                if !self.stream_address.trim().is_empty() && !usable {
+                    ui.label(
+                        RichText::new(
+                            "That does not look like an address. It should start with \
+                             rtsp://, srt://, rtmp:// or http://.",
+                        )
+                        .size(10.5)
+                        .color(theme::WARN),
+                    );
+                    ui.add_space(6.0);
+                }
+                if usable
+                    && theme::button(ui, "Add stream", theme::ACCENT, Vec2::new(120.0, 26.0))
+                        .clicked()
+                {
+                    self.engine.send(Command::AddStreamSource {
+                        name: self.name_or("Stream"),
+                        address: self.stream_address.trim().to_string(),
+                    });
+                    return true;
+                }
+                false
+            }
             InputTab::Layers => {
                 ui.label(
                     RichText::new(
@@ -3528,10 +3647,15 @@ impl StudioApp {
     }
 
     /// Edits a title in place. Applying while it is on air is the point.
-    fn title_editor(&mut self, ctx: &egui::Context) {
+    fn title_editor(&mut self, ctx: &egui::Context, snapshot: &Snapshot) {
         let Some((index, mut text, mut subtitle)) = self.editing_title.clone() else {
             return;
         };
+        let mut design = snapshot
+            .inputs
+            .get(index)
+            .and_then(|i| i.title_design)
+            .unwrap_or_default();
         let mut open = true;
         let mut apply = false;
 
@@ -3548,6 +3672,37 @@ impl StudioApp {
                 ui.add_space(8.0);
                 ui.label(RichText::new("SUBTITLE").size(10.5).color(theme::TEXT_DIM));
                 ui.add(egui::TextEdit::singleline(&mut subtitle).desired_width(f32::INFINITY));
+
+                ui.add_space(12.0);
+                ui.label(RichText::new("DESIGN").size(10.5).color(theme::TEXT_DIM));
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                    for choice in rhevia_engine::TitleDesign::ALL {
+                        if theme::chip(
+                            ui,
+                            choice.label(),
+                            design == choice,
+                            theme::ACCENT,
+                            Vec2::new(74.0, 24.0),
+                        )
+                        .on_hover_text(choice.hint())
+                        .clicked()
+                        {
+                            design = choice;
+                            apply = true;
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "How it arrives is set on the overlay slot it is put in —                          right-click the overlay number on the switcher.",
+                    )
+                    .size(10.0)
+                    .color(theme::TEXT_FAINT),
+                );
+
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if theme::button(ui, "APPLY", theme::PREVIEW, Vec2::new(100.0, 28.0)).clicked() {
@@ -3565,6 +3720,7 @@ impl StudioApp {
                 input: index,
                 text: text.clone(),
                 subtitle: subtitle.clone(),
+                design,
             });
         }
         if open {

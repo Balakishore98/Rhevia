@@ -41,6 +41,63 @@ pub fn load_image(path: &str) -> Result<Frame, SourceError> {
     })
 }
 
+/// How a lower third is drawn.
+///
+/// A full-width bar is one look and not a very good one: it covers a third
+/// of the frame to carry two words, and nothing broadcast has looked like
+/// that for twenty years. These are the arrangements that actually get used,
+/// and they are drawn to the text rather than to the frame — a short name
+/// gets a short panel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TitleDesign {
+    /// A panel sized to the words, on the left, with an accent edge. The
+    /// one to reach for when in doubt.
+    #[default]
+    Box,
+    /// The name on a solid block with the role on a narrower, softer block
+    /// beneath it. The arrangement most broadcast lower thirds use.
+    Stack,
+    /// A thick accent bar down the left with the text beside it on a panel
+    /// dark enough to read over anything.
+    Stripe,
+    /// No panel. Text with a shadow behind it and a short accent rule
+    /// underneath, for a shot too good to cover.
+    Minimal,
+    /// The full-width bar. Kept because it is unmissable, which is what a
+    /// notice or a warning wants.
+    Bar,
+}
+
+impl TitleDesign {
+    pub const ALL: [TitleDesign; 5] = [
+        TitleDesign::Box,
+        TitleDesign::Stack,
+        TitleDesign::Stripe,
+        TitleDesign::Minimal,
+        TitleDesign::Bar,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TitleDesign::Box => "BOX",
+            TitleDesign::Stack => "STACK",
+            TitleDesign::Stripe => "STRIPE",
+            TitleDesign::Minimal => "MINIMAL",
+            TitleDesign::Bar => "BAR",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            TitleDesign::Box => "a panel sized to the words, with an accent edge",
+            TitleDesign::Stack => "name on a solid block, role on a softer one beneath",
+            TitleDesign::Stripe => "a thick accent bar with the text beside it",
+            TitleDesign::Minimal => "text and a shadow, no panel — for a shot worth seeing",
+            TitleDesign::Bar => "the full width of the frame, for a notice",
+        }
+    }
+}
+
 /// How a title is drawn.
 #[derive(Debug, Clone)]
 pub struct TitleStyle {
@@ -60,6 +117,8 @@ pub struct TitleStyle {
     pub lower_third: bool,
     /// Accent stripe down the leading edge of the bar.
     pub accent: [u8; 3],
+    /// How it is arranged.
+    pub design: TitleDesign,
 }
 
 impl Default for TitleStyle {
@@ -74,6 +133,7 @@ impl Default for TitleStyle {
             background_alpha: 220,
             lower_third: true,
             accent: [76, 215, 246],
+            design: TitleDesign::default(),
         }
     }
 }
@@ -103,6 +163,96 @@ pub fn system_font() -> Result<FontVec, SourceError> {
     Err(SourceError::NoFont)
 }
 
+/// How wide `text` is at `size`, in pixels.
+///
+/// A lower third is drawn to its words, not to the frame: a two-word name
+/// gets a short panel. That cannot be done without measuring first.
+fn measure(font: &FontVec, text: &str, size: f32) -> f32 {
+    let scaled = font.as_scaled(PxScale::from(size));
+    let mut width = 0.0;
+    let mut previous: Option<char> = None;
+    for character in text.chars().filter(|c| *c != '\n') {
+        let glyph = font.glyph_id(character);
+        if let Some(prev) = previous {
+            width += scaled.kern(font.glyph_id(prev), glyph);
+        }
+        width += scaled.h_advance(glyph);
+        previous = Some(character);
+    }
+    width
+}
+
+/// Fills a rectangle with rounded corners.
+///
+/// Square corners are the single thing that makes a graphic look like a
+/// programmer drew it. The radius is small and the edge is antialiased, so
+/// it reads as a panel rather than as a box.
+fn rounded(frame: &mut Frame, x: f32, y: f32, w: f32, h: f32, radius: f32, rgba: [u8; 4]) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let radius = radius.min(w / 2.0).min(h / 2.0).max(0.0);
+    let (x0, y0, x1, y1) = (x, y, x + w, y + h);
+
+    let top = y0.floor().max(0.0) as usize;
+    let bottom = (y1.ceil() as usize).min(frame.height);
+    let left = x0.floor().max(0.0) as usize;
+    let right = (x1.ceil() as usize).min(frame.width);
+
+    for py in top..bottom {
+        for px in left..right {
+            let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+            // Signed distance to the rounded rectangle: negative inside,
+            // positive outside, zero on the edge. Taking only the positive
+            // part -- which is the obvious way to write it -- leaves every
+            // interior pixel at distance zero, and therefore at half
+            // coverage, so the whole panel came out at half the opacity it
+            // was asked for.
+            let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+            let qx = (fx - cx).abs() - (x1 - x0) / 2.0 + radius;
+            let qy = (fy - cy).abs() - (y1 - y0) / 2.0 + radius;
+            let outside = (qx.max(0.0).hypot(qy.max(0.0)))
+                + qx.max(qy).min(0.0)
+                - radius;
+            // One pixel of softness along the edge.
+            let coverage = (0.5 - outside).clamp(0.0, 1.0);
+            if coverage <= 0.0 {
+                continue;
+            }
+            let a = rgba[3] as f32 / 255.0 * coverage;
+            let under = frame.pixel(px, py).unwrap_or([0, 0, 0, 0]);
+            frame.set_pixel(
+                px,
+                py,
+                [
+                    (rgba[0] as f32 * a + under[0] as f32 * (1.0 - a)) as u8,
+                    (rgba[1] as f32 * a + under[1] as f32 * (1.0 - a)) as u8,
+                    (rgba[2] as f32 * a + under[2] as f32 * (1.0 - a)) as u8,
+                    ((a + under[3] as f32 / 255.0 * (1.0 - a)) * 255.0).min(255.0) as u8,
+                ],
+            );
+        }
+    }
+}
+
+/// A soft dark shadow behind text, so it reads over a bright shot.
+///
+/// Drawn as the text itself in black at a few offsets rather than as a blur,
+/// which costs a fraction as much and is indistinguishable at this size.
+fn text_shadow(
+    frame: &mut Frame,
+    font: &FontVec,
+    text: &str,
+    left: f32,
+    baseline: f32,
+    size: f32,
+) {
+    let spread = (size * 0.045).max(1.0);
+    for (dx, dy) in [(spread, spread), (-spread, spread), (0.0, spread * 1.6)] {
+        draw_text(frame, font, text, left + dx, baseline + dy, size, [0, 0, 0]);
+    }
+}
+
 /// Renders a title onto a transparent frame, ready to composite as an overlay.
 pub fn render_title(
     font: &FontVec,
@@ -117,64 +267,211 @@ pub fn render_title(
 
     let headline_px = (height as f32 * style.size).max(8.0);
     let subtitle_px = headline_px * 0.55;
-    let padding = headline_px * 0.55;
-
+    let pad = headline_px * 0.55;
     let has_subtitle = !style.subtitle.trim().is_empty();
-    let text_block = headline_px + if has_subtitle { subtitle_px * 1.35 } else { 0.0 };
-    let bar_height = text_block + padding * 2.0;
 
-    let bar_top = if style.lower_third {
-        // Sits on the lower third line, clear of the bottom edge so it
-        // survives a display that overscans.
-        (height as f32 * 0.70).min(height as f32 - bar_height - height as f32 * 0.06)
+    let panel = [
+        style.background[0],
+        style.background[1],
+        style.background[2],
+        style.background_alpha,
+    ];
+    let accent = [style.accent[0], style.accent[1], style.accent[2], 255];
+    let radius = headline_px * 0.14;
+
+    // Where the whole thing sits. Clear of the bottom edge so it survives a
+    // display that overscans, which a projector in a hall usually does.
+    let block = headline_px + if has_subtitle { subtitle_px * 1.45 } else { 0.0 };
+    let panel_height = block + pad * 2.0;
+    let margin = width as f32 * 0.055;
+    let top = if style.lower_third {
+        (height as f32 * 0.72).min(height as f32 - panel_height - height as f32 * 0.07)
     } else {
-        (height as f32 - bar_height) / 2.0
-    };
-    let bar_top = bar_top.max(0.0);
-    let bar_bottom = (bar_top + bar_height).min(height as f32);
-
-    // ---- the bar --------------------------------------------------------
-    let accent_width = (width as f32 * 0.006).max(3.0);
-    for y in bar_top as usize..bar_bottom as usize {
-        for x in 0..width {
-            let rgba = if (x as f32) < padding * 0.6 + accent_width && (x as f32) >= padding * 0.6 {
-                [style.accent[0], style.accent[1], style.accent[2], 255]
-            } else {
-                [
-                    style.background[0],
-                    style.background[1],
-                    style.background[2],
-                    style.background_alpha,
-                ]
-            };
-            frame.set_pixel(x, y, rgba);
-        }
+        (height as f32 - panel_height) / 2.0
     }
+    .max(0.0);
 
-    // ---- the text -------------------------------------------------------
-    let text_left = padding * 0.6 + accent_width + padding * 0.7;
-    let headline_baseline = bar_top + padding + headline_px * 0.78;
-    draw_text(
-        &mut frame,
-        font,
-        &style.text,
-        text_left,
-        headline_baseline,
-        headline_px,
-        style.colour,
-    );
+    let headline_width = measure(font, &style.text, headline_px);
+    let subtitle_width = if has_subtitle {
+        measure(font, &style.subtitle, subtitle_px)
+    } else {
+        0.0
+    };
 
-    if has_subtitle {
-        let subtitle_baseline = headline_baseline + subtitle_px * 1.35;
-        draw_text(
-            &mut frame,
-            font,
-            &style.subtitle,
-            text_left,
-            subtitle_baseline,
-            subtitle_px,
-            style.subtitle_colour,
-        );
+    match style.design {
+        // ---- the full-width bar -----------------------------------------
+        TitleDesign::Bar => {
+            let stripe = (width as f32 * 0.006).max(3.0);
+            rounded(&mut frame, 0.0, top, width as f32, panel_height, 0.0, panel);
+            rounded(&mut frame, margin * 0.5, top, stripe, panel_height, 0.0, accent);
+
+            let left = margin * 0.5 + stripe + pad;
+            let baseline = top + pad + headline_px * 0.78;
+            draw_text(&mut frame, font, &style.text, left, baseline, headline_px, style.colour);
+            if has_subtitle {
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left,
+                    baseline + subtitle_px * 1.45,
+                    subtitle_px,
+                    style.subtitle_colour,
+                );
+            }
+        }
+
+        // ---- a panel sized to the words ---------------------------------
+        TitleDesign::Box => {
+            let stripe = (headline_px * 0.12).max(3.0);
+            let text_width = headline_width.max(subtitle_width);
+            let panel_width = (stripe + pad * 1.6 + text_width + pad * 1.4)
+                .min(width as f32 - margin * 2.0);
+
+            rounded(&mut frame, margin, top, panel_width, panel_height, radius, panel);
+            // The accent sits inside the rounded edge rather than on it, so
+            // the corner stays round.
+            rounded(
+                &mut frame,
+                margin + pad * 0.45,
+                top + pad * 0.5,
+                stripe,
+                panel_height - pad,
+                stripe * 0.5,
+                accent,
+            );
+
+            let left = margin + pad * 0.45 + stripe + pad;
+            let baseline = top + pad + headline_px * 0.78;
+            draw_text(&mut frame, font, &style.text, left, baseline, headline_px, style.colour);
+            if has_subtitle {
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left,
+                    baseline + subtitle_px * 1.45,
+                    subtitle_px,
+                    style.subtitle_colour,
+                );
+            }
+        }
+
+        // ---- name over role, two blocks ---------------------------------
+        TitleDesign::Stack => {
+            let name_height = headline_px + pad * 1.2;
+            let name_width =
+                (headline_width + pad * 2.4).min(width as f32 - margin * 2.0);
+            rounded(&mut frame, margin, top, name_width, name_height, radius, panel);
+
+            let baseline = top + pad * 0.6 + headline_px * 0.78;
+            draw_text(
+                &mut frame,
+                font,
+                &style.text,
+                margin + pad * 1.2,
+                baseline,
+                headline_px,
+                style.colour,
+            );
+
+            if has_subtitle {
+                // The role sits under the name on the accent, indented, and
+                // shorter — which is what tells the eye which is which
+                // before either has been read.
+                let role_height = subtitle_px + pad * 0.9;
+                let role_width =
+                    (subtitle_width + pad * 1.8).min(width as f32 - margin * 2.0);
+                let role_top = top + name_height + pad * 0.18;
+                rounded(
+                    &mut frame,
+                    margin + pad * 0.5,
+                    role_top,
+                    role_width,
+                    role_height,
+                    radius * 0.8,
+                    accent,
+                );
+                // Dark text on the accent, which is bright by definition.
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    margin + pad * 0.5 + pad * 0.9,
+                    role_top + pad * 0.45 + subtitle_px * 0.78,
+                    subtitle_px,
+                    [10, 14, 20],
+                );
+            }
+        }
+
+        // ---- a thick accent bar with the text beside it -----------------
+        TitleDesign::Stripe => {
+            let stripe = (headline_px * 0.3).max(6.0);
+            let text_width = headline_width.max(subtitle_width);
+            let panel_width =
+                (stripe + pad * 1.2 + text_width + pad * 1.2).min(width as f32 - margin * 2.0);
+
+            rounded(&mut frame, margin, top, panel_width, panel_height, radius, panel);
+            rounded(&mut frame, margin, top, stripe, panel_height, radius, accent);
+
+            let left = margin + stripe + pad * 1.2;
+            let baseline = top + pad + headline_px * 0.78;
+            draw_text(&mut frame, font, &style.text, left, baseline, headline_px, style.colour);
+            if has_subtitle {
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left,
+                    baseline + subtitle_px * 1.45,
+                    subtitle_px,
+                    style.subtitle_colour,
+                );
+            }
+        }
+
+        // ---- no panel at all --------------------------------------------
+        TitleDesign::Minimal => {
+            let left = margin;
+            let baseline = top + pad + headline_px * 0.78;
+            text_shadow(&mut frame, font, &style.text, left, baseline, headline_px);
+            draw_text(&mut frame, font, &style.text, left, baseline, headline_px, style.colour);
+
+            // A short rule under the name, the width of the accent rather
+            // than of the words: it is a mark, not an underline.
+            let rule_top = baseline + headline_px * 0.28;
+            rounded(
+                &mut frame,
+                left,
+                rule_top,
+                headline_px * 1.6,
+                (headline_px * 0.075).max(2.0),
+                headline_px * 0.04,
+                accent,
+            );
+
+            if has_subtitle {
+                let subtitle_baseline = rule_top + subtitle_px * 1.5;
+                text_shadow(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left,
+                    subtitle_baseline,
+                    subtitle_px,
+                );
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left,
+                    subtitle_baseline,
+                    subtitle_px,
+                    style.subtitle_colour,
+                );
+            }
+        }
     }
 
     frame
@@ -286,27 +583,75 @@ mod tests {
         assert_eq!(frame.pixel(2, 0), Some([0, 0, 255, 0]));
     }
 
+    /// True if anything solid is drawn in this column.
+    fn drawn_in_column(frame: &Frame, x: usize, from: usize, to: usize) -> bool {
+        (from..to).filter_map(|y| frame.pixel(x, y)).any(|px| px[3] > 200)
+    }
+
     #[test]
-    fn a_title_draws_a_bar_in_the_lower_third_and_leaves_the_top_clear() {
+    fn every_design_stays_in_the_lower_third_and_leaves_the_top_clear() {
+        // Whatever it is arranged as, a lower third belongs at the bottom.
+        // A graphic that creeps up the frame covers the face it is naming.
         let Some(font) = test_font() else {
             eprintln!("SKIP: no system font");
             return;
         };
-        let style = TitleStyle {
-            text: "ALEX CARTER".into(),
-            subtitle: "LEAD ANALYST".into(),
-            ..Default::default()
+        for design in TitleDesign::ALL {
+            let style = TitleStyle {
+                text: "ALEX CARTER".into(),
+                subtitle: "LEAD ANALYST".into(),
+                design,
+                ..Default::default()
+            };
+            let frame = render_title(&font, &style, 640, 360);
+
+            for y in [10, 60, 120, 180] {
+                let clear = (0..640)
+                    .step_by(7)
+                    .filter_map(|x| frame.pixel(x, y))
+                    .all(|px| px[3] == 0);
+                assert!(clear, "{} drew something at y={y}", design.label());
+            }
+            assert!(
+                drawn_in_column(&frame, 90, 230, 360),
+                "{} drew nothing in the lower third at all",
+                design.label()
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_bar_takes_the_whole_width() {
+        // The point of the other four is that they are drawn to their words
+        // and leave the shot showing. A design that reaches the far edge of
+        // a 640-wide frame with two short lines in it is drawing a bar by
+        // another name.
+        let Some(font) = test_font() else {
+            eprintln!("SKIP: no system font");
+            return;
         };
-        let frame = render_title(&font, &style, 640, 360);
+        for design in TitleDesign::ALL {
+            let style = TitleStyle {
+                text: "ALEX CARTER".into(),
+                subtitle: "LEAD ANALYST".into(),
+                design,
+                ..Default::default()
+            };
+            let frame = render_title(&font, &style, 640, 360);
+            let reaches_the_edge = drawn_in_column(&frame, 620, 230, 360);
 
-        let top = frame.pixel(320, 30).unwrap();
-        assert_eq!(top[3], 0, "the top of the frame must stay transparent");
-
-        // Somewhere in the lower third there should be an opaque bar.
-        let bar = (250..330)
-            .filter_map(|y| frame.pixel(320, y))
-            .any(|px| px[3] > 200);
-        assert!(bar, "expected a lower-third bar");
+            match design {
+                TitleDesign::Bar => assert!(
+                    reaches_the_edge,
+                    "the bar is supposed to cross the frame"
+                ),
+                _ => assert!(
+                    !reaches_the_edge,
+                    "{} covered the whole width, which is what the bar is for",
+                    design.label()
+                ),
+            }
+        }
     }
 
     #[test]
@@ -331,20 +676,37 @@ mod tests {
     }
 
     #[test]
-    fn a_full_frame_title_centres_its_bar_instead() {
+    fn a_full_frame_title_sits_in_the_middle_instead() {
+        // Turning the lower third off means "put it in the middle", which is
+        // what a notice or a holding slide wants.
         let Some(font) = test_font() else {
             eprintln!("SKIP: no system font");
             return;
         };
-        let style = TitleStyle {
-            text: "FULL SCREEN".into(),
-            lower_third: false,
-            ..Default::default()
-        };
-        let frame = render_title(&font, &style, 640, 360);
+        for design in TitleDesign::ALL {
+            let style = TitleStyle {
+                text: "FULL SCREEN".into(),
+                lower_third: false,
+                design,
+                ..Default::default()
+            };
+            let frame = render_title(&font, &style, 640, 360);
 
-        let centre = frame.pixel(320, 180).unwrap();
-        assert!(centre[3] > 200, "the bar should cross the middle: {centre:?}");
+            // Drawn across the middle band, and not down at the bottom.
+            assert!(
+                drawn_in_column(&frame, 90, 140, 230),
+                "{} drew nothing in the middle",
+                design.label()
+            );
+            let at_the_bottom = (330..360)
+                .filter_map(|y| frame.pixel(90, y))
+                .any(|px| px[3] > 200);
+            assert!(
+                !at_the_bottom,
+                "{} stayed at the bottom when it was asked for the middle",
+                design.label()
+            );
+        }
     }
 
     #[test]

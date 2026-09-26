@@ -588,6 +588,13 @@ pub struct Snapshot {
     pub stream_size: crate::settings::StreamSize,
     pub stream_kbps: u32,
     pub stream_audio_kbps: u32,
+    /// Pictures the encoder was too busy to take.
+    ///
+    /// Dropping one is far better than holding the whole production back to
+    /// the speed of the encoder, but a number climbing steadily means the
+    /// stream is being made at less than the production runs at, and that is
+    /// something an operator should be told rather than left to notice.
+    pub stream_dropped: u64,
     /// What it is actually using, measured over the last few seconds.
     ///
     /// Not the same number as the one it was told to use: an encoder spends
@@ -926,6 +933,18 @@ struct Delivery {
     /// Counting samples rather than reading a clock keeps audio and video
     /// locked together however the frame rate actually behaves.
     audio_samples: u64,
+    /// Where the programme clock stood when this destination was opened.
+    ///
+    /// Timestamps have to start near zero for the destination, not for the
+    /// engine. Sound has always been counted from the first block this
+    /// delivery sent; pictures were being stamped with the engine's own
+    /// clock, which has been running since Rhevia opened. Going live four
+    /// minutes into a session therefore sent pictures stamped at four
+    /// minutes alongside sound stamped at zero, and a player handed that
+    /// shows black while reporting the connection as excellent -- which is
+    /// exactly what was reported, from a machine whose timecode read
+    /// 00:04:11 when the operator pressed GO LIVE.
+    opened_at_ms: u64,
     /// The last time stamped on a picture.
     ///
     /// The programme clock is measured in milliseconds, and two pictures can
@@ -1281,7 +1300,7 @@ fn run(
                         if transition_kind.is_instant() {
                             std::mem::swap(&mut program_input, &mut preview_input);
                             mixer.request_keyframe();
-                    encoding.tell(EncodeJob::Keyframe);
+                            encoding.tell(EncodeJob::Keyframe);
                         } else {
                             transition = Some(0.0);
                         }
@@ -1901,7 +1920,11 @@ fn run(
                     }
                 }
                 Command::StartStream { url, key } => {
-                    match open_delivery(&url, &key, stream_audio_kbps) {
+                    // Where the programme clock stands now, so this
+                    // destination's pictures start near zero rather than at
+                    // however long Rhevia has been open.
+                    let opened_at = programme_samples * 1000 / SAMPLE_RATE as u64;
+                    match open_delivery(&url, &key, stream_audio_kbps, opened_at) {
                         Ok(d) => {
                             deliveries.push(d);
                             stream_error = None;
@@ -2582,6 +2605,7 @@ fn run(
             s.stream_kbps = stream_kbps;
             s.stream_audio_kbps = stream_audio_kbps;
             s.stream_measured_kbps = measured_kbps;
+            s.stream_dropped = encoding.dropped.load(Ordering::Relaxed);
             let (padded, trimmed) = sources
                 .iter()
                 .filter_map(|slot| match &slot.source {
@@ -2727,13 +2751,18 @@ pub fn redact_rtmp(url: &str) -> String {
     }
 }
 
-fn open_delivery(url: &str, key: &str, audio_kbps: u32) -> anyhow::Result<Delivery> {
+fn open_delivery(
+    url: &str,
+    key: &str,
+    audio_kbps: u32,
+    opened_at_ms: u64,
+) -> anyhow::Result<Delivery> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let address;
 
-    let transport = if is_srt(url) {
+    let mut transport = if is_srt(url) {
         // A stream key has no meaning in SRT; the equivalent is the stream id,
         // which rides in the address. Rather than ignore a key the operator
         // typed, it is used as the stream id when the address has none.
@@ -2762,6 +2791,31 @@ fn open_delivery(url: &str, key: &str, audio_kbps: u32) -> anyhow::Result<Delive
         Transport::Rtmp(publisher)
     };
 
+    // Described before anything is sent. A platform sets its transcode up
+    // from this, and without it YouTube accepts the connection, reports the
+    // health as excellent, counts the megabits and shows black -- which is
+    // exactly what was reported. A local ffmpeg server works it out from the
+    // bitstream instead, which is why this was missing for so long.
+    if let Transport::Rtmp(publisher) = &mut transport {
+        let chosen = crate::settings::Settings::load();
+        let (width, height) = chosen.stream_size.size();
+        let mut described = rhevia_output::StreamMetadata::new();
+        described.video_width = Some(width as u32);
+        described.video_height = Some(height as u32);
+        // 7 is AVC and 10 is AAC, as FLV numbers them.
+        described.video_codec_id = Some(7);
+        described.audio_codec_id = Some(10);
+        described.video_frame_rate = Some(TARGET_FPS());
+        described.video_bitrate_kbps = Some(chosen.stream_kbps);
+        described.audio_bitrate_kbps = Some(audio_kbps);
+        described.audio_sample_rate = Some(SAMPLE_RATE);
+        described.audio_channels = Some(2);
+        described.audio_is_stereo = Some(true);
+        described.encoder = Some(format!("Rhevia {}", env!("CARGO_PKG_VERSION")));
+
+        runtime.block_on(async { publisher.send_metadata(&described).await })?;
+    }
+
     // A failed audio encoder must not stop the stream: video only is far
     // better than nothing, and the operator is told in the status line.
     let audio = match rhevia_output::AacEncoder::new(SAMPLE_RATE, 2, audio_kbps * 1000) {
@@ -2785,6 +2839,7 @@ fn open_delivery(url: &str, key: &str, audio_kbps: u32) -> anyhow::Result<Delive
         audio,
         sent_audio_config: false,
         audio_samples: 0,
+        opened_at_ms,
         last_video_ms: 0,
     })
 }
@@ -2890,10 +2945,11 @@ fn publish(d: &mut Delivery, annexb: &[u8], at_ms: u64) -> anyhow::Result<()> {
     if units.is_empty() {
         return Ok(());
     }
-    // Later than the last one, always. Anchored to the programme clock, but
-    // never allowed to stand still: a muxer rejects a picture that is not
-    // after the one before it, and two can fall in the same millisecond.
-    let at_ms = at_ms.max(d.last_video_ms + 1);
+    // Counted from when this destination was opened, so it starts near zero
+    // however long Rhevia has been running, and always later than the last
+    // one: a muxer rejects a picture that is not after the one before it,
+    // and two can fall inside the same millisecond.
+    let at_ms = at_ms.saturating_sub(d.opened_at_ms).max(d.last_video_ms + 1);
     d.sets.absorb(&units);
     let keyframe = h264::is_keyframe(&units);
 
@@ -4468,6 +4524,22 @@ mod tests {
             // Facebook hand them out. Joining the two is Rhevia's job, and
             // getting it wrong produces a stream that connects and carries
             // nothing -- which is what was reported.
+            // Going live some way into a session, which is what actually
+            // happens: an operator opens Rhevia, sets the show up, and
+            // presses GO LIVE minutes later. Timestamps have to start near
+            // zero for the destination rather than for the engine, and the
+            // screenshots that prompted this showed a timecode of 00:04:11
+            // at the moment GO LIVE was pressed.
+            // Left running first. Pressing GO LIVE the instant the engine
+            // starts is the one case where the engine's clock and the
+            // destination's happen to agree, so a test that does that proves
+            // nothing about the case that fails.
+            std::thread::sleep(Duration::from_secs(6));
+            let before_live = engine.snapshot();
+            eprintln!(
+                "  going live {} frames into the session",
+                before_live.stats.frames_rendered
+            );
             engine.send(Command::StartStream {
                 url: format!("rtmp://127.0.0.1:{port}/live"),
                 key: "rheviatest".into(),
@@ -4530,11 +4602,23 @@ mod tests {
             // stream is carrying what is being made.
             let rendered = sending.stats.frames_rendered;
             assert!(
-                sending.stats.frames_encoded * 2 >= rendered.min(240),
-                "{} pictures were composited and only {} of them were encoded",
-                rendered,
-                sending.stats.frames_encoded
+                sending.stats.frames_encoded > 0,
+                "{rendered} pictures were composited and none of them were encoded"
             );
+            // How many of them get encoded is a claim about speed, and an
+            // unoptimised build encodes 1080p an order of magnitude slower
+            // than it composites it. Dropping stream frames rather than
+            // holding the production back is the intended behaviour; whether
+            // it needs to is only meaningful in a build made the way it
+            // ships.
+            if !cfg!(debug_assertions) {
+                assert!(
+                    sending.stats.frames_encoded * 2 >= rendered.min(240),
+                    "{} pictures were composited and only {} of them were encoded",
+                    rendered,
+                    sending.stats.frames_encoded
+                );
+            }
 
             // ---- what actually arrived ----------------------------------
             let probe = std::process::Command::new("ffprobe")
@@ -4554,6 +4638,31 @@ mod tests {
             }
 
             assert!(size > 0, "the server received nothing");
+
+            // ---- the stream describes itself ----------------------------
+            // A platform sets its transcode up from onMetaData before the
+            // first picture arrives. Without it YouTube accepts the
+            // connection, reports the health as excellent, counts the
+            // megabits and shows black -- and a local ffmpeg server never
+            // notices, because it reads the bitstream and works it out.
+            // So this looks for the metadata in the bytes themselves.
+            let raw = std::fs::read(&received).expect("read what the server wrote");
+            let has = |needle: &str| {
+                raw.windows(needle.len()).any(|w| w == needle.as_bytes())
+            };
+            eprintln!(
+                "  describes itself: onMetaData {}, width {}, framerate {}",
+                has("onMetaData"),
+                has("width"),
+                has("framerate")
+            );
+            assert!(
+                has("onMetaData"),
+                "the stream never described itself, so a platform has nothing to set                  its transcode up from"
+            );
+            for field in ["width", "height", "framerate", "videocodecid", "audiocodecid"] {
+                assert!(has(field), "the description is missing {field}");
+            }
             assert!(
                 described.contains("codec_type=video"),
                 "no video arrived at the other end:\n{described}"
@@ -4589,6 +4698,33 @@ mod tests {
                     .filter_map(|l| l.trim().trim_end_matches(',').parse::<f32>().ok())
                     .fold(0.0f32, f32::max)
             };
+            let first_dts = |stream: &str| -> f32 {
+                let out = std::process::Command::new("ffprobe")
+                    .args([
+                        "-v", "error", "-select_streams", stream,
+                        "-show_entries", "packet=dts_time",
+                        "-of", "csv=p=0", "-read_intervals", "%+#1",
+                    ])
+                    .arg(&received)
+                    .output()
+                    .expect("ffprobe should run");
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter_map(|l| l.trim().trim_end_matches(',').parse::<f32>().ok())
+                    .next()
+                    .unwrap_or(f32::NAN)
+            };
+            let (video_start, audio_start) = (first_dts("v"), first_dts("a"));
+            eprintln!("  first picture at {video_start:.2}s, first sound at {audio_start:.2}s");
+            assert!(
+                video_start < 2.0,
+                "the first picture is stamped {video_start:.2}s in, so the stream starts                  with minutes of nothing -- the clock is the engine's, not this                  destination's"
+            );
+            assert!(
+                (video_start - audio_start).abs() < 1.0,
+                "the picture starts at {video_start:.2}s and the sound at                  {audio_start:.2}s: a player handed that shows black"
+            );
+
             let (video_end, audio_end) = (last_dts("v"), last_dts("a"));
             let drift = (video_end - audio_end).abs();
             eprintln!(

@@ -8,9 +8,13 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rml_rtmp::handshake::{Handshake, HandshakeProcessResult, PeerType};
+/// Re-exported so a caller can describe a stream without depending on
+/// rml_rtmp directly.
+pub use rml_rtmp::sessions::StreamMetadata;
+
 use rml_rtmp::sessions::{
     ClientSession, ClientSessionConfig, ClientSessionEvent, ClientSessionResult,
-    PublishRequestType, StreamMetadata,
+    PublishRequestType,
 };
 use rml_rtmp::time::RtmpTimestamp;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -241,7 +245,15 @@ impl RtmpPublisher {
         .await
     }
 
-    /// Describes the stream so platforms can show resolution and bitrate.
+    /// Describes the stream, before any of it is sent.
+    ///
+    /// This is `@setDataFrame`/`onMetaData`, and it is not decoration. A
+    /// platform's ingest uses it to set up the transcode before the first
+    /// picture arrives; without it YouTube accepts the connection, reports
+    /// the health as excellent, counts the megabits, and shows black. A
+    /// local ffmpeg acting as a server does not care -- it reads the
+    /// bitstream and works it out -- which is exactly why a stream can pass
+    /// every test here and still show nothing on air.
     pub async fn send_metadata(&mut self, metadata: &StreamMetadata) -> Result<(), RtmpError> {
         let result = self
             .session

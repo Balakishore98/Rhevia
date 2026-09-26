@@ -15,5 +15,5 @@ pub use aac::{AacEncoder, AacError, AacFrame};
 pub use flv::AudioFormat;
 pub use h264::ParameterSets;
 pub use mpegts::TsMuxer;
-pub use rtmp::{RtmpError, RtmpPublisher, RtmpUrl};
+pub use rtmp::{RtmpError, RtmpPublisher, RtmpUrl, StreamMetadata};
 pub use srt::{SrtError, SrtMode, SrtPublisher, SrtUrl};

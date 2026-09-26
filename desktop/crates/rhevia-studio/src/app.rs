@@ -1885,6 +1885,16 @@ impl StudioApp {
                             theme::PROGRAM
                         }),
                     );
+                    if snapshot.stream_dropped > 0 {
+                        ui.label(
+                            RichText::new(format!(
+                                "The encoder could not keep up with {} pictures — the                                  stream is smoother at a smaller size.",
+                                snapshot.stream_dropped
+                            ))
+                            .font(theme::mono(10.5))
+                            .color(theme::WARN),
+                        );
+                    }
                     if snapshot.ftb {
                         ui.label(
                             RichText::new(

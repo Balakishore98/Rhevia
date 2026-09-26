@@ -45,17 +45,30 @@ if ($running) {
     }
 }
 
+# Built into a directory of its own.
+#
+# Sharing target/ with the ordinary build means the last thing built wins, and
+# whichever it was is what install.ps1 then installs. That happened: a run of
+# this script left the 57 MB packed binary sitting where the 15 MB one should
+# be, and the next install put the packed one on the machine as though it were
+# the normal one. Nothing was broken by it, but nobody could tell by looking.
+$packedTarget = Join-Path $desktop "target/packed"
+
 Write-Host "Building the single-file Rhevia."
 Push-Location $desktop
 try {
+    $env:CARGO_TARGET_DIR = $packedTarget
     cargo build --release -p rhevia-studio --features packed
-    if ($LASTEXITCODE -ne 0) { throw "the build failed" }
+    $code = $LASTEXITCODE
+    Remove-Item Env:\CARGO_TARGET_DIR -ErrorAction SilentlyContinue
+    if ($code -ne 0) { throw "the build failed" }
 } finally {
+    Remove-Item Env:\CARGO_TARGET_DIR -ErrorAction SilentlyContinue
     Pop-Location
 }
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
-$built = Join-Path $desktop "target/release/rhevia-studio.exe"
+$built = Join-Path $packedTarget "release/rhevia-studio.exe"
 $packed = Join-Path $Out "Rhevia-Studio.exe"
 
 # Retried rather than slept past: Windows can hold an image open for a moment

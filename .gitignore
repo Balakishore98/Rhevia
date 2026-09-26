@@ -12,3 +12,10 @@ vMixUserGuide.pdf
 
 # Rust build output
 desktop/target/
+
+# The ffmpeg Rhevia carries in its packed build.
+#
+# Fetched by install/fetch-ffmpeg.py rather than kept here: it is 44 MB of
+# someone else's binary, it is reproducible from a tagged release, and a
+# repository is a poor place to store either.
+desktop/vendor/

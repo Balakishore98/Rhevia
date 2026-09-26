@@ -6,6 +6,7 @@
 mod app;
 mod audio_ui;
 mod engine;
+mod runtime;
 mod settings;
 mod theme;
 
@@ -81,6 +82,11 @@ fn main() -> eframe::Result<()> {
                 .unwrap_or_else(|_| "rhevia_studio=info,rhevia_pipeline=info".into()),
         )
         .init();
+
+    // Lays out the ffmpeg this build carries, if it carries one. Done before
+    // anything asks whether ffmpeg exists, so the answer is about the copy
+    // Rhevia brought rather than about the machine.
+    runtime::unpack();
 
     let engine = engine::start();
 

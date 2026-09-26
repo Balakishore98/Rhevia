@@ -21,7 +21,11 @@ use crate::engine::{self, Command, EngineHandle, Layout, MediaAction, Snapshot};
 use rhevia_engine::Transition;
 use crate::theme;
 
-const TARGET_FPS: f32 = 30.0;
+/// What the production is running at, asked of the engine rather than
+/// assumed: it is the operator's choice now.
+fn target_fps() -> f32 {
+    engine::TARGET_FPS()
+}
 
 /// The strip under each monitor: the position bar, the buttons and the gaps.
 const TRANSPORT_HEIGHT: f32 = 33.0;
@@ -33,7 +37,7 @@ const TRANSPORT_HEIGHT: f32 = 33.0;
 /// the kind of label an operator trusts and should not have to.
 fn canvas_label() -> String {
     let (w, h) = engine::output_size();
-    format!("{w}x{h}p{}", TARGET_FPS as u32)
+    format!("{w}x{h}p{}", target_fps() as u32)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -742,7 +746,7 @@ impl StudioApp {
                     // Engine load: how much of the frame budget compositing
                     // took. Above 100% the mixer cannot keep up, which is the
                     // figure that actually predicts dropped frames.
-                    let budget_ms = 1000.0 / TARGET_FPS;
+                    let budget_ms = 1000.0 / target_fps();
                     let load = (s.render_ms / budget_ms * 100.0).clamp(0.0, 999.0);
                     let load_colour = if load > 90.0 {
                         theme::PROGRAM
@@ -753,7 +757,7 @@ impl StudioApp {
                     };
                     theme::readout(ui, "ENGINE LOAD", &format!("{load:.0}%"), load_colour);
 
-                    let fps_colour = if s.fps < TARGET_FPS * 0.9 && s.fps > 0.0 {
+                    let fps_colour = if s.fps < target_fps() * 0.9 && s.fps > 0.0 {
                         theme::WARN
                     } else {
                         theme::PREVIEW
@@ -764,7 +768,7 @@ impl StudioApp {
                     // be running at rate while the window draws at half of
                     // it, and then the production looks like it is stuttering
                     // when only the monitor of it is.
-                    let drawn_colour = if self.draw_fps < TARGET_FPS * 0.9 && self.draw_fps > 0.0 {
+                    let drawn_colour = if self.draw_fps < target_fps() * 0.9 && self.draw_fps > 0.0 {
                         theme::WARN
                     } else {
                         theme::PREVIEW
@@ -2261,6 +2265,49 @@ impl StudioApp {
                             );
                         }
 
+                        ui.add_space(12.0);
+                        ui.label(
+                            RichText::new("PICTURES A SECOND")
+                                .size(10.5)
+                                .strong()
+                                .color(theme::TEXT_DIM),
+                        );
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                            for rate in crate::settings::FrameRate::ALL {
+                                if theme::chip(
+                                    ui,
+                                    rate.label(),
+                                    self.settings.frame_rate == rate,
+                                    theme::ACCENT,
+                                    Vec2::new(46.0, 24.0),
+                                )
+                                .on_hover_text(format!(
+                                    "{} a second — {:.0}% of the work thirty costs",
+                                    rate.label(),
+                                    rate.cost() * 100.0
+                                ))
+                                .clicked()
+                                {
+                                    self.settings.frame_rate = rate;
+                                    self.settings.save();
+                                }
+                            }
+                        });
+                        if (self.settings.frame_rate.fps() - target_fps()).abs() > 0.01 {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "Running at {:.0} a second — restart Rhevia for {}.",
+                                    target_fps(),
+                                    self.settings.frame_rate.label()
+                                ))
+                                .size(10.5)
+                                .color(theme::PROGRAM),
+                            );
+                        }
+
                         ui.add_space(14.0);
                         ui.label(RichText::new("MONITORING").size(12.0).strong().color(theme::TEXT));
                         ui.add_space(6.0);
@@ -2526,7 +2573,7 @@ impl StudioApp {
                                     "{} x {} @ {} fps",
                                     engine::output_size().0,
                                     engine::output_size().1,
-                                    TARGET_FPS as u32
+                                    target_fps() as u32
                                 ),
                             ),
                             ("Video codec", "H.264 · OpenH264 (BSD-2-Clause)".to_string()),
@@ -3596,7 +3643,7 @@ fn shorten(name: &str) -> String {
 /// Timecode from the engine frame count, so it counts production time rather
 /// than wall clock and stops when the engine does.
 fn timecode(frames: u64) -> String {
-    let fps = TARGET_FPS as u64;
+    let fps = target_fps() as u64;
     let seconds = frames / fps;
     format!(
         "{:02}:{:02}:{:02}:{:02}",

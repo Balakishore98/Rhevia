@@ -68,6 +68,69 @@ impl Resolution {
     }
 }
 
+/// How many pictures a second the production runs at.
+///
+/// Not fixed at thirty. Thirty is what broadcast in this part of the world
+/// settled on and it is the right default, but a machine with cores to spare
+/// can run a production at fifty or sixty and it will look materially
+/// smoother on anything that moves -- and a projector fed from Rhevia shows
+/// that difference plainly.
+///
+/// Like the resolution, this is decided before anything opens: every decoder
+/// is started at this rate and the encoder is built around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrameRate {
+    /// Film. For a production that wants to look like one.
+    P24,
+    /// What Europe and India broadcast at.
+    P25,
+    #[default]
+    P30,
+    P50,
+    /// Twice broadcast. Worth it for anything with movement in it, on a
+    /// machine that can hold the rate.
+    P60,
+}
+
+impl FrameRate {
+    pub const ALL: [FrameRate; 5] =
+        [FrameRate::P24, FrameRate::P25, FrameRate::P30, FrameRate::P50, FrameRate::P60];
+
+    pub fn fps(self) -> f32 {
+        match self {
+            FrameRate::P24 => 24.0,
+            FrameRate::P25 => 25.0,
+            FrameRate::P30 => 30.0,
+            FrameRate::P50 => 50.0,
+            FrameRate::P60 => 60.0,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameRate::P24 => "24",
+            FrameRate::P25 => "25",
+            FrameRate::P30 => "30",
+            FrameRate::P50 => "50",
+            FrameRate::P60 => "60",
+        }
+    }
+
+    /// What it costs, relative to thirty.
+    ///
+    /// Everything per-picture happens this many times more often: the
+    /// compositing, the two monitor pictures and the encoding. Said plainly
+    /// because choosing sixty on a machine that cannot hold it is worse than
+    /// choosing thirty on one that can.
+    pub fn cost(self) -> f32 {
+        self.fps() / 30.0
+    }
+
+    fn from_label(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.label() == text)
+    }
+}
+
 /// What size the stream leaves at.
 ///
 /// Separate from the production size on purpose. A church hall with a slow
@@ -163,6 +226,7 @@ pub const AUDIO_KBPS_CHOICES: [u32; 4] = [64, 96, 128, 192];
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub resolution: Resolution,
+    pub frame_rate: FrameRate,
     /// Whether the programme is played to the operator.
     pub monitor: bool,
     /// Which device it is played through, or None for whatever Windows
@@ -190,6 +254,7 @@ impl Default for Settings {
         // has found a fault, not a preference.
         Self {
             resolution: Resolution::default(),
+            frame_rate: FrameRate::default(),
             monitor: true,
             monitor_device: None,
             output_display: None,
@@ -231,6 +296,7 @@ impl Settings {
         format!(
             "# Rhevia. Resolution takes effect when Rhevia is restarted.\n\
              resolution = {}\n\
+             frame_rate = {}\n\
              monitor = {}\n\
              monitor_device = {}\n\
              output_display = {}\n\
@@ -238,6 +304,7 @@ impl Settings {
              stream_kbps = {}\n\
              audio_kbps = {}\n",
             self.resolution.label(),
+            self.frame_rate.label(),
             self.monitor,
             self.monitor_device.as_deref().unwrap_or("default"),
             self.output_display.as_deref().unwrap_or("none"),
@@ -262,6 +329,11 @@ impl Settings {
                 "resolution" => {
                     if let Some(resolution) = Resolution::from_label(value.trim()) {
                         settings.resolution = resolution;
+                    }
+                }
+                "frame_rate" => {
+                    if let Some(rate) = FrameRate::from_label(value.trim()) {
+                        settings.frame_rate = rate;
                     }
                 }
                 "monitor" => settings.monitor = value.trim() != "false",
@@ -442,6 +514,30 @@ mod tests {
                 size.label()
             );
         }
+    }
+
+    #[test]
+    fn a_frame_rate_survives_being_written_and_read_back() {
+        for rate in FrameRate::ALL {
+            let settings = Settings { frame_rate: rate, ..Settings::default() };
+            assert_eq!(Settings::parse(&settings.to_text()).frame_rate, rate);
+        }
+    }
+
+    #[test]
+    fn the_frame_rates_are_the_ones_broadcast_uses_and_cost_what_they_say() {
+        // A rate nobody broadcasts at is a rate every platform will re-encode.
+        let mut previous = 0.0;
+        for rate in FrameRate::ALL {
+            assert!(rate.fps() > previous, "{} is not above the one below", rate.label());
+            previous = rate.fps();
+            assert!(
+                (rate.cost() - rate.fps() / 30.0).abs() < 1e-6,
+                "{} does not cost what it says",
+                rate.label()
+            );
+        }
+        assert_eq!(FrameRate::default().fps(), 30.0);
     }
 
     #[test]

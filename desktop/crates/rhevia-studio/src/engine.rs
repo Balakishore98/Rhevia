@@ -825,7 +825,19 @@ fn OUTPUT_HEIGHT() -> usize {
     output_size().1
 }
 
-const TARGET_FPS: f32 = 30.0;
+/// How many pictures a second the production runs at, read once at startup.
+///
+/// Not a constant any more. Thirty is the right default and was never the
+/// only sensible answer: a machine with cores to spare should be allowed to
+/// run fifty or sixty, and a slower one twenty-five. Like the resolution it
+/// cannot change while running, because every decoder is started at this
+/// rate and the encoder is built around it.
+static TARGET_FPS_CELL: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+
+#[allow(non_snake_case)]
+pub fn TARGET_FPS() -> f32 {
+    *TARGET_FPS_CELL.get_or_init(|| crate::settings::Settings::load().frame_rate.fps())
+}
 const THUMBNAIL_WIDTH: usize = 320;
 const THUMBNAIL_HEIGHT: usize = 180;
 
@@ -1046,8 +1058,8 @@ fn run(
         width: OUTPUT_WIDTH(),
         height: OUTPUT_HEIGHT(),
         bitrate_bps: crate::settings::Settings::load().resolution.bitrate(),
-        fps: TARGET_FPS,
-        keyframe_interval: (TARGET_FPS as u32) * 2,
+        fps: TARGET_FPS(),
+        keyframe_interval: (TARGET_FPS() as u32) * 2,
     };
     let mut mixer = Mixer::new(settings)?;
     // The encoder is built for the stream's own size from the start, and
@@ -1061,8 +1073,8 @@ fn run(
             width: w,
             height: h,
             bitrate_bps: chosen.stream_kbps * 1000,
-            fps: TARGET_FPS,
-            keyframe_interval: (TARGET_FPS * 2.0) as u32,
+            fps: TARGET_FPS(),
+            keyframe_interval: (TARGET_FPS() * 2.0) as u32,
         })?
     };
     let mut audio = AudioMixer::new();
@@ -1222,7 +1234,7 @@ fn run(
     let mut opening: usize = 0;
     let mut recorder: Option<(std::io::BufWriter<std::fs::File>, String, u64)> = None;
 
-    let frame_budget = Duration::from_secs_f32(1.0 / TARGET_FPS);
+    let frame_budget = Duration::from_secs_f32(1.0 / TARGET_FPS());
     // When audio was last generated, and the fraction of a sample carried
     // over from that tick. Together these are the engine's audio clock.
     let mut audio_clock = Instant::now();
@@ -1424,8 +1436,8 @@ fn run(
                         width: w,
                         height: h,
                         bitrate_bps: kbps * 1000,
-                        fps: TARGET_FPS,
-                        keyframe_interval: (TARGET_FPS * 2.0) as u32,
+                        fps: TARGET_FPS(),
+                        keyframe_interval: (TARGET_FPS() * 2.0) as u32,
                     }));
                     {
                         stream_size = size;
@@ -1571,7 +1583,7 @@ fn run(
                             &path,
                             OUTPUT_WIDTH() as u32,
                             OUTPUT_HEIGHT() as u32,
-                            TARGET_FPS,
+                            TARGET_FPS(),
                         ) {
                             Ok(media) => Opened::Source {
                                 name,
@@ -1602,7 +1614,7 @@ fn run(
                 Command::AddScreenSource { name, target } => {
                     opening += 1;
                     open_elsewhere(&opened_tx, move || {
-                        match rhevia_capture::ScreenCapture::start(target, TARGET_FPS) {
+                        match rhevia_capture::ScreenCapture::start(target, TARGET_FPS()) {
                             Ok(capture) => Opened::Source {
                                 name,
                                 source: Source::Screen(capture),
@@ -2424,7 +2436,7 @@ fn run(
         // through H.264.
         if let Some(sender) = &ndi_output {
             if let Some(frame) = cached_program.as_ref() {
-                sender.send_frame(frame, TARGET_FPS);
+                sender.send_frame(frame, TARGET_FPS());
                 sender.send_audio(&audio.output().samples);
             }
         }
@@ -3560,7 +3572,7 @@ mod tests {
                 "  {:.1} fps, {:.2} ms a frame ({:.0}% of the budget)",
                 s.fps,
                 s.render_ms,
-                s.render_ms / (1000.0 / TARGET_FPS) * 100.0
+                s.render_ms / (1000.0 / TARGET_FPS()) * 100.0
             );
             // Only held to the frame rate when built the way it ships.
             // Compositing two million pixels a frame in an unoptimised build
@@ -3569,7 +3581,7 @@ mod tests {
                 eprintln!("  (debug build — the frame rate is not judged here)");
             } else {
                 assert!(
-                    s.fps > TARGET_FPS * 0.9,
+                    s.fps > TARGET_FPS() * 0.9,
                     "the production is dropping frames: {:.1} fps",
                     s.fps
                 );
@@ -3670,7 +3682,7 @@ mod tests {
             // unoptimised is a third of that before anything else happens.
             if !cfg!(debug_assertions) {
                 assert!(
-                    s.fps > TARGET_FPS * 0.8,
+                    s.fps > TARGET_FPS() * 0.8,
                     "working the transport stalled the production: {:.1} fps",
                     s.fps
                 );
@@ -3778,7 +3790,7 @@ mod tests {
                 return;
             }
 
-            let budget = 1000.0 / TARGET_FPS;
+            let budget = 1000.0 / TARGET_FPS();
             for (what, worst, fps) in [
                 ("sitting still", still_ms, still_fps),
                 ("through the fade", fade_ms, fade_fps),
@@ -3789,7 +3801,7 @@ mod tests {
                     "{what}: a frame took {worst:.1} ms of a {budget:.1} ms budget"
                 );
                 assert!(
-                    fps > TARGET_FPS * 0.9,
+                    fps > TARGET_FPS() * 0.9,
                     "{what}: the production dropped to {fps:.1} fps"
                 );
             }
@@ -4480,7 +4492,7 @@ mod tests {
                 "  while streaming: {:.1} fps, {:.2} ms a frame ({:.0}% of the budget)",
                 sending.stats.fps,
                 sending.stats.render_ms,
-                sending.stats.render_ms / (1000.0 / TARGET_FPS) * 100.0
+                sending.stats.render_ms / (1000.0 / TARGET_FPS()) * 100.0
             );
 
             engine.send(Command::StopStream);
@@ -4501,13 +4513,13 @@ mod tests {
             // and put the stutter into the stream as well.
             if !cfg!(debug_assertions) {
                 assert!(
-                    sending.stats.render_ms < 1000.0 / TARGET_FPS,
+                    sending.stats.render_ms < 1000.0 / TARGET_FPS(),
                     "streaming took the render loop to {:.1} ms a frame, over its                      {:.1} ms budget -- the encoder is back in the loop",
                     sending.stats.render_ms,
-                    1000.0 / TARGET_FPS
+                    1000.0 / TARGET_FPS()
                 );
                 assert!(
-                    sending.stats.fps > TARGET_FPS * 0.9,
+                    sending.stats.fps > TARGET_FPS() * 0.9,
                     "the production fell to {:.1} fps while streaming",
                     sending.stats.fps
                 );
@@ -4723,6 +4735,46 @@ mod tests {
                 s.audio[0].trim_db == TRIM_MIN_DB
             });
             assert!(floored.is_some(), "the gain was not held at its floor");
+        }
+
+        #[test]
+        fn the_production_runs_at_whatever_rate_it_was_set_to() {
+            // Thirty was written into the source and was never the only
+            // sensible answer. A machine with cores to spare should be
+            // allowed to run fifty or sixty; a slower one twenty-five.
+            //
+            // The rate is fixed for the life of the process -- every decoder
+            // is started at it -- so this checks the engine actually keeps
+            // whatever rate it was given rather than a number in the code.
+            let wanted = TARGET_FPS();
+            assert!(
+                crate::settings::FrameRate::ALL.iter().any(|r| r.fps() == wanted),
+                "the production is running at {wanted}, which is not one of the \
+                 rates that can be chosen"
+            );
+
+            let engine = start();
+            wait_for(&engine, Duration::from_secs(10), |s| s.stats.frames_rendered > 5)
+                .expect("the engine never started rendering");
+
+            let before = engine.snapshot().stats.frames_rendered;
+            let started = Instant::now();
+            std::thread::sleep(Duration::from_secs(3));
+            let rendered = engine.snapshot().stats.frames_rendered - before;
+            let measured = rendered as f32 / started.elapsed().as_secs_f32();
+
+            eprintln!("  set to {wanted:.0} a second, managing {measured:.1}");
+            assert!(
+                measured <= wanted * 1.15,
+                "the engine ran at {measured:.1} when it was set to {wanted:.0} -- \
+                 it is not pacing itself"
+            );
+            if !cfg!(debug_assertions) {
+                assert!(
+                    measured > wanted * 0.85,
+                    "the engine managed only {measured:.1} of the {wanted:.0} it was set to"
+                );
+            }
         }
 
         #[test]

@@ -19,3 +19,6 @@ desktop/target/
 # someone else's binary, it is reproducible from a tagged release, and a
 # repository is a poor place to store either.
 desktop/vendor/
+
+# Built artefacts handed to people, not source.
+dist/

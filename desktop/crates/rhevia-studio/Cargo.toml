@@ -12,6 +12,8 @@ name = "rhevia-studio"
 path = "src/main.rs"
 
 [dependencies]
+# Only for the packed build, which unpacks the ffmpeg it carries.
+lzma-rs = { version = "0.3", optional = true }
 rhevia-audio = { path = "../rhevia-audio" }
 rhevia-capture = { path = "../rhevia-capture" }
 rhevia-media = { path = "../rhevia-media" }
@@ -31,3 +33,8 @@ rfd = "0.17.2"
 
 [build-dependencies]
 winresource = "0.1.31"
+
+[features]
+# Carries its own ffmpeg inside the executable, for a single file that works
+# on a machine with nothing installed. Run install/fetch-ffmpeg.py first.
+packed = ["dep:lzma-rs"]

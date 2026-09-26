@@ -112,6 +112,14 @@ pub enum Command {
     /// its own sound.
     AttachAudio { input: usize, device: Option<String> },
     SetChannelGain { channel: usize, db: f32 },
+    /// Input gain, before everything else on the channel.
+    ///
+    /// The fader balances one source against another and lives around unity.
+    /// A quiet source -- a phone on a stand, a mixing desk's headphone out,
+    /// a camera's built-in microphone -- needs to be brought up to where a
+    /// fader can work with it at all, and that is a different control with a
+    /// different range. It starts at nothing and is raised as needed.
+    SetChannelTrim { channel: usize, db: f32 },
     ToggleMute(usize),
     ToggleSolo(usize),
     SetPan { channel: usize, pan: f32 },
@@ -452,6 +460,15 @@ pub enum MediaAction {
     Forward,
 }
 
+/// How far the input gain can be taken.
+///
+/// Thirty decibels up is a factor of about thirty in level, which is what it
+/// takes to bring a line output plugged into a microphone input up to
+/// something a fader can balance. Twenty down is for the opposite mistake,
+/// which is rarer but just as ruinous.
+pub const TRIM_MIN_DB: f32 = -20.0;
+pub const TRIM_MAX_DB: f32 = 30.0;
+
 /// How far a step of the transport moves.
 ///
 /// Five seconds because that is what the operator asked for and what every
@@ -626,6 +643,8 @@ pub struct ChannelState {
     pub clipped: bool,
     /// False when the input has no audio device attached.
     pub has_source: bool,
+    /// Input gain, applied before everything else on the channel.
+    pub trim_db: f32,
     pub eq: rhevia_audio::EqSettings,
     pub compressor: rhevia_audio::CompressorSettings,
     pub gate: rhevia_audio::GateSettings,
@@ -1049,6 +1068,9 @@ fn run(
     let mut overlay_source: [Option<usize>; 4] = [None; 4];
     let mut overlay_on = [false; 4];
     let mut overlay_mode = default_overlay_modes();
+    // Input gain per channel, index-aligned with the mixer's channels. Zero
+    // is "leave it alone", which is where every channel starts.
+    let mut trim: Vec<f32> = Vec::new();
     let mut overlay_animation = [OverlayAnimation::default(); 4];
     // Where each slot is between off and on. Animated towards its switch
     // rather than following it, which is what makes it a move.
@@ -1495,6 +1517,11 @@ fn run(
                         }
                     });
                 }
+                Command::SetChannelTrim { channel, db } => {
+                    if channel < trim.len() {
+                        trim[channel] = db.clamp(TRIM_MIN_DB, TRIM_MAX_DB);
+                    }
+                }
                 Command::SetChannelGain { channel, db } => {
                     if let Some(strip) = audio.channel_mut(channel) {
                         strip.gain_db = db.clamp(rhevia_audio::SILENCE_DB, 12.0);
@@ -1805,8 +1832,10 @@ fn run(
         while dsp.len() < audio.channels.len() {
             dsp.push(rhevia_audio::ChannelDsp::new());
             plugins.push(Vec::new());
+            trim.push(0.0);
         }
         dsp.truncate(audio.channels.len());
+        trim.truncate(audio.channels.len());
 
         let mut captured: Vec<Option<AudioBuffer>> = sources
             .iter()
@@ -1829,6 +1858,20 @@ fn run(
         // after EQ and dynamics -- which is what an operator expects when they
         // set a compressor and the meter stops slamming.
         for (index, buffer) in captured.iter_mut().enumerate() {
+            // Input gain first, before anything else touches the channel.
+            // A gate set to open at -45 dB is useless on a source that never
+            // reaches it, and a compressor set for a normal level does
+            // nothing to one twenty decibels below it -- so the level has to
+            // be right before the processing sees it, exactly as the gain
+            // knob on a desk comes before the channel strip.
+            if let (Some(buffer), Some(&db)) = (buffer.as_mut(), trim.get(index)) {
+                if db.abs() > 0.01 {
+                    let scale = rhevia_audio::db_to_amplitude(db);
+                    for sample in &mut buffer.samples {
+                        *sample *= scale;
+                    }
+                }
+            }
             if let (Some(buffer), Some(chain)) = (buffer.as_mut(), dsp.get_mut(index)) {
                 chain.process(buffer);
             }
@@ -2445,6 +2488,7 @@ fn run(
                 .enumerate()
                 .map(|(i, c)| ChannelState {
                     name: c.name.clone(),
+                    trim_db: trim.get(i).copied().unwrap_or(0.0),
                     gain_db: c.gain_db,
                     muted: c.muted,
                     solo: c.solo,
@@ -4182,6 +4226,282 @@ mod tests {
                 engine.snapshot().monitor.is_none(),
                 "the engine opened a playback device after starting"
             );
+        }
+
+        /// Kills the test server if the test panics.
+        struct Listener(std::process::Child);
+        impl Drop for Listener {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        fn free_port() -> u16 {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        }
+
+        #[test]
+        fn going_live_actually_sends_a_picture_and_sound() {
+            // Reported as: the stream connected and nothing went out. A
+            // connection that reports healthy and carries nothing is the
+            // worst failure this program can have, because every indicator
+            // says it is working.
+            //
+            // The output crate already proves its own muxing against a real
+            // server. This proves the whole path an operator uses: an input,
+            // GO LIVE, and an independent decoder judging what came out the
+            // other end.
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/engine-live-tests");
+            std::fs::create_dir_all(&dir).ok();
+            let received = dir.join("received.flv");
+            let _ = std::fs::remove_file(&received);
+
+            let port = free_port();
+            let url = format!("rtmp://127.0.0.1:{port}/live/rheviatest");
+
+            // ffmpeg as the server, copying through unmodified, so the file
+            // it writes is exactly what Rhevia sent.
+            let _server = Listener(
+                std::process::Command::new("ffmpeg")
+                    .args(["-hide_banner", "-loglevel", "error", "-listen", "1", "-i"])
+                    .arg(&url)
+                    .args(["-c", "copy", "-y"])
+                    .arg(&received)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("ffmpeg should start"),
+            );
+            // The server needs to be listening before anything connects.
+            std::thread::sleep(Duration::from_millis(600));
+
+            let clip = fixture(
+                "live.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                    "-t", "20",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                ],
+            );
+
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Clip".into(),
+                path: clip.to_str().unwrap().to_string(),
+            });
+            let up = wait_for(&engine, Duration::from_secs(30), |s| {
+                s.inputs.iter().any(|i| i.media.is_some())
+            })
+            .expect("the clip never became an input");
+            let index = up.inputs.iter().position(|i| i.media.is_some()).unwrap();
+            engine.send(Command::SetPreview(index));
+            engine.send(Command::Cut);
+            wait_for(&engine, Duration::from_secs(10), |s| s.program_input == index)
+                .expect("the clip never reached air");
+
+            // Given the way an operator is given them: the ingest address in
+            // one box and the stream key in another, exactly as YouTube and
+            // Facebook hand them out. Joining the two is Rhevia's job, and
+            // getting it wrong produces a stream that connects and carries
+            // nothing -- which is what was reported.
+            engine.send(Command::StartStream {
+                url: format!("rtmp://127.0.0.1:{port}/live"),
+                key: "rheviatest".into(),
+            });
+            let live = wait_for(&engine, Duration::from_secs(20), |s| s.streaming)
+                .expect("the stream never came up");
+            eprintln!(
+                "  connected to {}",
+                live.destinations.first().map(|d| d.address.as_str()).unwrap_or("?")
+            );
+
+            // Long enough for several seconds of programme to go out.
+            std::thread::sleep(Duration::from_secs(8));
+            let sending = engine.snapshot();
+            let bytes = sending.destinations.first().map(|d| d.bytes_sent).unwrap_or(0);
+            eprintln!(
+                "  {bytes} bytes sent, {} frames encoded, {} error",
+                sending.stats.frames_encoded,
+                sending.stream_error.as_deref().unwrap_or("no")
+            );
+
+            engine.send(Command::StopStream);
+            std::thread::sleep(Duration::from_secs(1));
+            drop(engine);
+            // Let the server finish writing its file.
+            std::thread::sleep(Duration::from_secs(2));
+            drop(_server);
+            std::thread::sleep(Duration::from_millis(500));
+
+            assert!(bytes > 0, "the stream connected and sent nothing at all");
+            // Judged against what the engine composited in the same time, not
+            // against a number. An unoptimised build encodes 1080p far slower
+            // than thirty a second, which says nothing about whether the
+            // stream is carrying what is being made.
+            let rendered = sending.stats.frames_rendered;
+            assert!(
+                sending.stats.frames_encoded * 2 >= rendered.min(240),
+                "{} pictures were composited and only {} of them were encoded",
+                rendered,
+                sending.stats.frames_encoded
+            );
+
+            // ---- what actually arrived ----------------------------------
+            let probe = std::process::Command::new("ffprobe")
+                .args([
+                    "-hide_banner", "-loglevel", "error",
+                    "-show_entries", "stream=codec_type,codec_name,width,height",
+                    "-of", "default=noprint_wrappers=1",
+                ])
+                .arg(&received)
+                .output()
+                .expect("ffprobe should run");
+            let described = String::from_utf8_lossy(&probe.stdout).to_string();
+            let size = std::fs::metadata(&received).map(|m| m.len()).unwrap_or(0);
+            eprintln!("  the server wrote {size} bytes; ffprobe says:");
+            for line in described.lines() {
+                eprintln!("    {line}");
+            }
+
+            assert!(size > 0, "the server received nothing");
+            assert!(
+                described.contains("codec_type=video"),
+                "no video arrived at the other end:\n{described}"
+            );
+            assert!(
+                described.contains("codec_type=audio"),
+                "no sound arrived at the other end:\n{described}"
+            );
+
+            // And it decodes, rather than merely being labelled.
+            let decode = std::process::Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-i"])
+                .arg(&received)
+                .args(["-f", "null", "-"])
+                .output()
+                .expect("ffmpeg should run");
+            let complaints = String::from_utf8_lossy(&decode.stderr).to_string();
+            assert!(
+                complaints.trim().is_empty(),
+                "what arrived does not decode cleanly:\n{complaints}"
+            );
+        }
+
+        #[test]
+        fn a_quiet_source_can_be_brought_up_with_the_input_gain() {
+            // Asked for as: the input audio is low and I want to raise it.
+            // The fader cannot do this -- it balances one source against
+            // another and stops at +6 on the scale it is drawn on, which is
+            // nowhere near enough for a line output plugged into a
+            // microphone input. The input gain is a separate control with a
+            // separate range, and it starts at nothing.
+            if !have_ffmpeg() {
+                eprintln!("SKIP: ffmpeg not installed");
+                return;
+            }
+
+            // Deliberately quiet: a tone at a fortieth of full scale, which
+            // is about -32 dB and the sort of level a phone on a stand gives.
+            let quiet = fixture(
+                "quiet.mp4",
+                &[
+                    "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                    "-filter:a", "volume=0.025",
+                    "-t", "20",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                ],
+            );
+
+            let engine = start();
+            engine.send(Command::AddMediaSource {
+                name: "Quiet".into(),
+                path: quiet.to_str().unwrap().to_string(),
+            });
+            let up = wait_for(&engine, Duration::from_secs(30), |s| {
+                s.audio.iter().any(|c| c.name == "Quiet" && c.peak_db > -60.0)
+            })
+            .expect("the quiet clip never made a sound at all");
+            let channel = up.audio.iter().position(|c| c.name == "Quiet").unwrap();
+
+            assert_eq!(
+                up.audio[channel].trim_db, 0.0,
+                "the input gain must start at nothing"
+            );
+
+            // Settled, so the reading is the clip rather than its first block.
+            std::thread::sleep(Duration::from_secs(1));
+            let before = engine.snapshot().audio[channel].peak_db;
+            assert!(
+                before < -20.0,
+                "the test clip is not quiet enough to be worth the test: {before:.1} dB"
+            );
+
+            engine.send(Command::SetChannelTrim { channel, db: 20.0 });
+            let raised = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.audio[channel].peak_db > before + 15.0
+            })
+            .expect("raising the input gain did not raise the level");
+
+            let after = raised.audio[channel].peak_db;
+            eprintln!(
+                "  {before:.1} dB with the gain at nothing, {after:.1} dB with it at +20"
+            );
+            assert!(
+                (after - before - 20.0).abs() < 4.0,
+                "asking for twenty decibels gave {:.1}",
+                after - before
+            );
+            assert_eq!(raised.audio[channel].trim_db, 20.0);
+
+            // And it reaches the master, which is what actually goes out.
+            assert!(
+                raised.master.peak_db > -40.0,
+                "the raised channel did not reach the master: {:.1} dB",
+                raised.master.peak_db
+            );
+
+            // Turned back down, it comes back down.
+            engine.send(Command::SetChannelTrim { channel, db: 0.0 });
+            let back = wait_for(&engine, Duration::from_secs(10), |s| {
+                s.audio[channel].peak_db < before + 5.0
+            });
+            assert!(back.is_some(), "turning the input gain down did not lower the level");
+        }
+
+        #[test]
+        fn the_input_gain_will_not_be_pushed_past_what_it_offers() {
+            // A control that silently accepts a number it will not honour is
+            // worse than one that refuses it, because the operator then
+            // believes the level is set.
+            let engine = start();
+            wait_for(&engine, Duration::from_secs(10), |s| !s.audio.is_empty())
+                .expect("no channels");
+
+            engine.send(Command::SetChannelTrim { channel: 0, db: 500.0 });
+            let capped = wait_for(&engine, Duration::from_secs(5), |s| s.audio[0].trim_db != 0.0)
+                .expect("the gain never moved");
+            assert_eq!(capped.audio[0].trim_db, TRIM_MAX_DB);
+
+            engine.send(Command::SetChannelTrim { channel: 0, db: -500.0 });
+            let floored = wait_for(&engine, Duration::from_secs(5), |s| {
+                s.audio[0].trim_db == TRIM_MIN_DB
+            });
+            assert!(floored.is_some(), "the gain was not held at its floor");
         }
 
         #[test]

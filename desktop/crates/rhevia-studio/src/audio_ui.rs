@@ -108,6 +108,78 @@ pub fn meter(ui: &mut Ui, peak_db: f32, rms_db: f32, clipped: bool, size: Vec2) 
     response
 }
 
+/// The input gain for a channel: a horizontal bar that starts at nothing.
+///
+/// Deliberately not a fader. A fader lives around unity and balances one
+/// source against another; this brings a source up to where a fader can work
+/// with it at all, and mixing the two up is how an operator ends up fighting
+/// a fader at the top of its travel wondering why it is still quiet.
+pub fn trim(ui: &mut Ui, db: f32, width: f32) -> (egui::Response, Option<f32>) {
+    let size = Vec2::new(width, 16.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    let (low, high) = (crate::engine::TRIM_MIN_DB, crate::engine::TRIM_MAX_DB);
+
+    let at = |db: f32| (db - low) / (high - low);
+    painter.rect_filled(rect, Rounding::same(3.0_f32), theme::SURFACE_LOWEST);
+
+    // The zero mark, because "back to nothing" is the position an operator
+    // most often wants to find again.
+    let zero_x = rect.min.x + rect.width() * at(0.0);
+    painter.line_segment(
+        [egui::pos2(zero_x, rect.min.y + 2.0), egui::pos2(zero_x, rect.max.y - 2.0)],
+        Stroke::new(1.0_f32, theme::TEXT_FAINT),
+    );
+
+    let filled = at(db.clamp(low, high));
+    if (filled - at(0.0)).abs() > 0.001 {
+        let (from, to) = if db >= 0.0 {
+            (zero_x, rect.min.x + rect.width() * filled)
+        } else {
+            (rect.min.x + rect.width() * filled, zero_x)
+        };
+        painter.rect_filled(
+            Rect::from_min_max(
+                egui::pos2(from, rect.min.y + 3.0),
+                egui::pos2(to, rect.max.y - 3.0),
+            ),
+            Rounding::same(2.0_f32),
+            if db >= 0.0 { theme::ACCENT_DIM } else { theme::SURFACE_HIGH },
+        );
+    }
+
+    let handle = Rect::from_center_size(
+        egui::pos2(rect.min.x + rect.width() * filled, rect.center().y),
+        Vec2::new(7.0, rect.height() - 2.0),
+    );
+    painter.rect_filled(
+        handle,
+        Rounding::same(2.0_f32),
+        if response.dragged() { theme::ACCENT } else { Color32::from_rgb(180, 186, 198) },
+    );
+    painter.rect_stroke(rect, Rounding::same(3.0_f32), Stroke::new(1.0_f32, theme::EDGE));
+
+    let mut changed = None;
+    if response.dragged() || response.is_pointer_button_down_on() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            let fraction = ((pointer.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+            let value = low + fraction * (high - low);
+            // Whole decibels, and snapped to nothing near the middle so the
+            // most useful position is the easiest one to land on.
+            let value = if value.abs() < 1.2 { 0.0 } else { value.round() };
+            changed = Some(value);
+        }
+    }
+    // Double click puts it back where it started.
+    if response.double_clicked() {
+        changed = Some(0.0);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    (response, changed)
+}
+
 /// A vertical fader. Returns the new value while being dragged.
 pub fn fader(ui: &mut Ui, db: f32, size: Vec2) -> (egui::Response, Option<f32>) {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
@@ -404,6 +476,16 @@ fn strip(
                 .font(theme::mono(9.5))
                 .color(if channel.muted { theme::PROGRAM } else { theme::PREVIEW }),
         );
+        // A raised input gain has to be visible from the strip. It changes
+        // what every reading below it means, and an operator who has
+        // forgotten it is there will chase the wrong control.
+        if channel.trim_db.abs() > 0.01 {
+            ui.label(
+                RichText::new(format!("GAIN {:+.0}", channel.trim_db))
+                    .font(theme::mono(8.5))
+                    .color(theme::ACCENT),
+            );
+        }
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
@@ -735,6 +817,33 @@ fn control(ui: &mut Ui, label: &str, value: f32, range: std::ops::RangeInclusive
 
 /// EQ, compressor, gate and delay for one channel.
 fn dsp_panel(ui: &mut Ui, index: usize, channel: &ChannelState, engine: &EngineHandle) {
+    // Input gain first, because it comes first in the signal and because
+    // everything below it is set wrong if it is set wrong. A gate that opens
+    // at -45 dB does nothing on a source that never gets there.
+    ui.horizontal(|ui| {
+        ui.add_space(20.0);
+        ui.label(RichText::new("INPUT GAIN").size(10.5).strong().color(theme::TEXT));
+        ui.add_space(8.0);
+        let (response, changed) = trim(ui, channel.trim_db, 220.0);
+        if let Some(db) = changed {
+            engine.send(Command::SetChannelTrim { channel: index, db });
+        }
+        response.on_hover_text(
+            "brings a quiet source up before anything else touches it —              drag, or double-click to put it back to nothing",
+        );
+        ui.label(
+            RichText::new(format!("{:+.0} dB", channel.trim_db))
+                .font(theme::mono(11.5))
+                .color(if channel.trim_db.abs() > 0.01 { theme::ACCENT } else { theme::TEXT_DIM }),
+        );
+        ui.label(
+            RichText::new("the fader balances; this makes it loud enough to balance")
+                .size(10.0)
+                .color(theme::TEXT_FAINT),
+        );
+    });
+    ui.add_space(8.0);
+
     ui.horizontal(|ui| {
         ui.add_space(20.0);
 

@@ -1841,15 +1841,55 @@ impl StudioApp {
                     });
                 });
                 if snapshot.streaming {
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
+                    // What is really leaving, and how much of it. A stream
+                    // that connects and carries nothing is the worst failure
+                    // this program can have, because every other indicator
+                    // says it is working -- so the number that would have
+                    // shown it is put where it cannot be missed.
+                    let sent: u64 = snapshot.destinations.iter().map(|d| d.bytes_sent).sum();
+                    let uptime = snapshot
+                        .destinations
+                        .iter()
+                        .map(|d| d.uptime_seconds)
+                        .max()
+                        .unwrap_or(0);
+                    let moving = sent > 0 && snapshot.stats.frames_encoded > 0;
                     ui.label(
-                        RichText::new(format!(
-                            "Actually going out: {:.1} Mb/s of picture right now.",
-                            snapshot.stream_measured_kbps / 1000.0
-                        ))
+                        RichText::new(if moving {
+                            format!(
+                                "Going out now: {:.1} Mb/s  ·  {:.1} MB sent  ·                                   {} frames encoded  ·  up {}:{:02}",
+                                snapshot.stream_measured_kbps / 1000.0,
+                                sent as f32 / 1_000_000.0,
+                                snapshot.stats.frames_encoded,
+                                uptime / 60,
+                                uptime % 60,
+                            )
+                        } else if uptime < 3 {
+                            "Connected. Waiting for the first frames to go out...".to_string()
+                        } else {
+                            format!(
+                                "CONNECTED BUT NOTHING IS GOING OUT after {uptime}s.                                  The address was accepted and no picture has left this                                  machine -- check the stream key, and that something is                                  on Program."
+                            )
+                        })
                         .font(theme::mono(10.5))
-                        .color(theme::PREVIEW),
+                        .color(if moving {
+                            theme::PREVIEW
+                        } else if uptime < 3 {
+                            theme::TEXT_DIM
+                        } else {
+                            theme::PROGRAM
+                        }),
                     );
+                    if snapshot.ftb {
+                        ui.label(
+                            RichText::new(
+                                "FADE TO BLACK is on, so the stream is carrying black.",
+                            )
+                            .font(theme::mono(10.5))
+                            .color(theme::WARN),
+                        );
+                    }
                 }
             });
 

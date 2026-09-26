@@ -5,7 +5,7 @@
 //! [command bus](../../../../docs/06-command-bus.md) rule that makes remote
 //! control and scripting free later rather than a retrofit.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use rhevia_engine::{
 use rhevia_output::h264::{self, ParameterSets};
 use rhevia_output::{flv, RtmpPublisher, RtmpUrl};
 use rhevia_pipeline::Mixer;
+use rhevia_engine::H264Encoder;
 
 /// Everything the UI can ask for. Data only, so it can also arrive from a
 /// network peer, a script or a MIDI key without any other change.
@@ -913,6 +914,109 @@ struct Delivery {
     /// Counting samples rather than reading a clock keeps audio and video
     /// locked together however the frame rate actually behaves.
     audio_samples: u64,
+    /// The last time stamped on a picture.
+    ///
+    /// The programme clock is measured in milliseconds, and two pictures can
+    /// genuinely fall inside the same one when the engine is running fast or
+    /// catching up. A muxer will not accept that -- it needs each picture to
+    /// be later than the one before -- so a picture that lands on a
+    /// millisecond already used is moved on by one.
+    last_video_ms: u64,
+}
+
+/// What the encoder thread is asked to do.
+enum EncodeJob {
+    /// A composited picture and how far into the programme it belongs.
+    Picture(Frame, u64),
+    /// Build a new encoder: the size or the bitrate has changed.
+    Settings(EncoderSettings),
+    /// Emit a picture anything can start decoding from.
+    Keyframe,
+}
+
+/// Encodes beside the compositor rather than inside it.
+///
+/// Encoding 1080p in software costs more per picture than everything else
+/// the engine does put together. Doing it in the render loop made the loop
+/// take as long as the encoder did: the production fell to twenty frames a
+/// second, the sound was handed over late and the monitor popped, and the
+/// stream inherited the stutter. Operators saw an engine load of 126% and a
+/// stream that would not play.
+///
+/// The compositor now hands a picture over and carries on. If the encoder is
+/// still busy the picture is dropped rather than queued, because a frame
+/// missing from the stream is a far smaller thing than the whole production
+/// slowing down to the speed of the encoder.
+struct Encoding {
+    jobs: std::sync::mpsc::SyncSender<EncodeJob>,
+    done: std::sync::mpsc::Receiver<(Vec<u8>, u64)>,
+    /// Pictures the encoder was too busy to take.
+    dropped: Arc<AtomicU64>,
+}
+
+impl Encoding {
+    fn start(settings: EncoderSettings) -> anyhow::Result<Self> {
+        // Two deep. One being worked on and one waiting is enough to keep
+        // the encoder fed across an uneven tick; more than that is latency
+        // an operator would see on the stream and never get back.
+        let (jobs, rx) = std::sync::mpsc::sync_channel::<EncodeJob>(2);
+        let (tx, done) = std::sync::mpsc::channel::<(Vec<u8>, u64)>();
+        let dropped = Arc::new(AtomicU64::new(0));
+
+        let mut encoder = H264Encoder::new(settings)?;
+        let mut sized = Frame::new(settings.width, settings.height);
+
+        std::thread::Builder::new()
+            .name("rhevia-encoder".into())
+            .spawn(move || {
+                while let Ok(job) = rx.recv() {
+                    match job {
+                        EncodeJob::Settings(settings) => match H264Encoder::new(settings) {
+                            Ok(fresh) => {
+                                encoder = fresh;
+                                sized = Frame::new(settings.width, settings.height);
+                            }
+                            Err(e) => tracing::error!(error = %e, "could not rebuild the encoder"),
+                        },
+                        EncodeJob::Keyframe => encoder.request_keyframe(),
+                        EncodeJob::Picture(frame, at_ms) => {
+                            // Scaled here rather than on the render thread:
+                            // the stream's size is the encoder's business.
+                            frame.scale_into(&mut sized);
+                            match encoder.encode(&sized) {
+                                Ok(bits) if !bits.is_empty() => {
+                                    if tx.send((bits, at_ms)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(e) => tracing::error!(error = %e, "encoding failed"),
+                            }
+                        }
+                    }
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("could not start the encoder thread: {e}"))?;
+
+        Ok(Self { jobs, done, dropped })
+    }
+
+    /// Hands a picture over, or drops it if the encoder is still busy.
+    fn submit(&self, frame: Frame, at_ms: u64) {
+        use std::sync::mpsc::TrySendError;
+        if let Err(TrySendError::Full(_)) = self.jobs.try_send(EncodeJob::Picture(frame, at_ms)) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn tell(&self, job: EncodeJob) {
+        let _ = self.jobs.send(job);
+    }
+
+    /// Everything finished since the last look.
+    fn collect(&self) -> Vec<(Vec<u8>, u64)> {
+        self.done.try_iter().collect()
+    }
 }
 
 /// A device that has finished opening on a worker thread.
@@ -946,19 +1050,21 @@ fn run(
         keyframe_interval: (TARGET_FPS as u32) * 2,
     };
     let mut mixer = Mixer::new(settings)?;
-    {
-        // Built for the stream's own size from the start, so going live does
-        // not change what has already been recorded.
+    // The encoder is built for the stream's own size from the start, and
+    // lives on its own thread: encoding 1080p costs more per picture than
+    // everything else here put together, and doing it in this loop made the
+    // loop take as long as the encoder did.
+    let encoding = {
         let chosen = crate::settings::Settings::load();
         let (w, h) = chosen.stream_size.size();
-        let _ = mixer.set_encoder(EncoderSettings {
+        Encoding::start(EncoderSettings {
             width: w,
             height: h,
             bitrate_bps: chosen.stream_kbps * 1000,
             fps: TARGET_FPS,
             keyframe_interval: (TARGET_FPS * 2.0) as u32,
-        });
-    }
+        })?
+    };
     let mut audio = AudioMixer::new();
     // Fed from the master bus every tick, so the integrated figure covers the
     // whole session rather than only the part that was streamed.
@@ -1123,6 +1229,16 @@ fn run(
     let mut audio_owed: f64 = 0.0;
     let start = Instant::now();
     let mut frame_number: u64 = 0;
+    // Counted here rather than read from the mixer: the mixer no longer
+    // encodes, so it no longer knows.
+    let mut frames_encoded: u64 = 0;
+    // How far into the programme we are, counted in audio samples produced.
+    //
+    // Sound has always been timestamped from this; pictures were timestamped
+    // from the frame number over a nominal thirty a second, which is only
+    // the same thing while the engine keeps up. Both come from here now, so
+    // a stream cannot go out with its sound ahead of its picture.
+    let mut programme_samples: u64 = 0;
     let mut fps_window = Instant::now();
     let mut fps_frames = 0u32;
     let mut measured_fps = 0.0f32;
@@ -1146,12 +1262,14 @@ fn run(
                     // A cut is a discontinuity; without a fresh keyframe a
                     // viewer joining now sees the previous shot's residue.
                     mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
                 }
                 Command::Auto => {
                     if transition.is_none() && program_input != preview_input {
                         if transition_kind.is_instant() {
                             std::mem::swap(&mut program_input, &mut preview_input);
                             mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
                         } else {
                             transition = Some(0.0);
                         }
@@ -1168,6 +1286,7 @@ fn run(
                         transition = None;
                         std::mem::swap(&mut program_input, &mut preview_input);
                         mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
                         dragging_transition = false;
                     } else {
                         transition = Some(p);
@@ -1301,15 +1420,14 @@ fn run(
                 Command::SetStreamQuality { size, kbps, audio_kbps } => {
                     let (w, h) = size.size();
                     let kbps = kbps.clamp(size.kbps_range().0, size.kbps_range().1);
-                    if let Err(e) = mixer.set_encoder(EncoderSettings {
+                    encoding.tell(EncodeJob::Settings(EncoderSettings {
                         width: w,
                         height: h,
                         bitrate_bps: kbps * 1000,
                         fps: TARGET_FPS,
                         keyframe_interval: (TARGET_FPS * 2.0) as u32,
-                    }) {
-                        stream_error = Some(format!("could not change the stream quality: {e}"));
-                    } else {
+                    }));
+                    {
                         stream_size = size;
                         stream_kbps = kbps;
                         stream_audio_kbps = audio_kbps;
@@ -1318,6 +1436,7 @@ fn run(
                         // one whether it is asked for or not -- asked for so
                         // that is true of the recording as well.
                         mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
                         let mut chosen = crate::settings::Settings::load();
                         chosen.stream_size = size;
                         chosen.stream_kbps = kbps;
@@ -1383,6 +1502,7 @@ fn run(
                 Command::ToggleFtb => {
                     ftb = !ftb;
                     mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
                 }
                 Command::CutTo(i) => {
                     if i < sources.len() {
@@ -1390,6 +1510,7 @@ fn run(
                         program_input = i;
                         transition = None;
                         mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
                     }
                 }
                 Command::StartRecording { path } => match std::fs::File::create(&path) {
@@ -1398,6 +1519,7 @@ fn run(
                         // Recording must begin on a keyframe or the first
                         // seconds of the file are undecodable.
                         mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
                     }
                     Err(e) => stream_error = Some(format!("could not record: {e}")),
                 },
@@ -1775,6 +1897,7 @@ fn run(
                             // decode until a keyframe arrives, so ask for one
                             // rather than making it wait for the next.
                             mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
                         }
                         Err(e) => stream_error = Some(e.to_string()),
                     }
@@ -1827,6 +1950,8 @@ fn run(
         audio_owed = audio_owed.min(SAMPLE_RATE as f64 / 4.0);
         let audio_frames = audio_owed as usize;
         audio_owed -= audio_frames as f64;
+        let programme_ms = programme_samples * 1000 / SAMPLE_RATE as u64;
+        programme_samples += audio_frames as u64;
         // One DSP chain per channel. Grown here rather than at every add
         // site, so a chain can never be missing for a channel that exists.
         while dsp.len() < audio.channels.len() {
@@ -2223,7 +2348,7 @@ fn run(
 
         let render_start = Instant::now();
         let needs_encoding = !deliveries.is_empty() || recorder.is_some();
-        let encoded = match transition {
+        match transition {
             // Mid-transition: composite both arrangements in full and blend
             // them with the chosen effect, so a transition works between any
             // two layouts rather than only between two sources.
@@ -2238,39 +2363,31 @@ fn run(
                     .and_then(|slot| overlay_source[slot])
                     .and_then(|index| sources.get(index))
                     .map(|slot| slot.mixer_input);
-                if needs_encoding {
-                    mixer
-                        .render_transition_and_encode(
-                            &program_scene,
-                            &incoming,
-                            transition_kind,
-                            progress,
-                            stinger_input,
-                        )
-                        .unwrap_or_default()
-                } else {
-                    mixer.render_transition(
-                        &program_scene,
-                        &incoming,
-                        transition_kind,
-                        progress,
-                        stinger_input,
-                    );
-                    Vec::new()
-                }
+                mixer.render_transition(
+                    &program_scene,
+                    &incoming,
+                    transition_kind,
+                    progress,
+                    stinger_input,
+                );
             }
             _ => {
-                if needs_encoding {
-                    mixer.render_and_encode(&program_scene).unwrap_or_default()
-                } else {
-                    mixer.render(&program_scene);
-                    Vec::new()
-                }
+                mixer.render(&program_scene);
             }
         };
+        // Handed over rather than encoded here. What comes back is collected
+        // below, whenever the encoder has managed it.
+        if needs_encoding {
+            encoding.submit(mixer.program().clone(), programme_ms);
+        }
         let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;
 
-        measured_bytes += encoded.len() as u64;
+        // ---- collect what the encoder has finished -------------------------
+        let finished = if needs_encoding { encoding.collect() } else { Vec::new() };
+        for (bits, _) in &finished {
+            measured_bytes += bits.len() as u64;
+            frames_encoded += 1;
+        }
         let window = measured_since.elapsed().as_secs_f32();
         if window >= 2.0 {
             measured_kbps = measured_bytes as f32 * 8.0 / 1000.0 / window;
@@ -2283,14 +2400,14 @@ fn run(
         // readable while still being written, which is what the shorts
         // pipeline will need.
         if let Some((writer, _, bytes)) = recorder.as_mut() {
-            if !encoded.is_empty() {
-                use std::io::Write;
-                if writer.write_all(&encoded).is_err() {
+            use std::io::Write;
+            for (bits, _) in &finished {
+                if writer.write_all(bits).is_err() {
                     stream_error = Some("recording stopped: write failed".into());
                     recorder = None;
-                } else {
-                    *bytes += encoded.len() as u64;
+                    break;
                 }
+                *bytes += bits.len() as u64;
             }
         }
 
@@ -2323,8 +2440,8 @@ fn run(
         // what having a backup is for.
         let mut failed: Vec<usize> = Vec::new();
         for (index, d) in deliveries.iter_mut().enumerate() {
-            if !encoded.is_empty() {
-                if let Err(e) = publish(d, &encoded, frame_number) {
+            for (bits, at_ms) in &finished {
+                if let Err(e) = publish(d, bits, *at_ms) {
                     stream_error = Some(format!("{}: {e}", d.address));
                     failed.push(index);
                     continue;
@@ -2347,6 +2464,7 @@ fn run(
                 transition = None;
                 std::mem::swap(&mut program_input, &mut preview_input);
                 mixer.request_keyframe();
+                    encoding.tell(EncodeJob::Keyframe);
             } else {
                 transition = Some(next);
             }
@@ -2532,7 +2650,7 @@ fn run(
             s.stats = Stats {
                 fps: measured_fps,
                 frames_rendered: mixer_stats.frames_rendered,
-                frames_encoded: mixer_stats.frames_encoded,
+                frames_encoded,
                 // Across every destination, which is what the bitrate
                 // readout in the header is describing.
                 bytes_sent: deliveries.iter().map(|d| d.bytes).sum(),
@@ -2655,6 +2773,7 @@ fn open_delivery(url: &str, key: &str, audio_kbps: u32) -> anyhow::Result<Delive
         audio,
         sent_audio_config: false,
         audio_samples: 0,
+        last_video_ms: 0,
     })
 }
 
@@ -2740,11 +2859,29 @@ fn publish_audio(d: &mut Delivery, samples: &[f32]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn publish(d: &mut Delivery, annexb: &[u8], frame_number: u64) -> anyhow::Result<()> {
+/// Publishes an encoded picture at `at_ms` into the programme.
+///
+/// The time is passed in rather than counted here. Video timestamps used to
+/// be the frame number divided by thirty, which is only the truth if the
+/// engine really manages thirty a second. Under load it does not -- an
+/// overloaded machine encoding 1080p manages twenty -- and then after a
+/// minute of real time the video timeline says forty seconds while the
+/// audio, which has always been counted in samples, says sixty. A player
+/// handed a stream whose sound is twenty seconds ahead of its picture shows
+/// nothing at all, while reporting the connection as excellent: which is
+/// exactly what was reported.
+///
+/// Both now come from the same count of samples produced, so they cannot
+/// drift apart whatever the engine manages.
+fn publish(d: &mut Delivery, annexb: &[u8], at_ms: u64) -> anyhow::Result<()> {
     let units = h264::split_annexb(annexb);
     if units.is_empty() {
         return Ok(());
     }
+    // Later than the last one, always. Anchored to the programme clock, but
+    // never allowed to stand still: a muxer rejects a picture that is not
+    // after the one before it, and two can fall in the same millisecond.
+    let at_ms = at_ms.max(d.last_video_ms + 1);
     d.sets.absorb(&units);
     let keyframe = h264::is_keyframe(&units);
 
@@ -2764,7 +2901,8 @@ fn publish(d: &mut Delivery, annexb: &[u8], frame_number: u64) -> anyhow::Result
             if avcc.is_empty() {
                 return Ok(());
             }
-            let timestamp = (frame_number as f32 * 1000.0 / TARGET_FPS) as u32;
+            let timestamp = at_ms as u32;
+            d.last_video_ms = at_ms;
             d.bytes += avcc.len() as u64;
 
             let tag = flv::avc_frame(&avcc, keyframe, 0);
@@ -2779,8 +2917,9 @@ fn publish(d: &mut Delivery, annexb: &[u8], frame_number: u64) -> anyhow::Result
             if prepared.is_empty() {
                 return Ok(());
             }
-            let timestamp = frame_number * rhevia_output::mpegts::CLOCK_HZ
-                / TARGET_FPS.max(1.0) as u64;
+            // A transport stream runs at 90 kHz, not milliseconds.
+            let timestamp = at_ms * rhevia_output::mpegts::CLOCK_HZ / 1000;
+            d.last_video_ms = at_ms;
             d.bytes += prepared.len() as u64;
             d.sent_config = true;
 
@@ -4337,6 +4476,12 @@ mod tests {
                 sending.stats.frames_encoded,
                 sending.stream_error.as_deref().unwrap_or("no")
             );
+            eprintln!(
+                "  while streaming: {:.1} fps, {:.2} ms a frame ({:.0}% of the budget)",
+                sending.stats.fps,
+                sending.stats.render_ms,
+                sending.stats.render_ms / (1000.0 / TARGET_FPS) * 100.0
+            );
 
             engine.send(Command::StopStream);
             std::thread::sleep(Duration::from_secs(1));
@@ -4347,6 +4492,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(500));
 
             assert!(bytes > 0, "the stream connected and sent nothing at all");
+
+            // Going live must not slow the production down. Encoding 1080p
+            // in software costs more per picture than everything else the
+            // engine does put together, and while it ran in the render loop
+            // an operator streaming at 1080p saw the load go to 126% and the
+            // rate fall to twenty -- which starved the monitor into popping
+            // and put the stutter into the stream as well.
+            if !cfg!(debug_assertions) {
+                assert!(
+                    sending.stats.render_ms < 1000.0 / TARGET_FPS,
+                    "streaming took the render loop to {:.1} ms a frame, over its                      {:.1} ms budget -- the encoder is back in the loop",
+                    sending.stats.render_ms,
+                    1000.0 / TARGET_FPS
+                );
+                assert!(
+                    sending.stats.fps > TARGET_FPS * 0.9,
+                    "the production fell to {:.1} fps while streaming",
+                    sending.stats.fps
+                );
+            }
             // Judged against what the engine composited in the same time, not
             // against a number. An unoptimised build encodes 1080p far slower
             // than thirty a second, which says nothing about whether the
@@ -4386,6 +4551,46 @@ mod tests {
                 "no sound arrived at the other end:\n{described}"
             );
 
+            // ---- and the two timelines agree ----------------------------
+            // The failure that prompted this test was a stream whose sound
+            // ran ahead of its picture: connected, "excellent", carrying
+            // megabits, and showing black. Video was stamped with the frame
+            // number over a nominal thirty a second, so on an engine
+            // managing twenty the picture's timeline fell a third behind the
+            // sound's -- twenty seconds inside a minute.
+            //
+            // Measured from the packets themselves. FLV carries no per-stream
+            // duration, so asking for one gives nothing at all, which is not
+            // the same as agreeing.
+            let last_dts = |stream: &str| -> f32 {
+                let out = std::process::Command::new("ffprobe")
+                    .args([
+                        "-v", "error", "-select_streams", stream,
+                        "-show_entries", "packet=dts_time",
+                        "-of", "csv=p=0",
+                    ])
+                    .arg(&received)
+                    .output()
+                    .expect("ffprobe should run");
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter_map(|l| l.trim().trim_end_matches(',').parse::<f32>().ok())
+                    .fold(0.0f32, f32::max)
+            };
+            let (video_end, audio_end) = (last_dts("v"), last_dts("a"));
+            let drift = (video_end - audio_end).abs();
+            eprintln!(
+                "  picture runs to {video_end:.2}s, sound to {audio_end:.2}s, \
+                 {drift:.2}s apart"
+            );
+            assert!(video_end > 1.0, "the picture's timeline barely moved");
+            assert!(audio_end > 1.0, "the sound's timeline barely moved");
+            assert!(
+                drift < 1.0,
+                "the picture and the sound are {drift:.2}s apart, which plays as black \
+                 however healthy the connection looks"
+            );
+
             // And it decodes, rather than merely being labelled.
             let decode = std::process::Command::new("ffmpeg")
                 .args(["-hide_banner", "-loglevel", "error", "-i"])
@@ -4394,10 +4599,26 @@ mod tests {
                 .output()
                 .expect("ffmpeg should run");
             let complaints = String::from_utf8_lossy(&decode.stderr).to_string();
-            assert!(
-                complaints.trim().is_empty(),
-                "what arrived does not decode cleanly:\n{complaints}"
-            );
+            // Judged on whether the pictures decode, not on whether ffmpeg
+            // had anything to say. Each picture is stamped with the moment it
+            // was really made, so the spacing varies with what the engine
+            // manages; re-muxing that into a container with fixed
+            // thirty-a-second slots puts two of them in one slot and ffmpeg
+            // mentions it. That is a remark about the re-muxing, not about
+            // what arrived, and it still exits successfully.
+            let real: Vec<&str> = complaints
+                .lines()
+                .filter(|line| {
+                    let l = line.to_lowercase();
+                    (l.contains("error")
+                        || l.contains("invalid data")
+                        || l.contains("corrupt")
+                        || l.contains("could not"))
+                        && !l.contains("non monotonically increasing dts")
+                })
+                .collect();
+            assert!(real.is_empty(), "what arrived does not decode:\n{}", real.join("\n"));
+            assert!(decode.status.success(), "ffmpeg refused what arrived:\n{complaints}");
         }
 
         #[test]

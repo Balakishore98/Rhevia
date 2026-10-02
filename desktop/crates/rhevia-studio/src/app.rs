@@ -139,6 +139,11 @@ pub struct StudioApp {
     stream_address: String,
     /// The design a new title will be made with.
     title_design: rhevia_engine::TitleDesign,
+    /// The font the design previews are drawn with, found once.
+    ///
+    /// None once looked for and not found, rather than looked for again on
+    /// every repaint: scanning the system's fonts is not free.
+    preview_font: Option<Option<std::sync::Arc<rhevia_engine::FontVec>>>,
     /// The always-on graphics, as the panel that drives them holds them.
     watermark_path: String,
     watermark_corner: usize,
@@ -379,6 +384,7 @@ impl StudioApp {
             pending_display: None,
             stream_address: String::new(),
             title_design: rhevia_engine::TitleDesign::default(),
+            preview_font: None,
             watermark_path: String::new(),
             watermark_corner: 1,
             watermark_scale: 0.12,
@@ -521,6 +527,177 @@ impl StudioApp {
             }
         }
         self.textures.get(key).map(|(h, _)| h.id())
+    }
+}
+
+/// How big a design's preview is drawn.
+///
+/// Small enough that nine fit without scrolling, large enough that the
+/// difference between a slanted end and a square one is visible — which is
+/// the entire point of showing them.
+const DESIGN_PREVIEW: Vec2 = Vec2::new(200.0, 64.0);
+
+impl StudioApp {
+    /// A picture of what a design looks like, drawn once and kept.
+    ///
+    /// A row of labels asks an operator to know what BADGE means before they
+    /// can choose it. A row of pictures does not, and the only honest way to
+    /// show what a design looks like is to draw it with the same code that
+    /// draws it on air.
+    fn design_preview(
+        &mut self,
+        ctx: &egui::Context,
+        design: rhevia_engine::TitleDesign,
+    ) -> Option<egui::TextureId> {
+        let key = format!("design-{}", design.label());
+        if !self.textures.contains_key(&key) {
+            let font = self.preview_font.get_or_insert_with(|| {
+                rhevia_engine::system_font().ok().map(std::sync::Arc::new)
+            });
+            let font = font.clone()?;
+
+            // Drawn at a real frame's proportions and then cropped to the
+            // band the graphic occupies. Rendering straight into a small box
+            // keeps the proportions but makes the words seven pixels tall,
+            // which shows the shape and none of the design.
+            let (w, h) = (560usize, 315usize);
+            let band = h * 52 / 100;
+            // A shot behind it, because half of these are translucent and a
+            // preview on black would make them look identical.
+            let mut shot = Frame::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let (u, v) = (x as f32 / w as f32, y as f32 / h as f32);
+                    shot.set_pixel(
+                        x,
+                        y,
+                        [
+                            (60.0 + 90.0 * u) as u8,
+                            (40.0 + 50.0 * v) as u8,
+                            (95.0 + 60.0 * (1.0 - u)) as u8,
+                            255,
+                        ],
+                    );
+                }
+            }
+
+            // Short words: a preview this size cannot carry a real name, and
+            // one that overflows teaches the wrong thing about the design.
+            let style = rhevia_engine::TitleStyle {
+                text: "NAME".into(),
+                subtitle: "Role".into(),
+                design,
+                // Larger than a real title would be, relative to the frame.
+                // A preview two hundred pixels wide cannot show a graphic at
+                // its true proportion and still show what it is: the shape
+                // is the thing being chosen, so the shape is what fills the
+                // picture.
+                size: 0.17,
+                ..Default::default()
+            };
+            let drawn = rhevia_engine::render_title(&font, &style, w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let px = drawn.pixel(x, y).unwrap_or([0; 4]);
+                    if px[3] == 0 {
+                        continue;
+                    }
+                    let a = px[3] as f32 / 255.0;
+                    let under = shot.pixel(x, y).unwrap_or([0; 4]);
+                    shot.set_pixel(
+                        x,
+                        y,
+                        [
+                            (px[0] as f32 * a + under[0] as f32 * (1.0 - a)) as u8,
+                            (px[1] as f32 * a + under[1] as f32 * (1.0 - a)) as u8,
+                            (px[2] as f32 * a + under[2] as f32 * (1.0 - a)) as u8,
+                            255,
+                        ],
+                    );
+                }
+            }
+
+            // Only the part the lower third is drawn in.
+            let from = h - band;
+            let mut strip = Vec::with_capacity(w * band * 4);
+            for y in from..h {
+                let row = y * w * 4;
+                strip.extend_from_slice(&shot.data[row..row + w * 4]);
+            }
+            let image = egui::ColorImage::from_rgba_unmultiplied([w, band], &strip);
+            let handle = ctx.load_texture(&key, image, egui::TextureOptions::LINEAR);
+            self.textures.insert(key.clone(), (handle, 0));
+        }
+        self.textures.get(&key).map(|(h, _)| h.id())
+    }
+
+    /// The row of designs, as pictures.
+    fn design_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        chosen: rhevia_engine::TitleDesign,
+    ) -> Option<rhevia_engine::TitleDesign> {
+        let mut picked = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            for design in rhevia_engine::TitleDesign::ALL {
+                let texture = self.design_preview(ctx, design);
+                let (rect, response) =
+                    ui.allocate_exact_size(DESIGN_PREVIEW, egui::Sense::click());
+                let painter = ui.painter_at(rect);
+                let active = chosen == design;
+
+                let rounding = Rounding::same(5.0_f32);
+                painter.rect_filled(rect, rounding, theme::SURFACE_LOWEST);
+                if let Some(texture) = texture {
+                    painter.image(
+                        texture,
+                        rect.shrink(2.0),
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+
+                // The name sits on the picture rather than beside it, so the
+                // row stays a row of pictures.
+                let caption = Rect::from_min_size(
+                    egui::pos2(rect.min.x, rect.max.y - 14.0),
+                    Vec2::new(rect.width(), 14.0),
+                );
+                painter.rect_filled(caption, Rounding::ZERO, egui::Color32::from_black_alpha(205));
+                painter.text(
+                    caption.center(),
+                    egui::Align2::CENTER_CENTER,
+                    design.label(),
+                    theme::mono(8.5),
+                    if active { theme::ACCENT } else { theme::TEXT_DIM },
+                );
+
+                painter.rect_stroke(
+                    rect,
+                    rounding,
+                    Stroke::new(
+                        if active { 2.0 } else { 1.0 },
+                        if active {
+                            theme::ACCENT
+                        } else if response.hovered() {
+                            theme::EDGE_LIT
+                        } else {
+                            theme::EDGE
+                        },
+                    ),
+                );
+
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.on_hover_text(design.hint()).clicked() {
+                    picked = Some(design);
+                }
+            }
+        });
+        picked
     }
 }
 
@@ -2809,7 +2986,7 @@ impl StudioApp {
                             .max_height(420.0)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                close = self.input_body(ui, snapshot);
+                                close = self.input_body(ui, ctx, snapshot);
                             });
                     });
                 });
@@ -2823,7 +3000,12 @@ impl StudioApp {
 
 
     /// The right-hand pane. Returns true when an input was added.
-    fn input_body(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) -> bool {
+    fn input_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        snapshot: &Snapshot,
+    ) -> bool {
         match self.input_tab {
             InputTab::Camera => {
                 if self.cached_cameras.is_empty() {
@@ -3182,23 +3364,9 @@ impl StudioApp {
                 ui.add_space(10.0);
                 ui.label(RichText::new("DESIGN").size(10.0).color(theme::TEXT_DIM));
                 ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-                    for choice in rhevia_engine::TitleDesign::ALL {
-                        if theme::chip(
-                            ui,
-                            choice.label(),
-                            self.title_design == choice,
-                            theme::ACCENT,
-                            Vec2::new(78.0, 24.0),
-                        )
-                        .on_hover_text(choice.hint())
-                        .clicked()
-                        {
-                            self.title_design = choice;
-                        }
-                    }
-                });
+                if let Some(picked) = self.design_picker(ui, ctx, self.title_design) {
+                    self.title_design = picked;
+                }
                 ui.add_space(4.0);
                 ui.add(
                     egui::Label::new(
@@ -3723,24 +3891,10 @@ impl StudioApp {
                 ui.add_space(12.0);
                 ui.label(RichText::new("DESIGN").size(10.5).color(theme::TEXT_DIM));
                 ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-                    for choice in rhevia_engine::TitleDesign::ALL {
-                        if theme::chip(
-                            ui,
-                            choice.label(),
-                            design == choice,
-                            theme::ACCENT,
-                            Vec2::new(74.0, 24.0),
-                        )
-                        .on_hover_text(choice.hint())
-                        .clicked()
-                        {
-                            design = choice;
-                            apply = true;
-                        }
-                    }
-                });
+                if let Some(picked) = self.design_picker(ui, ctx, design) {
+                    design = picked;
+                    apply = true;
+                }
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(

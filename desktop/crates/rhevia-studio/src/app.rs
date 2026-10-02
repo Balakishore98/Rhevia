@@ -137,6 +137,8 @@ pub struct StudioApp {
     pending_display: Option<String>,
     /// The address being typed on the stream tab.
     stream_address: String,
+    /// The design a new title will be made with.
+    title_design: rhevia_engine::TitleDesign,
     /// The always-on graphics, as the panel that drives them holds them.
     watermark_path: String,
     watermark_corner: usize,
@@ -294,7 +296,7 @@ impl InputTab {
             InputTab::Audio => "Audio Input",
             InputTab::Media => "Video / Media",
             InputTab::Image => "Image",
-            InputTab::Title => "Title",
+            InputTab::Title => "Title / Lower third",
             InputTab::Colour => "Colour",
             InputTab::Stream => "Stream / Phone",
             InputTab::Layers => "Layers (group)",
@@ -376,6 +378,7 @@ impl StudioApp {
             pending_layer: None,
             pending_display: None,
             stream_address: String::new(),
+            title_design: rhevia_engine::TitleDesign::default(),
             watermark_path: String::new(),
             watermark_corner: 1,
             watermark_scale: 0.12,
@@ -1129,8 +1132,10 @@ impl StudioApp {
             // A lower third is edited constantly during a show, so the way in
             // sits on the tile rather than behind a settings dialog.
             if let Some((text, subtitle)) = &info.title {
-                if theme::chip(ui, "EDIT TEXT", false, theme::ACCENT, Vec2::new(186.0, 19.0))
-                    .on_hover_text("change this title without taking it off air")
+                if theme::chip(ui, "TEXT & DESIGN", false, theme::ACCENT, Vec2::new(186.0, 19.0))
+                    .on_hover_text(
+                        "change the words or the design without taking it off air",
+                    )
                     .clicked()
                 {
                     self.editing_title = Some((index, text.clone(), subtitle.clone()));
@@ -3170,12 +3175,54 @@ impl StudioApp {
                         .hint_text("LEAD ANALYST")
                         .desired_width(f32::INFINITY),
                 );
+                // The design belongs here, where the title is made. It was
+                // only reachable afterwards, behind a chip on the tile, which
+                // meant that as far as anyone could tell the designs did not
+                // exist.
                 ui.add_space(10.0);
-                if ui.button("Add title").clicked() && !self.title_text.trim().is_empty() {
+                ui.label(RichText::new("DESIGN").size(10.0).color(theme::TEXT_DIM));
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                    for choice in rhevia_engine::TitleDesign::ALL {
+                        if theme::chip(
+                            ui,
+                            choice.label(),
+                            self.title_design == choice,
+                            theme::ACCENT,
+                            Vec2::new(78.0, 24.0),
+                        )
+                        .on_hover_text(choice.hint())
+                        .clicked()
+                        {
+                            self.title_design = choice;
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "{}  ·  Put it in an overlay slot to bring it on and off, and \
+                             right-click that slot's number to choose how it moves.",
+                            self.title_design.hint()
+                        ))
+                        .size(10.0)
+                        .color(theme::TEXT_FAINT),
+                    )
+                    .wrap(),
+                );
+
+                ui.add_space(12.0);
+                if theme::button(ui, "Add lower third", theme::ACCENT, Vec2::new(140.0, 26.0))
+                    .clicked()
+                    && !self.title_text.trim().is_empty()
+                {
                     self.engine.send(Command::AddTitleSource {
                         name: self.name_or("Title"),
                         text: self.title_text.trim().to_string(),
                         subtitle: self.title_subtitle.trim().to_string(),
+                        design: self.title_design,
                     });
                     return true;
                 }
@@ -3659,7 +3706,7 @@ impl StudioApp {
         let mut open = true;
         let mut apply = false;
 
-        egui::Window::new("Title text")
+        egui::Window::new("Lower third")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

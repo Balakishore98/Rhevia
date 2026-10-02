@@ -149,7 +149,12 @@ pub enum Command {
     /// A still image: holding slide, sponsor board, stinger graphic.
     AddImageSource { name: String, path: String },
     /// A lower third, rendered here rather than in another application.
-    AddTitleSource { name: String, text: String, subtitle: String },
+    AddTitleSource {
+        name: String,
+        text: String,
+        subtitle: String,
+        design: rhevia_engine::TitleDesign,
+    },
     /// Re-renders an existing title without rebuilding the input.
     SetTitleText {
         input: usize,
@@ -1806,7 +1811,7 @@ fn run(
                         Err(e) => stream_error = Some(e.to_string()),
                     }
                 }
-                Command::AddTitleSource { name, text, subtitle } => match font.as_ref() {
+                Command::AddTitleSource { name, text, subtitle, design } => match font.as_ref() {
                     Some(font) => {
                         let style = TitleStyle { text, subtitle, ..Default::default() };
                         let rendered =

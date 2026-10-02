@@ -66,13 +66,29 @@ pub enum TitleDesign {
     /// The full-width bar. Kept because it is unmissable, which is what a
     /// notice or a warning wants.
     Bar,
+    /// Slanted ends, as sport and news use. The slant is what makes a
+    /// rectangle look designed rather than drawn.
+    Angled,
+    /// The accent fading into the dark, so the words stay readable where
+    /// they sit and the far end of the panel lets the shot through.
+    Gradient,
+    /// A thin accent frame over almost nothing, for a shot too good to
+    /// cover and a graphic that still has to look deliberate.
+    Outline,
+    /// A solid accent square for an initial or a logo, with the panel beside
+    /// it. The arrangement a channel uses when it wants its mark on screen.
+    Badge,
 }
 
 impl TitleDesign {
-    pub const ALL: [TitleDesign; 5] = [
+    pub const ALL: [TitleDesign; 9] = [
         TitleDesign::Box,
         TitleDesign::Stack,
         TitleDesign::Stripe,
+        TitleDesign::Angled,
+        TitleDesign::Gradient,
+        TitleDesign::Outline,
+        TitleDesign::Badge,
         TitleDesign::Minimal,
         TitleDesign::Bar,
     ];
@@ -84,6 +100,10 @@ impl TitleDesign {
             TitleDesign::Stripe => "STRIPE",
             TitleDesign::Minimal => "MINIMAL",
             TitleDesign::Bar => "BAR",
+            TitleDesign::Angled => "ANGLED",
+            TitleDesign::Gradient => "GRADIENT",
+            TitleDesign::Outline => "OUTLINE",
+            TitleDesign::Badge => "BADGE",
         }
     }
 
@@ -94,6 +114,10 @@ impl TitleDesign {
             TitleDesign::Stripe => "a thick accent bar with the text beside it",
             TitleDesign::Minimal => "text and a shadow, no panel — for a shot worth seeing",
             TitleDesign::Bar => "the full width of the frame, for a notice",
+            TitleDesign::Angled => "slanted ends, the way sport and news draw them",
+            TitleDesign::Gradient => "the accent fading into the dark, letting the shot through",
+            TitleDesign::Outline => "a thin accent frame over almost nothing",
+            TitleDesign::Badge => "an accent square for an initial, with the panel beside it",
         }
     }
 }
@@ -182,57 +206,132 @@ fn measure(font: &FontVec, text: &str, size: f32) -> f32 {
     width
 }
 
+/// Fills a shape: rounded, optionally slanted, optionally fading across.
+///
+/// One primitive rather than four, because every lower third here is the
+/// same rectangle with different edges, and four nearly-identical drawing
+/// loops is where inconsistencies creep in -- one of them rounded a corner
+/// the others did not.
+///
+/// `slant` leans the vertical edges by that fraction of the height. `fade`,
+/// when given, is the colour at the right-hand end; the fill runs to it
+/// across the width.
+#[allow(clippy::too_many_arguments)]
+fn panel(
+    frame: &mut Frame,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    slant: f32,
+    rgba: [u8; 4],
+    fade: Option<[u8; 4]>,
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let lean = slant * h;
+    let radius = radius.min(w / 2.0).min(h / 2.0).max(0.0);
+
+    let top = y.floor().max(0.0) as usize;
+    let bottom = ((y + h).ceil() as usize).min(frame.height);
+    let left = (x - lean.abs()).floor().max(0.0) as usize;
+    let right = ((x + w + lean.abs()).ceil() as usize).min(frame.width);
+
+    for py in top..bottom {
+        // How far along the height we are, and therefore how far this row
+        // has leaned.
+        let fy = py as f32 + 0.5;
+        let along = ((fy - y) / h).clamp(0.0, 1.0);
+        let shift = lean * (1.0 - along);
+        let (x0, x1) = (x + shift, x + w + shift);
+
+        for px in left..right {
+            let fx = px as f32 + 0.5;
+            let (cx, cy) = ((x0 + x1) / 2.0, y + h / 2.0);
+            let qx = (fx - cx).abs() - (x1 - x0) / 2.0 + radius;
+            let qy = (fy - cy).abs() - h / 2.0 + radius;
+            let outside =
+                (qx.max(0.0).hypot(qy.max(0.0))) + qx.max(qy).min(0.0) - radius;
+            let coverage = (0.5 - outside).clamp(0.0, 1.0);
+            if coverage <= 0.0 {
+                continue;
+            }
+
+            let colour = match fade {
+                Some(end) => {
+                    let across = ((fx - x0) / (x1 - x0)).clamp(0.0, 1.0);
+                    [
+                        (rgba[0] as f32 + (end[0] as f32 - rgba[0] as f32) * across) as u8,
+                        (rgba[1] as f32 + (end[1] as f32 - rgba[1] as f32) * across) as u8,
+                        (rgba[2] as f32 + (end[2] as f32 - rgba[2] as f32) * across) as u8,
+                        (rgba[3] as f32 + (end[3] as f32 - rgba[3] as f32) * across) as u8,
+                    ]
+                }
+                None => rgba,
+            };
+
+            let a = colour[3] as f32 / 255.0 * coverage;
+            let under = frame.pixel(px, py).unwrap_or([0, 0, 0, 0]);
+            frame.set_pixel(
+                px,
+                py,
+                [
+                    (colour[0] as f32 * a + under[0] as f32 * (1.0 - a)) as u8,
+                    (colour[1] as f32 * a + under[1] as f32 * (1.0 - a)) as u8,
+                    (colour[2] as f32 * a + under[2] as f32 * (1.0 - a)) as u8,
+                    ((a + under[3] as f32 / 255.0 * (1.0 - a)) * 255.0).min(255.0) as u8,
+                ],
+            );
+        }
+    }
+}
+
+/// Clears a rounded region back to transparent.
+///
+/// Used to make a frame out of a filled shape: draw the accent whole, then
+/// take the inside out. Two fills rather than four strips, which is how the
+/// corners stay round and consistent with everything else.
+fn frame_clear(frame: &mut Frame, x: f32, y: f32, w: f32, h: f32, radius: f32) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let radius = radius.min(w / 2.0).min(h / 2.0).max(0.0);
+    let top = y.floor().max(0.0) as usize;
+    let bottom = ((y + h).ceil() as usize).min(frame.height);
+    let left = x.floor().max(0.0) as usize;
+    let right = ((x + w).ceil() as usize).min(frame.width);
+
+    for py in top..bottom {
+        for px in left..right {
+            let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+            let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+            let qx = (fx - cx).abs() - w / 2.0 + radius;
+            let qy = (fy - cy).abs() - h / 2.0 + radius;
+            let outside = (qx.max(0.0).hypot(qy.max(0.0))) + qx.max(qy).min(0.0) - radius;
+            let coverage = (0.5 - outside).clamp(0.0, 1.0);
+            if coverage <= 0.0 {
+                continue;
+            }
+            let under = frame.pixel(px, py).unwrap_or([0, 0, 0, 0]);
+            let keep = 1.0 - coverage;
+            frame.set_pixel(
+                px,
+                py,
+                [under[0], under[1], under[2], (under[3] as f32 * keep) as u8],
+            );
+        }
+    }
+}
+
 /// Fills a rectangle with rounded corners.
 ///
 /// Square corners are the single thing that makes a graphic look like a
 /// programmer drew it. The radius is small and the edge is antialiased, so
 /// it reads as a panel rather than as a box.
 fn rounded(frame: &mut Frame, x: f32, y: f32, w: f32, h: f32, radius: f32, rgba: [u8; 4]) {
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let radius = radius.min(w / 2.0).min(h / 2.0).max(0.0);
-    let (x0, y0, x1, y1) = (x, y, x + w, y + h);
-
-    let top = y0.floor().max(0.0) as usize;
-    let bottom = (y1.ceil() as usize).min(frame.height);
-    let left = x0.floor().max(0.0) as usize;
-    let right = (x1.ceil() as usize).min(frame.width);
-
-    for py in top..bottom {
-        for px in left..right {
-            let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
-            // Signed distance to the rounded rectangle: negative inside,
-            // positive outside, zero on the edge. Taking only the positive
-            // part -- which is the obvious way to write it -- leaves every
-            // interior pixel at distance zero, and therefore at half
-            // coverage, so the whole panel came out at half the opacity it
-            // was asked for.
-            let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-            let qx = (fx - cx).abs() - (x1 - x0) / 2.0 + radius;
-            let qy = (fy - cy).abs() - (y1 - y0) / 2.0 + radius;
-            let outside = (qx.max(0.0).hypot(qy.max(0.0)))
-                + qx.max(qy).min(0.0)
-                - radius;
-            // One pixel of softness along the edge.
-            let coverage = (0.5 - outside).clamp(0.0, 1.0);
-            if coverage <= 0.0 {
-                continue;
-            }
-            let a = rgba[3] as f32 / 255.0 * coverage;
-            let under = frame.pixel(px, py).unwrap_or([0, 0, 0, 0]);
-            frame.set_pixel(
-                px,
-                py,
-                [
-                    (rgba[0] as f32 * a + under[0] as f32 * (1.0 - a)) as u8,
-                    (rgba[1] as f32 * a + under[1] as f32 * (1.0 - a)) as u8,
-                    (rgba[2] as f32 * a + under[2] as f32 * (1.0 - a)) as u8,
-                    ((a + under[3] as f32 / 255.0 * (1.0 - a)) * 255.0).min(255.0) as u8,
-                ],
-            );
-        }
-    }
+    panel(frame, x, y, w, h, radius, 0.0, rgba, None);
 }
 
 /// A soft dark shadow behind text, so it reads over a bright shot.
@@ -247,10 +346,12 @@ fn text_shadow(
     baseline: f32,
     size: f32,
 ) {
-    let spread = (size * 0.045).max(1.0);
-    for (dx, dy) in [(spread, spread), (-spread, spread), (0.0, spread * 1.6)] {
-        draw_text(frame, font, text, left + dx, baseline + dy, size, [0, 0, 0]);
-    }
+    // Below and slightly right, once. Ringing the text with offsets in every
+    // direction is how a shadow turns into a heavier weight, which at
+    // subtitle size is exactly what it looked like.
+    let spread = (size * 0.06).max(1.0);
+    draw_text(frame, font, text, left + spread * 0.5, baseline + spread, size, [0, 0, 0]);
+    draw_text(frame, font, text, left + spread, baseline + spread * 1.7, size, [0, 0, 0]);
 }
 
 /// Renders a title onto a transparent frame, ready to composite as an overlay.
@@ -270,7 +371,7 @@ pub fn render_title(
     let pad = headline_px * 0.55;
     let has_subtitle = !style.subtitle.trim().is_empty();
 
-    let panel = [
+    let fill = [
         style.background[0],
         style.background[1],
         style.background[2],
@@ -302,7 +403,7 @@ pub fn render_title(
         // ---- the full-width bar -----------------------------------------
         TitleDesign::Bar => {
             let stripe = (width as f32 * 0.006).max(3.0);
-            rounded(&mut frame, 0.0, top, width as f32, panel_height, 0.0, panel);
+            rounded(&mut frame, 0.0, top, width as f32, panel_height, 0.0, fill);
             rounded(&mut frame, margin * 0.5, top, stripe, panel_height, 0.0, accent);
 
             let left = margin * 0.5 + stripe + pad;
@@ -321,14 +422,14 @@ pub fn render_title(
             }
         }
 
-        // ---- a panel sized to the words ---------------------------------
+        // ---- a fill sized to the words ---------------------------------
         TitleDesign::Box => {
             let stripe = (headline_px * 0.12).max(3.0);
             let text_width = headline_width.max(subtitle_width);
             let panel_width = (stripe + pad * 1.6 + text_width + pad * 1.4)
                 .min(width as f32 - margin * 2.0);
 
-            rounded(&mut frame, margin, top, panel_width, panel_height, radius, panel);
+            rounded(&mut frame, margin, top, panel_width, panel_height, radius, fill);
             // The accent sits inside the rounded edge rather than on it, so
             // the corner stays round.
             rounded(
@@ -362,7 +463,7 @@ pub fn render_title(
             let name_height = headline_px + pad * 1.2;
             let name_width =
                 (headline_width + pad * 2.4).min(width as f32 - margin * 2.0);
-            rounded(&mut frame, margin, top, name_width, name_height, radius, panel);
+            rounded(&mut frame, margin, top, name_width, name_height, radius, fill);
 
             let baseline = top + pad * 0.6 + headline_px * 0.78;
             draw_text(
@@ -412,7 +513,7 @@ pub fn render_title(
             let panel_width =
                 (stripe + pad * 1.2 + text_width + pad * 1.2).min(width as f32 - margin * 2.0);
 
-            rounded(&mut frame, margin, top, panel_width, panel_height, radius, panel);
+            rounded(&mut frame, margin, top, panel_width, panel_height, radius, fill);
             rounded(&mut frame, margin, top, stripe, panel_height, radius, accent);
 
             let left = margin + stripe + pad * 1.2;
@@ -431,7 +532,195 @@ pub fn render_title(
             }
         }
 
-        // ---- no panel at all --------------------------------------------
+        // ---- slanted ends, the way sport draws them ----------------------
+        TitleDesign::Angled => {
+            let slant = 0.26;
+            let text_width = headline_width.max(subtitle_width);
+            let panel_width =
+                (text_width + pad * 3.0).min(width as f32 - margin * 2.0 - panel_height * slant);
+            let lean = margin + panel_height * slant;
+
+            panel(&mut frame, lean, top, panel_width, panel_height, 0.0, slant, fill, None);
+            // A slash of accent along the leading edge, leaning with it.
+            panel(
+                &mut frame,
+                lean - pad * 0.55,
+                top,
+                pad * 0.42,
+                panel_height,
+                0.0,
+                slant,
+                accent,
+                None,
+            );
+
+            let left = lean + pad * 1.2;
+            let baseline = top + pad + headline_px * 0.78;
+            draw_text(&mut frame, font, &style.text, left, baseline, headline_px, style.colour);
+            if has_subtitle {
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left - panel_height * slant * 0.3,
+                    baseline + subtitle_px * 1.45,
+                    subtitle_px,
+                    style.subtitle_colour,
+                );
+            }
+        }
+
+        // ---- the accent fading into the dark ----------------------------
+        TitleDesign::Gradient => {
+            let text_width = headline_width.max(subtitle_width);
+            let panel_width =
+                (text_width + pad * 4.5).min(width as f32 - margin * 2.0);
+            // Starts on the accent and ends on nothing, so the far end of
+            // the fill lets the shot through rather than cutting it off.
+            let start = [accent[0], accent[1], accent[2], 235];
+            let end = [fill[0], fill[1], fill[2], 0];
+            panel(
+                &mut frame,
+                margin,
+                top,
+                panel_width,
+                panel_height,
+                radius,
+                0.0,
+                start,
+                Some(end),
+            );
+            // A darker band under the words themselves, or white on a bright
+            // accent is unreadable.
+            panel(
+                &mut frame,
+                margin,
+                top,
+                panel_width * 0.62,
+                panel_height,
+                radius,
+                0.0,
+                [fill[0], fill[1], fill[2], 190],
+                Some([fill[0], fill[1], fill[2], 0]),
+            );
+
+            let left = margin + pad * 1.3;
+            let baseline = top + pad + headline_px * 0.78;
+            draw_text(&mut frame, font, &style.text, left, baseline, headline_px, style.colour);
+            if has_subtitle {
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left,
+                    baseline + subtitle_px * 1.45,
+                    subtitle_px,
+                    style.subtitle_colour,
+                );
+            }
+        }
+
+        // ---- a thin frame over almost nothing ---------------------------
+        TitleDesign::Outline => {
+            let text_width = headline_width.max(subtitle_width);
+            let panel_width = (text_width + pad * 3.0).min(width as f32 - margin * 2.0);
+            let edge = (headline_px * 0.055).max(2.0);
+
+            // The frame is the accent drawn whole, then the inside taken back
+            // out: two fills rather than four, and the corners stay round.
+            panel(
+                &mut frame,
+                margin,
+                top,
+                panel_width,
+                panel_height,
+                radius,
+                0.0,
+                accent,
+                None,
+            );
+            frame_clear(
+                &mut frame,
+                margin + edge,
+                top + edge,
+                panel_width - edge * 2.0,
+                panel_height - edge * 2.0,
+                (radius - edge).max(0.0),
+            );
+            // Just enough dark inside it to carry white text over a bright
+            // shot, without becoming a fill.
+            rounded(
+                &mut frame,
+                margin + edge,
+                top + edge,
+                panel_width - edge * 2.0,
+                panel_height - edge * 2.0,
+                (radius - edge).max(0.0),
+                [fill[0], fill[1], fill[2], 120],
+            );
+
+            let left = margin + pad * 1.5;
+            let baseline = top + pad + headline_px * 0.78;
+            text_shadow(&mut frame, font, &style.text, left, baseline, headline_px);
+            draw_text(&mut frame, font, &style.text, left, baseline, headline_px, style.colour);
+            if has_subtitle {
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left,
+                    baseline + subtitle_px * 1.45,
+                    subtitle_px,
+                    style.subtitle_colour,
+                );
+            }
+        }
+
+        // ---- an accent square, then the fill ---------------------------
+        TitleDesign::Badge => {
+            let square = panel_height;
+            let text_width = headline_width.max(subtitle_width);
+            let panel_width = (square + text_width + pad * 2.6)
+                .min(width as f32 - margin * 2.0);
+
+            rounded(&mut frame, margin, top, panel_width, panel_height, radius, fill);
+            rounded(&mut frame, margin, top, square, panel_height, radius, accent);
+
+            // The first letter of the headline, centred in the square. A
+            // logo goes here when there is one; until then an initial reads
+            // as deliberate where an empty block does not.
+            if let Some(initial) = style.text.trim().chars().next() {
+                let initial = initial.to_uppercase().to_string();
+                let mark_px = square * 0.52;
+                let mark_width = measure(font, &initial, mark_px);
+                draw_text(
+                    &mut frame,
+                    font,
+                    &initial,
+                    margin + (square - mark_width) / 2.0,
+                    top + square / 2.0 + mark_px * 0.36,
+                    mark_px,
+                    [10, 14, 20],
+                );
+            }
+
+            let left = margin + square + pad * 1.3;
+            let baseline = top + pad + headline_px * 0.78;
+            draw_text(&mut frame, font, &style.text, left, baseline, headline_px, style.colour);
+            if has_subtitle {
+                draw_text(
+                    &mut frame,
+                    font,
+                    &style.subtitle,
+                    left,
+                    baseline + subtitle_px * 1.45,
+                    subtitle_px,
+                    style.subtitle_colour,
+                );
+            }
+        }
+
+        // ---- no fill at all --------------------------------------------
         TitleDesign::Minimal => {
             let left = margin;
             let baseline = top + pad + headline_px * 0.78;
